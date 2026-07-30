@@ -1,0 +1,29 @@
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Go build and test output
+backend/bin/
+backend/coverage.out
+
+# Frontend dependencies and builds
+frontend/node_modules/
+frontend/dist/
+
+# Credentials and local environment
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.*
+
+# macOS
+.DS_Store

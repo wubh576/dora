@@ -1,0 +1,163 @@
+:root {
+  color: #18251f;
+  background: #f6f1e7;
+  font-family:
+    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.page-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px 20px;
+  background:
+    radial-gradient(circle at 15% 10%, rgb(215 225 200 / 70%), transparent 34%),
+    radial-gradient(circle at 85% 90%, rgb(224 201 168 / 55%), transparent 32%),
+    #f6f1e7;
+}
+
+.status-card {
+  width: min(100%, 540px);
+  padding: 44px;
+  border: 1px solid rgb(24 37 31 / 12%);
+  border-radius: 28px;
+  background: rgb(255 253 248 / 82%);
+  box-shadow: 0 24px 70px rgb(62 55 42 / 12%);
+  backdrop-filter: blur(16px);
+}
+
+.brand-mark {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 32px;
+  place-items: center;
+  border-radius: 15px;
+  color: #fdfbf5;
+  background: #244f3d;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 26px;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: #557064;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.error-label {
+  color: #a74635;
+}
+
+h1 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(36px, 8vw, 56px);
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.supporting-copy {
+  margin: 22px 0 0;
+  color: #647169;
+  line-height: 1.6;
+}
+
+.status-list {
+  display: grid;
+  gap: 2px;
+  margin: 36px 0 0;
+  overflow: hidden;
+  border: 1px solid rgb(24 37 31 / 10%);
+  border-radius: 18px;
+  background: rgb(24 37 31 / 8%);
+}
+
+.status-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  background: #fffdf8;
+}
+
+.status-list dt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #65736b;
+  font-size: 14px;
+}
+
+.status-list dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #bd5c49;
+  box-shadow: 0 0 0 4px rgb(189 92 73 / 12%);
+}
+
+.status-dot.ready {
+  background: #3b8a65;
+  box-shadow: 0 0 0 4px rgb(59 138 101 / 12%);
+}
+
+.initialized-at {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 26px;
+  padding: 0 2px;
+  color: #758078;
+  font-size: 13px;
+}
+
+.initialized-at time {
+  color: #38483f;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 560px) {
+  .status-card {
+    padding: 32px 24px;
+    border-radius: 22px;
+  }
+
+  .status-list > div,
+  .initialized-at {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
