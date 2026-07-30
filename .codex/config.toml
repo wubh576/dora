@@ -1,0 +1,10 @@
+# Dora 项目级 Codex 配置。
+# 项目需要在 Codex 中标记为可信，项目级配置才会生效。
+
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+approvals_reviewer = "auto_review"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
