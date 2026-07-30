@@ -158,6 +158,14 @@ Review 重点：
 
 一次 commit 只包含一个功能点。
 
+提交信息使用英文。
+
+由 Codex 参与完成的提交保留用户配置的 Git 作者信息，并在提交信息末尾添加：
+
+```text
+Co-authored-by: Codex <noreply@openai.com>
+```
+
 提交信息优先使用：
 
 - `feat(scope): description`
