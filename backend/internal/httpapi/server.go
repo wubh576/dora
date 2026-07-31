@@ -11,6 +11,7 @@ import (
 	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/pricing"
+	"github.com/wubh576/dora/backend/internal/provider/claudecode"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
 	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
@@ -51,18 +52,30 @@ type Options struct {
 }
 
 type scanResponse struct {
-	RunID        string   `json:"runId"`
+	RunID        string                 `json:"runId"`
+	Mode         string                 `json:"mode"`
+	FilesSeen    int                    `json:"filesSeen"`
+	EventsSeen   int                    `json:"eventsSeen"`
+	EventsStored int                    `json:"eventsStored"`
+	Warnings     []string               `json:"warnings"`
+	FinishedAt   string                 `json:"finishedAt"`
+	Providers    []scanProviderResponse `json:"providers"`
+}
+
+type scanProviderResponse struct {
+	Source       string   `json:"source"`
 	Mode         string   `json:"mode"`
 	FilesSeen    int      `json:"filesSeen"`
+	SessionCount int      `json:"sessionCount"`
 	EventsSeen   int      `json:"eventsSeen"`
 	EventsStored int      `json:"eventsStored"`
 	Warnings     []string `json:"warnings"`
-	FinishedAt   string   `json:"finishedAt"`
 }
 
 type diagnosticsResponse struct {
-	Usage usageDiagnostics `json:"usage"`
-	Quota quotaDiagnostics `json:"quota"`
+	Usage          usageDiagnostics   `json:"usage"`
+	UsageProviders []usageDiagnostics `json:"usageProviders"`
+	Quota          quotaDiagnostics   `json:"quota"`
 }
 
 type usageDiagnostics struct {
@@ -74,16 +87,26 @@ type usageDiagnostics struct {
 	EventsSeen    int     `json:"eventsSeen"`
 	StoredEvents  int     `json:"storedEvents"`
 	ParserVersion int     `json:"parserVersion"`
+	ConfigFound   bool    `json:"configFound"`
+	SessionCount  int     `json:"sessionCount"`
 	Message       string  `json:"message"`
 	Advice        string  `json:"advice"`
 }
 
 type summaryResponse struct {
-	Range    string           `json:"range"`
-	StartUTC string           `json:"startUtc"`
-	EndUTC   string           `json:"endUtc"`
-	Cost     pricing.Estimate `json:"cost"`
+	Range     string                  `json:"range"`
+	StartUTC  string                  `json:"startUtc"`
+	EndUTC    string                  `json:"endUtc"`
+	Cost      pricing.Estimate        `json:"cost"`
+	Providers []providerUsageResponse `json:"providers"`
 	analytics.TokenTotals
+}
+
+type providerUsageResponse struct {
+	Source string `json:"source"`
+	Label  string `json:"label"`
+	analytics.TokenTotals
+	Models []analytics.BreakdownItem `json:"models"`
 }
 
 type timelineResponse struct {
@@ -99,12 +122,13 @@ type breakdownResponse struct {
 }
 
 type dashboardResponse struct {
-	Summary     summaryResponse           `json:"summary"`
-	Timeline    []analytics.TimelinePoint `json:"timeline"`
-	Models      []analytics.BreakdownItem `json:"models"`
-	Projects    []analytics.BreakdownItem `json:"projects"`
-	Activity    activityResponse          `json:"activity"`
-	Diagnostics usageDiagnostics          `json:"diagnostics"`
+	Summary             summaryResponse           `json:"summary"`
+	Timeline            []analytics.TimelinePoint `json:"timeline"`
+	Models              []analytics.BreakdownItem `json:"models"`
+	Projects            []analytics.BreakdownItem `json:"projects"`
+	Activity            activityResponse          `json:"activity"`
+	Diagnostics         usageDiagnostics          `json:"diagnostics"`
+	ProviderDiagnostics []usageDiagnostics        `json:"providerDiagnostics"`
 }
 
 type activityResponse struct {
@@ -121,12 +145,18 @@ type snapshotResponse struct {
 }
 
 type snapshotUsage struct {
-	TodayTokens    int64   `json:"todayTokens"`
-	SevenDayTokens int64   `json:"sevenDayTokens"`
-	AllTimeTokens  int64   `json:"allTimeTokens"`
-	TopModel       string  `json:"topModel"`
-	LastScanAt     *string `json:"lastScanAt"`
-	Stale          bool    `json:"stale"`
+	TodayTokens    int64                   `json:"todayTokens"`
+	SevenDayTokens int64                   `json:"sevenDayTokens"`
+	AllTimeTokens  int64                   `json:"allTimeTokens"`
+	TopModel       string                  `json:"topModel"`
+	LastScanAt     *string                 `json:"lastScanAt"`
+	Stale          bool                    `json:"stale"`
+	Providers      []snapshotProviderUsage `json:"providers"`
+}
+
+type snapshotProviderUsage struct {
+	Source string `json:"source"`
+	Tokens int64  `json:"tokens"`
 }
 
 func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
@@ -203,9 +233,9 @@ func (s *server) diagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	usage, err := s.loadUsageDiagnostics(r)
+	usage, usageProviders, err := s.loadAllUsageDiagnostics(r)
 	if err != nil {
-		writeAPIError(w, http.StatusServiceUnavailable, "provider.codex", "读取扫描状态", "请检查本地数据库后重试")
+		writeAPIError(w, http.StatusServiceUnavailable, "provider.local", "读取扫描状态", "请检查本地数据库后重试")
 		return
 	}
 
@@ -216,7 +246,7 @@ func (s *server) diagnostics(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "读取配额状态", "请检查本地数据库后重试")
 		return
 	}
-	writeJSON(w, diagnosticsResponse{Usage: usage, Quota: quotaState})
+	writeJSON(w, diagnosticsResponse{Usage: usage, UsageProviders: usageProviders, Quota: quotaState})
 }
 
 func (s *server) scan(w http.ResponseWriter, r *http.Request) {
@@ -226,22 +256,22 @@ func (s *server) scan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.scanner == nil {
-		writeAPIError(w, http.StatusServiceUnavailable, "provider.codex", "触发扫描", "扫描器尚未配置")
+		writeAPIError(w, http.StatusServiceUnavailable, "provider.local", "触发扫描", "扫描器尚未配置")
 		return
 	}
 	if !s.validWriteRequest(r) {
-		writeAPIError(w, http.StatusForbidden, "provider.codex", "触发扫描", "请从 Dora 本地页面重试")
+		writeAPIError(w, http.StatusForbidden, "provider.local", "触发扫描", "请从 Dora 本地页面重试")
 		return
 	}
 
 	forceFull, valid := parseBooleanQuery(r.URL.Query().Get("full"))
 	if !valid {
-		writeAPIError(w, http.StatusBadRequest, "provider.codex", "触发扫描", "full 只支持 true 或 false")
+		writeAPIError(w, http.StatusBadRequest, "provider.local", "触发扫描", "full 只支持 true 或 false")
 		return
 	}
 	report, err := s.scanner.Scan(r.Context(), forceFull)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "provider.codex", "扫描本地用量", "请检查 Codex 数据目录权限后重试")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "扫描本地用量", "请查看各 provider 诊断后重试")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -254,6 +284,7 @@ func (s *server) scan(w http.ResponseWriter, r *http.Request) {
 		EventsStored: report.EventsStored,
 		Warnings:     report.Warnings,
 		FinishedAt:   report.FinishedAt.Format(time.RFC3339Nano),
+		Providers:    scanProviderResponses(report.Providers),
 	})
 }
 
@@ -267,12 +298,17 @@ func (s *server) summary(w http.ResponseWriter, r *http.Request) {
 	}
 	totals, err := analytics.Summarize(events)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "汇总 token", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "汇总 token", "请重新扫描本地用量")
 		return
 	}
 	cost, err := pricing.Default.Estimate(events)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "估算费用", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "估算费用", "请重新扫描本地用量")
+		return
+	}
+	providers, err := providerUsageResponses(events)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "汇总 provider token", "请重新扫描本地用量")
 		return
 	}
 	writeNoStoreJSON(w, summaryResponse{
@@ -280,6 +316,7 @@ func (s *server) summary(w http.ResponseWriter, r *http.Request) {
 		StartUTC:    window.StartUTC.Format(time.RFC3339Nano),
 		EndUTC:      window.EndUTC.Format(time.RFC3339Nano),
 		Cost:        cost,
+		Providers:   providers,
 		TokenTotals: totals,
 	})
 }
@@ -293,7 +330,7 @@ func (s *server) timeline(w http.ResponseWriter, r *http.Request) {
 		granularity = "day"
 	}
 	if granularity != "day" {
-		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "生成趋势", "granularity 只支持 day")
+		writeAPIError(w, http.StatusBadRequest, "provider.local", "生成趋势", "granularity 只支持 day")
 		return
 	}
 	window, events, ok := s.usageWindow(w, r)
@@ -302,7 +339,7 @@ func (s *server) timeline(w http.ResponseWriter, r *http.Request) {
 	}
 	points, err := analytics.DailyTimeline(events, window)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成趋势", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成趋势", "请重新扫描本地用量")
 		return
 	}
 	if points == nil {
@@ -322,7 +359,7 @@ func (s *server) breakdown(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := analytics.Breakdown(events, dimension)
 	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "生成分布", "dimension 只支持 model 或 project")
+		writeAPIError(w, http.StatusBadRequest, "provider.local", "生成分布", "dimension 只支持 model、project、provider 或 provider_model")
 		return
 	}
 	if items == nil {
@@ -338,58 +375,62 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	window, err := analytics.NewTimeWindow(now, s.location, r.URL.Query().Get("range"))
 	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "解析时间范围", "range 只支持 1D、7D、30D 或 ALL")
+		writeAPIError(w, http.StatusBadRequest, "provider.local", "解析时间范围", "range 只支持 1D、7D、30D 或 ALL")
 		return
 	}
 	activityWindow, err := analytics.NewTimeWindow(now, s.location, "ALL")
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重试")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成仪表盘", "请重试")
 		return
 	}
-	activityEvents, err := s.store.UsageEventsInWindow(
+	activityEvents, err := s.store.AllUsageEventsInWindow(
 		r.Context(),
-		domain.CodexSource,
 		activityWindow.StartUTC,
 		activityWindow.EndUTC,
 	)
 	if err != nil {
-		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "读取 token", "请检查本地数据库")
+		writeAPIError(w, http.StatusServiceUnavailable, "provider.local", "读取 token", "请检查本地数据库")
 		return
 	}
 	events := eventsInWindow(activityEvents, window)
 	summary, err := analytics.Summarize(events)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成仪表盘", "请重新扫描本地用量")
 		return
 	}
 	cost, err := pricing.Default.Estimate(events)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成费用估算", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成费用估算", "请重新扫描本地用量")
 		return
 	}
 	timeline, err := analytics.DailyTimeline(events, window)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成仪表盘", "请重新扫描本地用量")
 		return
 	}
 	models, err := analytics.Breakdown(events, "model")
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成仪表盘", "请重新扫描本地用量")
 		return
 	}
 	projects, err := analytics.Breakdown(events, "project")
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成仪表盘", "请重新扫描本地用量")
+		return
+	}
+	providers, err := providerUsageResponses(events)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成 provider 分布", "请重新扫描本地用量")
 		return
 	}
 	activity, err := analytics.DailyTimeline(activityEvents, activityWindow)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成热力图", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成热力图", "请重新扫描本地用量")
 		return
 	}
-	diagnostics, err := s.loadUsageDiagnostics(r)
+	diagnostics, providerDiagnostics, err := s.loadAllUsageDiagnostics(r)
 	if err != nil {
-		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "生成仪表盘", "请检查本地数据库")
+		writeAPIError(w, http.StatusServiceUnavailable, "provider.local", "生成仪表盘", "请检查本地数据库")
 		return
 	}
 	if timeline == nil {
@@ -410,6 +451,7 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 			StartUTC:    window.StartUTC.Format(time.RFC3339Nano),
 			EndUTC:      window.EndUTC.Format(time.RFC3339Nano),
 			Cost:        cost,
+			Providers:   providers,
 			TokenTotals: summary,
 		},
 		Timeline: timeline,
@@ -420,7 +462,8 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 			EndDate:   activityWindow.EndUTC.In(activityWindow.Location).Format(time.DateOnly),
 			Days:      activity,
 		},
-		Diagnostics: diagnostics,
+		Diagnostics:         diagnostics,
+		ProviderDiagnostics: providerDiagnostics,
 	})
 }
 
@@ -431,52 +474,65 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	allWindow, err := analytics.NewTimeWindow(now, s.location, "ALL")
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请重试")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重试")
 		return
 	}
-	allEvents, err := s.store.UsageEventsInWindow(r.Context(), domain.CodexSource, allWindow.StartUTC, allWindow.EndUTC)
+	allEvents, err := s.store.AllUsageEventsInWindow(r.Context(), allWindow.StartUTC, allWindow.EndUTC)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请检查本地数据库")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请检查本地数据库")
 		return
 	}
 	todayWindow, err := analytics.NewTimeWindow(now, s.location, "1D")
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请重试")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重试")
 		return
 	}
 	sevenDayWindow, err := analytics.NewTimeWindow(now, s.location, "7D")
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请重试")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重试")
 		return
 	}
 	today, err := analytics.Summarize(eventsInWindow(allEvents, todayWindow))
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重新扫描本地用量")
 		return
 	}
 	sevenDays, err := analytics.Summarize(eventsInWindow(allEvents, sevenDayWindow))
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重新扫描本地用量")
 		return
 	}
 	allTotals, err := analytics.Summarize(allEvents)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重新扫描本地用量")
 		return
 	}
 	models, err := analytics.Breakdown(allEvents, "model")
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请重新扫描 Codex 用量")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重新扫描本地用量")
 		return
 	}
 	topModel := ""
 	if len(models) > 0 {
 		topModel = models[0].Name
 	}
-	providerState, err := s.store.UsageProviderState(r.Context(), domain.CodexSource)
+	providerStates := make(map[string]domain.UsageProviderState, 2)
+	for _, source := range []string{domain.CodexSource, domain.ClaudeCodeSource} {
+		state, err := s.store.UsageProviderState(r.Context(), source)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, source, "生成快照", "请检查本地数据库")
+			return
+		}
+		providerStates[source] = state
+	}
+	providerUsage, err := providerUsageResponses(allEvents)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请检查本地数据库")
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重新扫描本地用量")
 		return
+	}
+	snapshotProviders := make([]snapshotProviderUsage, 0, len(providerUsage))
+	for _, provider := range providerUsage {
+		snapshotProviders = append(snapshotProviders, snapshotProviderUsage{Source: provider.Source, Tokens: provider.TotalTokens})
 	}
 
 	response := snapshotResponse{
@@ -487,17 +543,40 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 			AllTimeTokens:  allTotals.TotalTokens,
 			TopModel:       topModel,
 			Stale:          true,
+			Providers:      snapshotProviders,
 		},
 		Quotas: []quotaItem{},
 		Errors: []string{},
 	}
-	if providerState.LastScanAt != nil {
-		value := providerState.LastScanAt.Format(time.RFC3339Nano)
-		response.Usage.LastScanAt = &value
-		response.Usage.Stale = now.Sub(*providerState.LastScanAt) > 10*time.Minute
+	var oldestActiveScan, latestAvailableScan *time.Time
+	for _, provider := range providerUsage {
+		state := providerStates[provider.Source]
+		if state.LastScanAt == nil {
+			continue
+		}
+		if latestAvailableScan == nil || state.LastScanAt.After(*latestAvailableScan) {
+			value := *state.LastScanAt
+			latestAvailableScan = &value
+		}
+		if provider.EventCount > 0 && (oldestActiveScan == nil || state.LastScanAt.Before(*oldestActiveScan)) {
+			value := *state.LastScanAt
+			oldestActiveScan = &value
+		}
 	}
-	if providerState.Status == "error" {
+	snapshotScan := oldestActiveScan
+	if snapshotScan == nil {
+		snapshotScan = latestAvailableScan
+	}
+	if snapshotScan != nil {
+		value := snapshotScan.Format(time.RFC3339Nano)
+		response.Usage.LastScanAt = &value
+		response.Usage.Stale = now.Sub(*snapshotScan) > 10*time.Minute
+	}
+	if providerStates[domain.CodexSource].Status == "error" {
 		response.Errors = append(response.Errors, "Codex 本地用量扫描失败")
+	}
+	if providerStates[domain.ClaudeCodeSource].Status == "error" {
+		response.Errors = append(response.Errors, "Claude Code 本地用量扫描失败")
 	}
 	if s.quotaService != nil {
 		quotaView, err := s.quotaService.Snapshot(r.Context())
@@ -516,12 +595,12 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 func (s *server) usageWindow(w http.ResponseWriter, r *http.Request) (analytics.TimeWindow, []domain.UsageEvent, bool) {
 	window, err := analytics.NewTimeWindow(s.now(), s.location, r.URL.Query().Get("range"))
 	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "解析时间范围", "range 只支持 1D、7D、30D 或 ALL")
+		writeAPIError(w, http.StatusBadRequest, "provider.local", "解析时间范围", "range 只支持 1D、7D、30D 或 ALL")
 		return analytics.TimeWindow{}, nil, false
 	}
-	events, err := s.store.UsageEventsInWindow(r.Context(), domain.CodexSource, window.StartUTC, window.EndUTC)
+	events, err := s.store.AllUsageEventsInWindow(r.Context(), window.StartUTC, window.EndUTC)
 	if err != nil {
-		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "读取 token", "请检查本地数据库")
+		writeAPIError(w, http.StatusServiceUnavailable, "provider.local", "读取 token", "请检查本地数据库")
 		return analytics.TimeWindow{}, nil, false
 	}
 	return window, events, true
@@ -537,38 +616,175 @@ func eventsInWindow(events []domain.UsageEvent, window analytics.TimeWindow) []d
 	return result
 }
 
-func (s *server) loadUsageDiagnostics(r *http.Request) (usageDiagnostics, error) {
-	state, err := s.store.UsageProviderState(r.Context(), domain.CodexSource)
+func (s *server) loadAllUsageDiagnostics(r *http.Request) (usageDiagnostics, []usageDiagnostics, error) {
+	providers := make([]usageDiagnostics, 0, 2)
+	for _, source := range []string{domain.CodexSource, domain.ClaudeCodeSource} {
+		diagnostics, err := s.loadUsageDiagnostics(r, source)
+		if err != nil {
+			return usageDiagnostics{}, nil, err
+		}
+		providers = append(providers, diagnostics)
+	}
+	return aggregateUsageDiagnostics(providers), providers, nil
+}
+
+func (s *server) loadUsageDiagnostics(r *http.Request, source string) (usageDiagnostics, error) {
+	state, err := s.store.UsageProviderState(r.Context(), source)
 	if err != nil {
 		return usageDiagnostics{}, err
 	}
+	parserVersion := state.ParserVersion
+	if parserVersion == 0 {
+		switch source {
+		case domain.CodexSource:
+			parserVersion = codex.ParserVersion
+		case domain.ClaudeCodeSource:
+			parserVersion = claudecode.ParserVersion
+		}
+	}
 	response := usageDiagnostics{
-		Source:        domain.CodexSource,
+		Source:        source,
 		Status:        state.Status,
 		LastRunMode:   state.LastRunMode,
 		FilesSeen:     state.FilesSeen,
 		EventsSeen:    state.EventsSeen,
 		StoredEvents:  state.StoredEvents,
-		ParserVersion: codex.ParserVersion,
+		ParserVersion: parserVersion,
+		ConfigFound:   state.ConfigFound,
+		SessionCount:  state.SessionCount,
 	}
 	if state.LastScanAt != nil {
 		value := state.LastScanAt.Format(time.RFC3339Nano)
 		response.LastScanAt = &value
 	}
+	label := providerLabel(source)
 	switch state.Status {
 	case "error":
-		response.Message = "Codex 本地用量扫描失败"
-		response.Advice = "请检查 Codex 数据目录权限，并运行 dora scan 重试"
+		response.Message = label + " 本地用量扫描失败"
+		response.Advice = "请检查本地数据目录权限，并运行 dora scan 重试"
+	case "not_found":
+		response.Message = "未发现 " + label + " 本地数据目录"
+		response.Advice = "产生本地会话后刷新；已有成功统计会继续保留"
 	case "not_scanned":
-		response.Message = "尚未扫描 Codex 本地用量"
+		response.Message = "尚未扫描 " + label + " 本地用量"
 		response.Advice = "启动 Dora 或运行 dora scan"
 	case "degraded":
-		response.Message = "Codex 用量已更新，但存在可忽略记录"
+		response.Message = label + " 用量已更新，但跳过了无法安全去重的记录"
 		response.Advice = "可运行 dora scan 查看扫描警告"
 	default:
-		response.Message = "Codex 本地用量已就绪"
+		response.Message = label + " 本地用量已就绪"
 	}
 	return response, nil
+}
+
+func aggregateUsageDiagnostics(providers []usageDiagnostics) usageDiagnostics {
+	result := usageDiagnostics{Source: "provider.local", Status: "not_scanned", Message: "本地用量尚未完整扫描"}
+	var latest *string
+	hasReady, hasDegraded, hasError, allNotFound := false, false, false, true
+	parserVersion := 0
+	for _, provider := range providers {
+		result.FilesSeen += provider.FilesSeen
+		result.SessionCount += provider.SessionCount
+		result.EventsSeen += provider.EventsSeen
+		result.StoredEvents += provider.StoredEvents
+		result.ConfigFound = result.ConfigFound || provider.ConfigFound
+		if provider.StoredEvents > 0 || provider.FilesSeen > 0 {
+			if parserVersion == 0 {
+				parserVersion = provider.ParserVersion
+			} else if parserVersion != provider.ParserVersion {
+				parserVersion = -1
+			}
+		}
+		if provider.LastScanAt != nil && (latest == nil || *provider.LastScanAt > *latest) {
+			value := *provider.LastScanAt
+			latest = &value
+		}
+		hasError = hasError || provider.Status == "error"
+		hasDegraded = hasDegraded || provider.Status == "degraded"
+		hasReady = hasReady || provider.Status == "ready"
+		allNotFound = allNotFound && provider.Status == "not_found"
+	}
+	result.LastScanAt = latest
+	if parserVersion > 0 {
+		result.ParserVersion = parserVersion
+	}
+	switch {
+	case hasError:
+		result.Status = "error"
+	case hasDegraded:
+		result.Status = "degraded"
+	case hasReady:
+		result.Status = "ready"
+	case allNotFound:
+		result.Status = "not_found"
+	}
+	switch result.Status {
+	case "error":
+		result.Message = "部分本地用量扫描失败"
+		result.Advice = "另一 provider 的最后成功数据仍可使用；请在下方查看具体状态"
+	case "degraded":
+		result.Message = "本地用量已更新，但存在跳过记录"
+		result.Advice = "请在下方查看具体 provider 状态"
+	case "not_scanned":
+		result.Message = "本地用量尚未完整扫描"
+		result.Advice = "启动 Dora 或运行 dora scan"
+	case "not_found":
+		result.Message = "尚未发现本地 Agent 数据"
+		result.Advice = "产生 Codex 或 Claude Code 本地会话后刷新"
+	default:
+		result.Message = "本地用量已就绪"
+	}
+	return result
+}
+
+func providerUsageResponses(events []domain.UsageEvent) ([]providerUsageResponse, error) {
+	result := make([]providerUsageResponse, 0, 2)
+	for _, source := range []string{domain.CodexSource, domain.ClaudeCodeSource} {
+		providerEvents := make([]domain.UsageEvent, 0)
+		for _, event := range events {
+			if event.Source == source {
+				providerEvents = append(providerEvents, event)
+			}
+		}
+		totals, err := analytics.Summarize(providerEvents)
+		if err != nil {
+			return nil, err
+		}
+		models, err := analytics.Breakdown(providerEvents, "model")
+		if err != nil {
+			return nil, err
+		}
+		if models == nil {
+			models = []analytics.BreakdownItem{}
+		}
+		result = append(result, providerUsageResponse{
+			Source: source, Label: providerLabel(source), TokenTotals: totals, Models: models,
+		})
+	}
+	return result, nil
+}
+
+func providerLabel(source string) string {
+	switch source {
+	case domain.CodexSource:
+		return "Codex"
+	case domain.ClaudeCodeSource:
+		return "Claude Code"
+	default:
+		return source
+	}
+}
+
+func scanProviderResponses(reports []scan.ProviderReport) []scanProviderResponse {
+	result := make([]scanProviderResponse, 0, len(reports))
+	for _, report := range reports {
+		result = append(result, scanProviderResponse{
+			Source: report.Source, Mode: report.Mode, FilesSeen: report.FilesSeen,
+			SessionCount: report.SessionCount, EventsSeen: report.EventsSeen,
+			EventsStored: report.EventsStored, Warnings: append([]string(nil), report.Warnings...),
+		})
+	}
+	return result
 }
 
 func requireGet(w http.ResponseWriter, r *http.Request) bool {

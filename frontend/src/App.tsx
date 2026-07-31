@@ -266,9 +266,9 @@ function Dashboard({
     <>
       <section className="page-heading">
         <div>
-          <p className="eyebrow">CODEX 用量</p>
+          <p className="eyebrow">本地 AI 编程用量</p>
           <h1>让每一次编码，<br />都清清楚楚。</h1>
-          <p className="lede">只在这台 Mac 上，安静地整理你的 Codex token 用量。</p>
+          <p className="lede">只在这台 Mac 上，安静地整理 Codex 与 Claude Code token 用量。</p>
         </div>
         <button className="refresh-button" type="button" disabled={refreshing} onClick={onRefresh}>
           <RefreshIcon spinning={refreshing} />
@@ -337,13 +337,14 @@ function DashboardContent({
         <section className="empty-state">
           <div className="empty-mark">0</div>
           <p className="eyebrow">暂无用量</p>
-          <h2>{diagnostics.filesSeen === 0 ? "还没有找到 Codex 会话" : "这个时间范围内暂无 token 记录"}</h2>
+          <h2>{diagnostics.filesSeen === 0 ? "还没有找到本地 Agent 会话" : "这个时间范围内暂无 token 记录"}</h2>
           <p>
             {diagnostics.filesSeen === 0
-              ? "先运行一次 Codex，再刷新用量。Dora 会扫描本地 sessions 与 archived_sessions 目录。"
-              : "可以切换到更长的时间范围，或创建一次新的 Codex 会话。"}
+              ? "先运行一次 Codex 或 Claude Code，再刷新用量。Dora 只读取本地会话来统计 token。"
+              : "可以切换到更长的时间范围，或创建一次新的本地 Agent 会话。"}
           </p>
         </section>
+        <ProviderOverview providers={summary.providers} diagnostics={data.providerDiagnostics} />
         <ActivityHeatmap {...data.activity} />
         <QuotaPanel
           state={quota}
@@ -363,7 +364,7 @@ function DashboardContent({
 
       <section className="summary-grid">
         <article className="hero-metric panel">
-          <p className="panel-label">Token 总量 · {summary.range}</p>
+          <p className="panel-label">Codex + Claude Code Token 总量 · {summary.range}</p>
           <strong>{formatTokenCompact(summary.totalTokens)}</strong>
           <span>{formatNumber(summary.totalTokens)} 个精确 token</span>
           <div className="hero-meta">
@@ -395,6 +396,8 @@ function DashboardContent({
         </article>
       </section>
 
+      <ProviderOverview providers={summary.providers} diagnostics={data.providerDiagnostics} />
+
       <CostPanel estimate={summary.cost} />
 
       <ActivityHeatmap {...data.activity} />
@@ -422,6 +425,52 @@ function DashboardContent({
         onRefresh={onQuotaRefresh}
       />
     </>
+  );
+}
+
+function ProviderOverview({
+  providers,
+  diagnostics,
+}: {
+  providers: DashboardData["summary"]["providers"];
+  diagnostics: DashboardData["providerDiagnostics"];
+}) {
+  return (
+    <section className="provider-grid" aria-label="Provider 用量">
+      {providers.map((provider) => {
+        const state = diagnostics.find((item) => item.source === provider.source);
+        const emptyClaude = provider.source === "provider.claude-code" &&
+          (state?.sessionCount === 0 || state?.status === "not_found");
+        return (
+          <article className="panel provider-card" key={provider.source}>
+            <div>
+              <p className="panel-label">{provider.label}</p>
+              <strong>{formatTokenCompact(provider.totalTokens)}</strong>
+              <span>{formatNumber(provider.eventCount)} 条 token 事件</span>
+            </div>
+            <div className="provider-details">
+              {emptyClaude && (
+                <p className="provider-empty">
+                  暂无 Claude Code 本地会话{provider.totalTokens > 0 ? "，当前显示上次成功统计" : ""}
+                </p>
+              )}
+              {provider.models.length > 0 ? (
+                <ul>
+                  {provider.models.slice(0, 3).map((model) => (
+                    <li key={model.name}>
+                      <span>{model.name}</span>
+                      <b>{formatTokenCompact(model.totalTokens)}</b>
+                    </li>
+                  ))}
+                </ul>
+              ) : !emptyClaude && (
+                <p className="provider-empty">暂无 {provider.label} token 记录</p>
+              )}
+            </div>
+          </article>
+        );
+      })}
+    </section>
   );
 }
 
@@ -728,6 +777,7 @@ function Diagnostics({
   onQuotaConsent,
 }: DiagnosticsProps) {
   const data = state.kind === "ready" ? state.value.diagnostics : null;
+  const providers = state.kind === "ready" ? state.value.providerDiagnostics : [];
   const quotaData = quota.kind === "ready" ? quota.value : null;
   const quotaConsent = settings.kind === "ready" && settings.value.codexQuotaConsent;
   return (
@@ -748,24 +798,36 @@ function Diagnostics({
             <DiagnosticMetric label="状态" value={humanStatus(data.status)} tone={data.status} />
             <DiagnosticMetric label="扫描文件" value={formatNumber(data.filesSeen)} />
             <DiagnosticMetric label="已存事件" value={formatNumber(data.storedEvents)} />
-            <DiagnosticMetric label="Parser 版本" value={`v${data.parserVersion}`} />
+            <DiagnosticMetric label="Parser 版本" value={data.parserVersion > 0 ? `v${data.parserVersion}` : "多版本"} />
           </section>
 
-          <section className="panel diagnostic-detail">
+          <section className="provider-diagnostic-grid">
+            {providers.map((provider) => (
+              <article className="panel diagnostic-detail" key={provider.source}>
+                <div>
+                  <p className="panel-label">{providerName(provider.source)} 数据源</p>
+                  <h2>{humanStatus(provider.status)}</h2>
+                </div>
+                <dl>
+                  <div><dt>发现配置</dt><dd>{provider.configFound ? "是" : "否"}</dd></div>
+                  <div><dt>本地会话</dt><dd>{formatNumber(provider.sessionCount)}</dd></div>
+                  <div><dt>扫描文件</dt><dd>{formatNumber(provider.filesSeen)}</dd></div>
+                  <div><dt>已存事件</dt><dd>{formatNumber(provider.storedEvents)}</dd></div>
+                  <div><dt>Parser 版本</dt><dd>v{provider.parserVersion}</dd></div>
+                  <div><dt>最近扫描</dt><dd>{formatDate(provider.lastScanAt)}</dd></div>
+                  <div><dt>扫描模式</dt><dd>{humanScanMode(provider.lastRunMode)}</dd></div>
+                </dl>
+                {provider.status !== "ready" && <p className="diagnostic-advice">{provider.message} · {provider.advice}</p>}
+              </article>
+            ))}
+          </section>
+
+          <section className="panel diagnostic-controls">
             <div>
-              <p className="panel-label">Codex 数据源</p>
-              <h2>自动发现本地数据</h2>
+              <p className="panel-label">统一扫描</p>
+              <h2>Codex 与 Claude Code</h2>
+              <p>Dora 初始化：{health.kind === "ready" ? formatDate(health.value.initializedAt) : "不可用"}</p>
             </div>
-            <dl>
-              <div><dt>扫描目录</dt><dd>sessions + archived_sessions</dd></div>
-              <div><dt>最近扫描</dt><dd>{formatDate(data.lastScanAt)}</dd></div>
-              <div><dt>扫描模式</dt><dd>{humanScanMode(data.lastRunMode)}</dd></div>
-              <div><dt>最近解析</dt><dd>{formatNumber(data.eventsSeen)} 条记录</dd></div>
-              <div>
-                <dt>Dora 初始化</dt>
-                <dd>{health.kind === "ready" ? formatDate(health.value.initializedAt) : "不可用"}</dd>
-              </div>
-            </dl>
             <div className="diagnostic-actions">
               <button type="button" disabled={refreshing !== null} onClick={() => onScan(false)}>
                 {refreshing === "incremental" ? "正在扫描…" : "扫描变化"}
@@ -780,7 +842,7 @@ function Diagnostics({
           <Notice
             tone="neutral"
             title="你的对话始终保持私密"
-            body="Dora 只保存 token 元数据与扫描 checkpoint，不会把 prompt、回复、工具参数或原始会话内容写入 SQLite。"
+            body="Dora 只保存聚合所需的 token 元数据与扫描 checkpoint，不保存 session、session ID、项目完整路径、prompt、回复、工具参数或原始会话内容。"
           />
         </>
       )}
@@ -873,6 +935,7 @@ function humanStatus(status: string) {
     degraded: "正常，有提示",
     error: "需要处理",
     not_scanned: "尚未扫描",
+    not_found: "未发现数据",
   };
   return labels[status] ?? status;
 }
@@ -915,8 +978,14 @@ function humanScanMode(mode: string) {
     full: "全量",
     incremental: "增量",
     planning: "规划中",
+    preserve: "保留上次结果",
+    mixed: "混合",
   };
   return mode ? labels[mode] ?? mode : "尚未扫描";
+}
+
+function providerName(source: string) {
+  return source === "provider.claude-code" ? "Claude Code" : source === "provider.codex" ? "Codex" : source;
 }
 
 function quotaWindowLabel(windowKey: QuotaItem["windowKey"]) {

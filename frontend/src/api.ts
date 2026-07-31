@@ -19,6 +19,22 @@ export type UsageSummary = {
   reportedTotalTokens: number;
   cacheHitRate: number;
   eventCount: number;
+  providers: ProviderUsage[];
+};
+
+export type ProviderUsage = {
+  source: string;
+  label: string;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningOutputTokens: number;
+  reportedTotalTokens: number;
+  cacheHitRate: number;
+  eventCount: number;
+  models: BreakdownItem[];
 };
 
 export type CostEstimate = {
@@ -65,6 +81,8 @@ export type UsageDiagnostics = {
   eventsSeen: number;
   storedEvents: number;
   parserVersion: number;
+  configFound: boolean;
+  sessionCount: number;
   message: string;
   advice: string;
 };
@@ -80,6 +98,7 @@ export type DashboardData = {
     days: TimelinePoint[];
   };
   diagnostics: UsageDiagnostics;
+  providerDiagnostics: UsageDiagnostics[];
 };
 
 export type ScanResult = {
@@ -89,6 +108,15 @@ export type ScanResult = {
   eventsStored: number;
   warnings: string[];
   finishedAt: string;
+  providers: Array<{
+    source: string;
+    mode: string;
+    filesSeen: number;
+    sessionCount: number;
+    eventsSeen: number;
+    eventsStored: number;
+    warnings: string[];
+  }>;
 };
 
 export type QuotaItem = {

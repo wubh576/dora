@@ -82,8 +82,8 @@ func newMenuItems() *menuItems {
 		topModel:  systray.AddMenuItem("模型：暂无数据", ""),
 	}
 	systray.AddSeparator()
-	items.fiveHour = systray.AddMenuItem("5 小时配额：暂无数据", "")
-	items.sevenDay = systray.AddMenuItem("7 日配额：暂无数据", "")
+	items.fiveHour = systray.AddMenuItem("Codex 5 小时配额：暂无数据", "")
+	items.sevenDay = systray.AddMenuItem("Codex 7 日配额：暂无数据", "")
 	systray.AddSeparator()
 	items.status = systray.AddMenuItem("状态：正在连接本地服务", "")
 	items.refresh = systray.AddMenuItem("刷新数据", "重新扫描 token 并刷新配额")

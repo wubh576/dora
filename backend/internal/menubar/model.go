@@ -28,8 +28,8 @@ func BuildView(state *State, now time.Time, refreshing bool, statusOverride stri
 		SevenDays:  "7 日：—",
 		AllTime:    "全部：—",
 		TopModel:   "模型：暂无数据",
-		FiveHour:   "5 小时配额：暂无数据",
-		SevenDay:   "7 日配额：暂无数据",
+		FiveHour:   "Codex 5 小时配额：暂无数据",
+		SevenDay:   "Codex 7 日配额：暂无数据",
 		Status:     "状态：正在连接本地服务",
 		Refreshing: refreshing,
 	}
@@ -41,8 +41,8 @@ func BuildView(state *State, now time.Time, refreshing bool, statusOverride stri
 		if state.Snapshot.Usage.TopModel != "" {
 			view.TopModel = "模型：" + state.Snapshot.Usage.TopModel
 		}
-		view.FiveHour = quotaRow("5 小时配额", "five_hour", state.Quota, now)
-		view.SevenDay = quotaRow("7 日配额", "seven_day", state.Quota, now)
+		view.FiveHour = quotaRow("Codex 5 小时配额", "five_hour", state.Quota, now)
+		view.SevenDay = quotaRow("Codex 7 日配额", "seven_day", state.Quota, now)
 		view.Status = snapshotStatus(*state, now)
 	}
 	if refreshing {

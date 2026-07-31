@@ -199,6 +199,27 @@ func TestBreakdownSortsByTotalThenName(t *testing.T) {
 	}
 }
 
+func TestBreakdownKeepsProvidersTraceableForSameModel(t *testing.T) {
+	events := []domain.UsageEvent{
+		{Source: domain.CodexSource, Model: "shared-model", TotalTokens: 10},
+		{Source: domain.ClaudeCodeSource, Model: "shared-model", TotalTokens: 20},
+	}
+	providers, err := Breakdown(events, "provider")
+	if err != nil {
+		t.Fatalf("Breakdown(provider) 失败: %v", err)
+	}
+	if len(providers) != 2 || providers[0].Name != domain.ClaudeCodeSource || providers[0].TotalTokens != 20 {
+		t.Fatalf("provider 分布错误: %+v", providers)
+	}
+	providerModels, err := Breakdown(events, "provider_model")
+	if err != nil {
+		t.Fatalf("Breakdown(provider_model) 失败: %v", err)
+	}
+	if len(providerModels) != 2 || providerModels[0].Name != domain.ClaudeCodeSource+":shared-model" {
+		t.Fatalf("同名模型未保留 provider: %+v", providerModels)
+	}
+}
+
 func TestRejectsUnsupportedRangeAndDimension(t *testing.T) {
 	if _, err := NewTimeWindow(time.Now(), time.UTC, "1Y"); err == nil {
 		t.Fatal("不支持的 range 未报错")

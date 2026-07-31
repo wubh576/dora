@@ -44,6 +44,36 @@ func TestUsageEventsInWindowUsesHalfOpenBoundary(t *testing.T) {
 	}
 }
 
+func TestAllUsageEventsInWindowCombinesProviders(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("Open() 失败: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	for index, source := range []string{domain.CodexSource, domain.ClaudeCodeSource} {
+		runID := source + "-run"
+		if err := store.BeginProviderUsageScan(ctx, source, runID, "full", now); err != nil {
+			t.Fatalf("BeginProviderUsageScan(%s) 失败: %v", source, err)
+		}
+		event := analyticsEvent(source, now.Add(time.Duration(index)*time.Minute))
+		event.Source = source
+		if err := store.CompleteProviderUsageScan(ctx, source, runID, now.Add(time.Hour), []domain.UsageEvent{event}, nil, 1, 1, ""); err != nil {
+			t.Fatalf("CompleteProviderUsageScan(%s) 失败: %v", source, err)
+		}
+	}
+
+	events, err := store.AllUsageEventsInWindow(ctx, now.Add(-time.Minute), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("AllUsageEventsInWindow() 失败: %v", err)
+	}
+	if len(events) != 2 || events[0].Source != domain.CodexSource || events[1].Source != domain.ClaudeCodeSource {
+		t.Fatalf("合并 provider 结果错误: %+v", events)
+	}
+}
+
 func TestReadConnectionSeesLatestCommittedGeneration(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))

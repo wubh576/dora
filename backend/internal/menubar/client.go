@@ -17,12 +17,18 @@ type Snapshot struct {
 }
 
 type SnapshotUsage struct {
-	TodayTokens    int64   `json:"todayTokens"`
-	SevenDayTokens int64   `json:"sevenDayTokens"`
-	AllTimeTokens  int64   `json:"allTimeTokens"`
-	TopModel       string  `json:"topModel"`
-	LastScanAt     *string `json:"lastScanAt"`
-	Stale          bool    `json:"stale"`
+	TodayTokens    int64                   `json:"todayTokens"`
+	SevenDayTokens int64                   `json:"sevenDayTokens"`
+	AllTimeTokens  int64                   `json:"allTimeTokens"`
+	TopModel       string                  `json:"topModel"`
+	LastScanAt     *string                 `json:"lastScanAt"`
+	Stale          bool                    `json:"stale"`
+	Providers      []SnapshotProviderUsage `json:"providers"`
+}
+
+type SnapshotProviderUsage struct {
+	Source string `json:"source"`
+	Tokens int64  `json:"tokens"`
 }
 
 type QuotaState struct {

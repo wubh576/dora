@@ -20,8 +20,9 @@
 | 12. 当前用户 LaunchAgent 生命周期 | 已完成 | `690e214` |
 | 13. 构建来源与启动环境信息 | 已完成 | `0fae6ff` |
 | 14. 后台失败日志真实原因 | 已完成 | `94a911c` |
-| 15. LaunchAgent 日志自动轮转 | 已完成 | 本次提交 |
-| 16. Claude Code 只读用量采集核心 | 已完成 | 本次提交 |
+| 15. LaunchAgent 日志自动轮转 | 已完成 | `10c9463` |
+| 16. Provider 隔离与 Claude Code 只读采集 | 已完成 | `7a88a17`、`e2c905f` |
+| 17. 多 Provider 统一展示 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -317,7 +318,7 @@
 - 冒烟期间菜单栏进程保持运行，独立 loopback health 返回 HTTP 200；结束后进程正常退出、端口释放，临时二进制、数据库和日志全部清理，未触碰真实用户数据或设置。
 - Code Review：独立 Reviewer 发现手动伪加 `--launchagent` 可误启轮转，以及随机临时文件在强制退出后可能累积；增加 service、安装路径和日志 inode 三重门禁并改用可恢复的固定 `.1.tmp` 后，复审确认无剩余 P0/P1/P2/P3。
 
-## 里程碑 16：Claude Code 只读用量采集核心
+## 里程碑 16：Provider 隔离与 Claude Code 只读采集
 
 已完成：
 
@@ -330,3 +331,23 @@
 
 - 脱敏 fixtures 覆盖 streaming zero/partial/final、fork、subagent、cache、原生 reasoning、Anthropic thinking carve、非 Anthropic 不 carve、模型切换、半行、append/replace、缺失目录、非法和溢出 token。
 - v3 SQLite 自动升级到 migration 4 后既有 Codex usage 和 quota 保持不变；新库明确不存在 `agent_sessions` 表。
+- 当前 Mac 真实只读扫描覆盖 9 个 Claude Code transcript、8 个主 session 和 68 条去重 usage；紧接着增量扫描解析 0 条新增，结果仍为 68 条。
+- Code Review：两个独立 Reviewer 分别检查 provider generation 和 Claude collector；已修复 run/provider 错配、原始 checkpoint 路径、配置消失误清空、缺失 message ID 的不稳定去重及错误路径泄漏，复审无剩余 P0/P1/P2/P3。
+
+## 里程碑 17：多 Provider 统一展示
+
+已完成：
+
+- summary、timeline、breakdown、dashboard 和 snapshot 默认合并 Codex 与 Claude Code，固定返回两个 provider 的独立 token、事件数和模型分布。
+- `provider` 与 `provider_model` breakdown 保留来源归属，同名模型不会丢失 provider 信息。
+- Web 概览显示合计和两个 provider 卡片；无 Claude Code 会话时明确显示空态。Diagnostics 分别展示配置发现、聚合 session 数、文件数、事件数、parser 版本和扫描状态，不暴露 session 或完整路径。
+- 菜单栏继续显示统一 snapshot，用量包含两个 provider；5 小时和 7 日订阅配额明确标记为 Codex。
+- 单个 provider 扫描失败只影响自己的诊断和错误提示，另一个 provider 的最后成功用量继续进入合计。
+
+验证记录：
+
+- Analytics、SQLite、HTTP API 和菜单栏测试覆盖 Codex-only、Codex + Claude Code 精确合计、同名模型来源、provider 诊断、snapshot 与 Codex quota 标签。
+- 脱敏 production 浏览器冒烟显示合计 182 tokens、Codex 125、Claude Code 57；两个 provider 使用同名模型时仍分别展示。Diagnostics 增量扫描后维持 2 条事件，浏览器控制台无 warning/error。
+- 当前 Mac 使用真实目录和临时 SQLite 只读扫描 62 个 Codex transcript 与 9 个 Claude Code transcript，分别保存 3794 与 68 条去重事件；health、summary、timeline、provider breakdown、provider-model breakdown、dashboard、snapshot、diagnostics 和内嵌页面全部成功。
+- `make verify`、`go vet ./...`、`go test -race ./...` 和 `git diff --check` 通过；前端 TypeScript、Vite production build 和嵌入式 Go 二进制构建通过。所有临时服务、端口、fixture 和 SQLite 均在验收后清理。
+- Code Review：独立 Reviewer 发现合并 snapshot 新鲜度可能被较新的 provider 掩盖、Claude 历史 generation 会遮住当前无会话空态，以及 Web/菜单栏 DTO 文档不准确；改为按参与合计的最旧扫描计算 stale、独立展示当前 Claude 空态并修正文档后复审通过。

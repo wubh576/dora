@@ -332,6 +332,76 @@ h2 {
   gap: 18px;
 }
 
+.provider-grid,
+.provider-diagnostic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.provider-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(0, 1.3fr);
+  gap: 28px;
+  padding: 24px 28px;
+}
+
+.provider-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 34px;
+  letter-spacing: -0.04em;
+}
+
+.provider-card > div > span,
+.provider-empty,
+.diagnostic-advice,
+.diagnostic-controls p {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.provider-card ul {
+  display: grid;
+  gap: 10px;
+  align-content: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.provider-details {
+  display: grid;
+  gap: 12px;
+  align-content: center;
+  min-width: 0;
+}
+
+.provider-card li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.provider-card li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-card li b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.provider-empty {
+  align-self: center;
+  margin: 0;
+}
+
 .hero-metric,
 .token-mix,
 .cost-panel,
@@ -1139,6 +1209,33 @@ h2 {
 
 .diagnostic-detail {
   margin-top: 18px;
+}
+
+.provider-diagnostic-grid .diagnostic-detail {
+  margin-top: 0;
+}
+
+.diagnostic-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 18px;
+  padding: 24px 30px;
+}
+
+.diagnostic-controls h2,
+.diagnostic-controls p {
+  margin-bottom: 0;
+}
+
+.diagnostic-controls .diagnostic-actions {
+  margin-top: 0;
+}
+
+.diagnostic-advice {
+  margin: 18px 0 0;
+  line-height: 1.6;
 }
 
 .diagnostic-detail dl {

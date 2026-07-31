@@ -435,10 +435,24 @@ func (s *Store) UsageEventsInWindow(ctx context.Context, source string, start, e
 	`, source, start.UTC().UnixMilli(), end.UTC().UnixMilli())
 }
 
+func (s *Store) AllUsageEventsInWindow(ctx context.Context, start, end time.Time) ([]domain.UsageEvent, error) {
+	return s.queryUsageEvents(ctx, `
+		SELECT
+			source, dedup_key, occurred_at_ms, model, project,
+			input_tokens, output_tokens, cached_input_tokens,
+			cache_creation_input_tokens, reasoning_output_tokens,
+			reported_total_tokens, total_tokens, rollout_key,
+			parent_rollout_key, replay_fingerprint, inherited_replay
+		FROM usage_events
+		WHERE source IN (?, ?) AND occurred_at_ms >= ? AND occurred_at_ms < ?
+		ORDER BY occurred_at_ms, dedup_key
+	`, domain.CodexSource, domain.ClaudeCodeSource, start.UTC().UnixMilli(), end.UTC().UnixMilli())
+}
+
 func (s *Store) queryUsageEvents(ctx context.Context, query string, arguments ...any) ([]domain.UsageEvent, error) {
 	rows, err := s.readDB.QueryContext(ctx, query, arguments...)
 	if err != nil {
-		return nil, fmt.Errorf("读取 Codex usage: %w", err)
+		return nil, fmt.Errorf("读取 usage: %w", err)
 	}
 	defer rows.Close()
 

@@ -1,6 +1,6 @@
 # Dora：个人 AI Coding 用量 Demo 开发指南
 
-> 状态：第一期与第二期 A 已完成，第二期 B 实施基线
+> 状态：第一期、第二期 A 与第二期 B 已完成
 > 目标平台：macOS，本地单用户
 > 范围：第一期 Codex 本地 Web 仪表盘；第二期 A macOS 菜单栏；第二期 B Claude Code 本地用量
 > 不在本文范围：多 Agent session 管理、团队协作、排行榜、云端同步
@@ -9,7 +9,7 @@
 
 这个 Demo 是一个完全本地运行的个人 AI Coding 用量仪表盘：
 
-- 第一期以 Codex 为唯一正式支持的 usage provider。
+- 第一期以 Codex 为唯一 usage provider；第二期 B 增加 Claude Code，并保持两者扫描与存储失败隔离。
 - 实际 token 用量与订阅配额同等重要，但两条链路相互独立。
 - 数据只存放在本机 SQLite，不需要 MySQL、PostgreSQL、Docker、登录系统或云服务。
 - Web 页面只监听 `127.0.0.1`，由同一个 Go 核心进程提供 API 和静态资源。
@@ -196,7 +196,7 @@ type QuotaProvider interface {
 - Provider 失败只能影响自己。
 - Quota 失败不能阻止 usage 扫描。
 - Usage 失败不能清空最后一次成功 quota。
-- 所有错误必须包含 provider、文件路径和当前操作。
+- 内部错误必须包含 provider 和当前操作；文件问题只保留脱敏后的必要原因，日志与 API 不记录 transcript 完整路径或 session ID。
 - Provider ID 使用明确值：`provider.codex`、`provider.claude-code`。
 
 ## 6. 统一领域模型
@@ -831,8 +831,10 @@ input / 1M × input price
 | GET | `/timeline?range=30D&granularity=day` | 趋势 |
 | GET | `/breakdown?range=30D&dimension=model` | 模型分布 |
 | GET | `/breakdown?range=30D&dimension=project` | 项目分布 |
+| GET | `/breakdown?range=30D&dimension=provider` | Provider 分布 |
+| GET | `/breakdown?range=30D&dimension=provider_model` | 保留 Provider 归属的模型分布 |
 | GET | `/quotas` | 最新 quota 与 stale 状态 |
-| GET | `/snapshot` | Web 和第二期菜单栏共用的紧凑快照 |
+| GET | `/snapshot` | 菜单栏使用的紧凑快照，与 Web dashboard 保持相同统计口径 |
 | GET | `/diagnostics` | 数据源、扫描状态、错误 |
 | POST | `/scan` | 手动触发扫描 |
 | POST | `/quota/refresh` | 手动刷新 quota |
@@ -844,7 +846,7 @@ input / 1M × input price
 - 前后端同源，不开放 CORS。
 - 写接口验证 `Origin`。
 - 启动时生成随机 control token，写接口要求 header。
-- API 不返回 `source_files.path`、access token 或原始错误 body。
+- API 不返回 session、session ID、完整项目路径、`source_files.path`、access token 或原始错误 body。
 - JSON 错误包含 provider、操作和可行动建议。
 
 ## 16. Web 仪表盘
@@ -868,15 +870,14 @@ cache read / (input + cache read + cache creation)
 - GitHub 风格的 53 周 Token 热力图，明确展示统计起始日；热力图通过统一 API 获取完整活动数据，不跟随当前汇总范围截断。
 - 模型分布。
 - 项目分布。
+- Codex 与 Claude Code 各自的 token 总量、事件数和主要模型。
 - 可选费用。
 - Codex 5h/7d quota 卡片。
 
 #### Diagnostics / Settings
 
-- Codex home。
-- 最近扫描时间。
-- 扫描文件数、事件数。
-- parser version。
+- Codex 与 Claude Code 各自的配置发现、聚合 session 数、最近扫描时间。
+- 各自的扫描文件数、事件数和 parser version。
 - quota consent。
 - quota 最后成功时间。
 - 错误与修复建议。
@@ -884,15 +885,16 @@ cache read / (input + cache read + cache creation)
 
 ### 16.2 空态与错误态
 
-- 没有 Codex 目录：展示安装/运行 Codex 的提示。
-- 有目录但没有 token event：展示扫描路径和文件数。
+- 两个 provider 都没有目录：提示先运行 Codex 或 Claude Code。
+- 只有 Claude Code 没有本地会话：明确展示“暂无 Claude Code 本地会话”，不影响 Codex 数据。
+- 有目录但没有 token event：展示扫描文件数和 provider 诊断，不展示完整路径。
 - quota 未启用：usage 正常显示，quota 卡片显示未启用。
 - quota 请求失败：显示最后成功值和 stale badge。
 - parser 部分失败：显示旧数据，不显示虚假的全零。
 
 ### 16.3 Snapshot DTO
 
-Web 和菜单栏共用：
+菜单栏使用以下紧凑 DTO；Web 使用 `/dashboard`，两者复用同一 analytics 统计口径：
 
 ```json
 {
@@ -903,7 +905,11 @@ Web 和菜单栏共用：
     "allTimeTokens": 9876543,
     "topModel": "gpt-5.6-sol",
     "lastScanAt": "2026-07-30T11:59:20Z",
-    "stale": false
+    "stale": false,
+    "providers": [
+      {"source": "provider.codex", "tokens": 7000000},
+      {"source": "provider.claude-code", "tokens": 2876543}
+    ]
   },
   "quotas": [
     {
@@ -1025,7 +1031,7 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 
 - SQLite 仍然只有 Dora runtime 一个写入者。
 - 菜单栏不复制 analytics SQL。
-- Web 和菜单栏使用同一个 snapshot DTO。
+- Web 使用 dashboard DTO，菜单栏使用 compact snapshot DTO；两者调用同一 analytics 层并保持统计口径一致。
 - Provider 独立失败。
 
 ## 20. macOS 菜单栏
@@ -1332,11 +1338,11 @@ DORA_CLAUDE_OAUTH_TOKEN
 ### 24.4 第二期 Definition of Done
 
 - macOS 登录后 Core 与菜单栏可自动启动。
-- 菜单栏展示今日 token 和 Codex/Claude quota。
+- 菜单栏展示 Codex + Claude Code 合并后的今日 token，并明确标注 Codex quota。
 - Claude Code 历史 token 可在 Web 中查询。
 - Codex 与 Claude 使用统一五类 token DTO。
 - Claude fork 和 streaming 不重复。
-- Claude quota 不读取 credential。
+- Claude Code quota 不在当前范围；现有 quota 始终属于 Codex。
 - 任一 provider 失败不影响另一 provider。
 - Web 与菜单栏的 snapshot 数值一致。
 
@@ -1408,16 +1414,14 @@ LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，�
 5. 实现 Claude main/subagent parser。
 6. 实现 stable ID、fork、streaming dedup。
 7. 实现 native reasoning 与 thinking carve。
-8. 实现 Claude statusline inbox。
-9. 实现 hook install/status/uninstall。
-10. 在 Web 和菜单栏接入 Claude。
-11. 完成第二期验收测试。
+8. 在 Web 和菜单栏接入 Claude，并保留 provider 归属。
+9. 完成第二期验收测试。
 
 ## 27. 最终边界
 
 本文只交付以下两期：
 
 - 第一期：本地 Web 仪表盘 + SQLite + Codex usage + Codex quota。
-- 第二期：macOS 菜单栏 + Claude Code usage + Claude Code quota。
+- 第二期：macOS 菜单栏 + Claude Code usage；订阅 quota 仍只支持 Codex。
 
 不同 Agent 之间的 session 浏览、恢复、迁移、启动和上下文管理不在本文设计或验收范围内。

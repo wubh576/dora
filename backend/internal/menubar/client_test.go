@@ -12,7 +12,7 @@ func TestClientLoadsSnapshotAndQuotaFromLoopbackAPI(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/v1/snapshot":
-			_, _ = w.Write([]byte(`{"generatedAt":"2026-07-31T08:00:00Z","usage":{"todayTokens":123,"sevenDayTokens":456,"allTimeTokens":789,"topModel":"gpt-5.6-sol","stale":false},"quotas":[],"errors":[]}`))
+			_, _ = w.Write([]byte(`{"generatedAt":"2026-07-31T08:00:00Z","usage":{"todayTokens":123,"sevenDayTokens":456,"allTimeTokens":789,"topModel":"gpt-5.6-sol","stale":false,"providers":[{"source":"provider.codex","tokens":500},{"source":"provider.claude-code","tokens":289}]},"quotas":[],"errors":[]}`))
 		case "/api/v1/quotas":
 			_, _ = w.Write([]byte(`{"enabled":true,"status":"ready","items":[{"windowKey":"five_hour","remainingPercent":72,"sourceState":"confirmed"}]}`))
 		default:
@@ -24,7 +24,9 @@ func TestClientLoadsSnapshotAndQuotaFromLoopbackAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() 失败: %v", err)
 	}
-	if state.Snapshot.Usage.TodayTokens != 123 || state.Snapshot.Usage.TopModel != "gpt-5.6-sol" || !state.Quota.Enabled || len(state.Quota.Items) != 1 {
+	if state.Snapshot.Usage.TodayTokens != 123 || state.Snapshot.Usage.TopModel != "gpt-5.6-sol" ||
+		len(state.Snapshot.Usage.Providers) != 2 || state.Snapshot.Usage.Providers[1].Tokens != 289 ||
+		!state.Quota.Enabled || len(state.Quota.Items) != 1 {
 		t.Fatalf("本地 API 状态错误: %+v", state)
 	}
 }

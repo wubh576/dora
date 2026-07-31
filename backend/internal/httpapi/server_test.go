@@ -19,6 +19,7 @@ import (
 	"github.com/wubh576/dora/backend/internal/analytics"
 	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/domain"
+	"github.com/wubh576/dora/backend/internal/provider/claudecode"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
 	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
@@ -291,6 +292,118 @@ func TestUsageAnalyticsEndpointsShareTokenWindow(t *testing.T) {
 	}
 	if len(breakdown.Items) != 2 || breakdown.Items[0].Name != "gpt-a" || breakdown.Items[0].TotalTokens != 120 {
 		t.Fatalf("breakdown 错误: %+v", breakdown)
+	}
+}
+
+func TestMultiProviderAPICombinesTotalsAndKeepsSourcesTraceable(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("初始化测试数据库失败: %v", err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	seedAnalyticsUsage(t, store, now)
+	seedClaudeUsage(t, store, now)
+	handler := NewHandler(store, Options{Location: time.UTC, Now: func() time.Time { return now }})
+
+	dashboardRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(dashboardRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/dashboard?range=7D", nil))
+	if dashboardRecorder.Code != http.StatusOK {
+		t.Fatalf("dashboard 状态码 = %d；响应: %s", dashboardRecorder.Code, dashboardRecorder.Body.String())
+	}
+	var dashboard dashboardResponse
+	if err := json.NewDecoder(dashboardRecorder.Body).Decode(&dashboard); err != nil {
+		t.Fatalf("解析 dashboard 失败: %v", err)
+	}
+	if dashboard.Summary.TotalTokens != 212 || dashboard.Summary.EventCount != 3 || len(dashboard.Summary.Providers) != 2 {
+		t.Fatalf("多 provider 汇总错误: %+v", dashboard)
+	}
+	if dashboard.Summary.Providers[0].Source != domain.CodexSource || dashboard.Summary.Providers[0].TotalTokens != 162 ||
+		dashboard.Summary.Providers[1].Source != domain.ClaudeCodeSource || dashboard.Summary.Providers[1].TotalTokens != 50 {
+		t.Fatalf("provider 用量错误: %+v", dashboard.Summary.Providers)
+	}
+	if len(dashboard.ProviderDiagnostics) != 2 || dashboard.ProviderDiagnostics[1].SessionCount != 1 ||
+		dashboard.ProviderDiagnostics[1].ParserVersion != claudecode.ParserVersion {
+		t.Fatalf("provider 诊断错误: %+v", dashboard.ProviderDiagnostics)
+	}
+	if strings.Contains(dashboardRecorder.Body.String(), "sessionId") || strings.Contains(dashboardRecorder.Body.String(), "full/path") {
+		t.Fatalf("dashboard 暴露了 session 或完整路径: %s", dashboardRecorder.Body.String())
+	}
+
+	for _, test := range []struct {
+		dimension string
+		wantItems int
+	}{{"provider", 2}, {"provider_model", 3}} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/breakdown?range=7D&dimension="+test.dimension, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s breakdown 状态码 = %d；响应: %s", test.dimension, recorder.Code, recorder.Body.String())
+		}
+		var breakdown breakdownResponse
+		if err := json.NewDecoder(recorder.Body).Decode(&breakdown); err != nil {
+			t.Fatalf("解析 %s breakdown 失败: %v", test.dimension, err)
+		}
+		if len(breakdown.Items) != test.wantItems {
+			t.Fatalf("%s breakdown 未保留 provider 归属: %+v", test.dimension, breakdown.Items)
+		}
+	}
+
+	snapshotRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(snapshotRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/snapshot", nil))
+	var snapshot snapshotResponse
+	if err := json.NewDecoder(snapshotRecorder.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("解析 snapshot 失败: %v", err)
+	}
+	if snapshot.Usage.TodayTokens != 170 || snapshot.Usage.SevenDayTokens != 212 ||
+		snapshot.Usage.AllTimeTokens != 212 || len(snapshot.Usage.Providers) != 2 {
+		t.Fatalf("多 provider snapshot 错误: %+v", snapshot)
+	}
+
+	if err := store.BeginProviderUsageScan(ctx, domain.ClaudeCodeSource, "claude-failed-run", "incremental", now); err != nil {
+		t.Fatalf("创建 Claude 失败扫描: %v", err)
+	}
+	if err := store.FailProviderUsageScan(ctx, domain.ClaudeCodeSource, "claude-failed-run", now.Add(time.Second), 1, 0, errors.New("fixture failure")); err != nil {
+		t.Fatalf("记录 Claude 失败扫描: %v", err)
+	}
+	failureRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(failureRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/dashboard?range=7D", nil))
+	var failureDashboard dashboardResponse
+	if err := json.NewDecoder(failureRecorder.Body).Decode(&failureDashboard); err != nil {
+		t.Fatalf("解析 provider 失败后的 dashboard: %v", err)
+	}
+	if failureDashboard.Summary.TotalTokens != 212 || failureDashboard.ProviderDiagnostics[0].Status != "ready" ||
+		failureDashboard.ProviderDiagnostics[1].Status != "error" {
+		t.Fatalf("单 provider 失败破坏了合计或另一 provider: %+v", failureDashboard)
+	}
+}
+
+func TestSnapshotUsesOldestActiveProviderScanForFreshness(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("初始化测试数据库失败: %v", err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	seedAnalyticsUsage(t, store, now)
+	claudeReference := now.Add(-11 * time.Minute)
+	seedClaudeUsage(t, store, claudeReference)
+
+	recorder := httptest.NewRecorder()
+	NewHandler(store, Options{Location: time.UTC, Now: func() time.Time { return now }}).
+		ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/snapshot", nil))
+	var snapshot snapshotResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("解析 snapshot 失败: %v", err)
+	}
+	wantLastScan := claudeReference.Add(-30 * time.Second)
+	if !snapshot.Usage.Stale || snapshot.Usage.LastScanAt == nil {
+		t.Fatalf("旧 provider 未使合并 snapshot 过期: %+v", snapshot.Usage)
+	}
+	lastScan, err := time.Parse(time.RFC3339Nano, *snapshot.Usage.LastScanAt)
+	if err != nil || !lastScan.Equal(wantLastScan) {
+		t.Fatalf("合并 lastScanAt = %v, %v，期望 %v", lastScan, err, wantLastScan)
 	}
 }
 
@@ -807,5 +920,31 @@ func seedAnalyticsUsage(t *testing.T, store *dorasqlite.Store, now time.Time) {
 		"",
 	); err != nil {
 		t.Fatalf("保存 analytics usage 失败: %v", err)
+	}
+}
+
+func seedClaudeUsage(t *testing.T, store *dorasqlite.Store, now time.Time) {
+	t.Helper()
+	const runID = "claude-analytics-run"
+	finishedAt := now.Add(-30 * time.Second)
+	if err := store.BeginProviderUsageScan(context.Background(), domain.ClaudeCodeSource, runID, "full", finishedAt.Add(-time.Second)); err != nil {
+		t.Fatalf("创建 Claude analytics scan 失败: %v", err)
+	}
+	events := []domain.UsageEvent{{
+		Source:              domain.ClaudeCodeSource,
+		DedupKey:            "claude-today",
+		OccurredAt:          now.Add(-30 * time.Minute),
+		Model:               "gpt-a",
+		Project:             "dora",
+		InputTokens:         30,
+		OutputTokens:        20,
+		ReportedTotalTokens: 50,
+		TotalTokens:         50,
+	}}
+	if err := store.CompleteProviderUsageScanWithMetrics(
+		context.Background(), domain.ClaudeCodeSource, runID, finishedAt, events, nil, 1, 1, "",
+		domain.UsageScanMetrics{Status: "ready", ConfigFound: true, SessionCount: 1, ParserVersion: claudecode.ParserVersion},
+	); err != nil {
+		t.Fatalf("保存 Claude analytics usage 失败: %v", err)
 	}
 }

@@ -62,6 +62,13 @@ func TestQuotaRowsCoverNormalStaleDisabledUnauthorizedAndError(t *testing.T) {
 	}
 }
 
+func TestBuildViewLabelsQuotaAsCodex(t *testing.T) {
+	view := BuildView(&State{}, time.Now(), false, "")
+	if !strings.HasPrefix(view.FiveHour, "Codex 5 小时配额：") || !strings.HasPrefix(view.SevenDay, "Codex 7 日配额：") {
+		t.Fatalf("菜单配额未标明 Codex: %+v", view)
+	}
+}
+
 func TestBuildViewMarksRefreshInProgress(t *testing.T) {
 	view := BuildView(nil, time.Now(), true, "")
 	if !view.Refreshing || view.Status != "状态：正在刷新数据…" {

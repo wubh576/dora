@@ -177,14 +177,18 @@ func DailyTimeline(events []domain.UsageEvent, window TimeWindow) ([]TimelinePoi
 }
 
 func Breakdown(events []domain.UsageEvent, dimension string) ([]BreakdownItem, error) {
-	if dimension != "model" && dimension != "project" {
-		return nil, errors.New("dimension 只支持 model 或 project")
+	if dimension != "model" && dimension != "project" && dimension != "provider" && dimension != "provider_model" {
+		return nil, errors.New("dimension 只支持 model、project、provider 或 provider_model")
 	}
 	items := make(map[string]*BreakdownItem)
 	for _, event := range events {
 		name := event.Model
 		if dimension == "project" {
 			name = event.Project
+		} else if dimension == "provider" {
+			name = event.Source
+		} else if dimension == "provider_model" {
+			name = event.Source + ":" + event.Model
 		}
 		if name == "" {
 			name = "unknown"

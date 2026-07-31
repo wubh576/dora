@@ -34,7 +34,7 @@ make dev
 open http://127.0.0.1:5173
 ```
 
-页面会通过 Vite 的同源代理调用真实后端 API。“概览”展示本机真实 Codex token 总量、五类非重叠 token、API 等价美元估算、Cache 命中率、每日趋势、模型分布、项目分布和 53 周 Token 热力图；“诊断”展示扫描状态、文件数、存储事件数、parser 版本和初始化时间。
+页面会通过 Vite 的同源代理调用真实后端 API。“概览”展示本机真实 Codex + Claude Code token 总量、两个 provider 各自的 token 与模型、五类非重叠 token、API 等价美元估算、Cache 命中率、每日趋势、模型分布、项目分布和 53 周 Token 热力图；“诊断”分别展示两个 provider 的配置发现、会话计数、扫描文件、存储事件和 parser 版本。
 
 概览支持 `1D`、`7D`、`30D` 和 `ALL`。Dora 的用量统计统一始于 `2026-07-29`，所有范围按 macOS 本地时区的日历日计算；汇总、趋势、分布和热力图来自同一份 SQLite 数据快照。所选范围可以改变汇总与趋势，热力图始终保留从统计起始日至今的完整足迹。
 
@@ -142,7 +142,7 @@ LaunchAgent 的日志位于：
 ~/Library/Logs/Dora/dora.stderr.log
 ```
 
-后台 Codex 用量扫描和配额刷新失败时，日志会在单行内记录操作、底层错误原因以及重试建议或影响范围。错误不会包含 Authorization Header、OAuth token、control token、Cookie 或认证文件内容；Dora 主动退出产生的 context cancellation 不会记作后台失败。
+后台 provider 用量扫描和 Codex 配额刷新失败时，日志会在单行内记录操作、脱敏后的错误原因以及重试建议或影响范围。错误不会包含 transcript 完整路径、session ID、Authorization Header、OAuth token、control token、Cookie 或认证文件内容；Dora 主动退出产生的 context cancellation 不会记作后台失败。
 
 LaunchAgent 启动时检查一次日志大小，之后每 10 分钟检查一次。`dora.stdout.log` 和 `dora.stderr.log` 分别以 `200 MiB（200 * 1024 * 1024 bytes）` 为活动文件阈值，不是两个文件合计 200 MiB。达到阈值后，Dora 将当前内容保存到同名 `.1` 文件并清空原活动文件；下一次轮转覆盖旧 `.1`，不会生成 `.2` 或无限历史。备份后采用 truncate 原文件，因此 launchd 已打开的文件描述符会继续写入原活动路径。
 
@@ -187,7 +187,7 @@ GET http://127.0.0.1:8080/api/v1/diagnostics
 
 页面使用的手动扫描接口为 `POST /api/v1/scan`。该写接口同时校验本次后端启动生成的 control token 和本地页面 `Origin`。
 
-Dora 只保存 token 统计元数据、脱敏项目名和扫描 checkpoint，不保存 prompt、回复正文、工具参数或 JSONL 原始行。Codex 原始文件和 Dora SQLite 数据库都不会提交到 Git。
+Dora 只保存 token 统计元数据、脱敏项目名和扫描 checkpoint，不保存 session、session ID、父子关系、完整项目路径、prompt、回复正文、工具参数或 JSONL 原始行。Codex 原始文件和 Dora SQLite 数据库都不会提交到 Git。
 
 ## Claude Code 本地用量扫描
 
@@ -254,11 +254,13 @@ GET /api/v1/summary?range=7D
 GET /api/v1/timeline?range=30D&granularity=day
 GET /api/v1/breakdown?range=30D&dimension=model
 GET /api/v1/breakdown?range=30D&dimension=project
+GET /api/v1/breakdown?range=30D&dimension=provider
+GET /api/v1/breakdown?range=30D&dimension=provider_model
 GET /api/v1/dashboard?range=7D
 GET /api/v1/snapshot
 ```
 
-`/api/v1/dashboard` 是 Web 页面使用的统一快照，保证标题总量、每日趋势和两个分布复用同一个时间窗口。`/api/v1/snapshot` 提供今日、7 日、全部 token、最高用量模型和扫描新鲜度，供后续本地客户端复用。
+这些 API 的总量默认合并 Codex 与 Claude Code；`providers` 和 `provider_model` 保留来源归属，即使两个 provider 报告同名模型也能区分。`/api/v1/dashboard` 是 Web 页面使用的统一快照，保证标题总量、每日趋势和分布复用同一个时间窗口。`/api/v1/snapshot` 提供合并后的今日、7 日、全部 token、最高用量模型、provider 总量和扫描新鲜度，供菜单栏复用；其中订阅配额仍明确只属于 Codex。
 
 定价更新流程：
 
