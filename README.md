@@ -91,6 +91,32 @@ GET http://127.0.0.1:8080/api/v1/diagnostics
 
 Dora 只保存 token 统计元数据、脱敏项目名和扫描 checkpoint，不保存 prompt、回复正文、工具参数或 JSONL 原始行。Codex 原始文件和 Dora SQLite 数据库都不会提交到 Git。
 
+## Codex 订阅配额
+
+配额读取默认关闭。在页面进入 `Diagnostics`，明确开启 `Allow Dora to read quota` 后，Dora 才会读取本地 Codex OAuth 登录并访问 ChatGPT 官方配额接口。页面会展示 5 小时和 7 日窗口的已用比例、剩余比例、重置时间、stale 状态和脱敏账号标签。
+
+安全边界：
+
+- 只接受 `auth.json` 中的 ChatGPT OAuth subscription；仅有 API key 时显示不支持。
+- access token 只在单次请求的函数局部内存中使用，不写入 SQLite、`settings.json`、日志或 API。
+- 只向代码中固定的 `chatgpt.com` 配额地址发送 OAuth header，不发送 prompt、token usage 或本地文件信息。
+- 网络或登录失败保留最后一次成功配额，超过 10 分钟标记 stale；本地 token 统计不受影响。
+
+开启页面授权后，也可以从命令行手动刷新：
+
+```bash
+make quota
+```
+
+配额与设置 API：
+
+```text
+GET /api/v1/quotas
+POST /api/v1/quota/refresh
+GET /api/v1/settings
+PUT /api/v1/settings
+```
+
 ## Token 统计 API
 
 ```text

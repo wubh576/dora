@@ -1,19 +1,25 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
+	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
+	"github.com/wubh576/dora/backend/internal/settings"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
 
@@ -353,6 +359,299 @@ func TestUsageEndpointsRejectInvalidQueries(t *testing.T) {
 			t.Fatalf("%s 状态码 = %d，期望 400", path, response.Code)
 		}
 	}
+}
+
+func TestQuotaConsentRefreshAndReadFlow(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("初始化测试数据库失败: %v", err)
+	}
+	defer store.Close()
+	settingsStore := settings.New(filepath.Join(t.TempDir(), "settings.json"))
+	provider := &httpQuotaProvider{}
+	service := quota.NewService(provider, store, settingsStore)
+	handler := NewHandler(store, Options{
+		ControlToken:   "test-token",
+		AllowedOrigins: []string{"http://127.0.0.1:5173"},
+		QuotaService:   service,
+		Settings:       settingsStore,
+	})
+
+	settingsRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(settingsRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/settings", nil))
+	var initialSettings settingsResponse
+	if err := json.NewDecoder(settingsRecorder.Body).Decode(&initialSettings); err != nil {
+		t.Fatalf("解析 settings 失败: %v", err)
+	}
+	if initialSettings.CodexQuotaConsent || provider.callCount() != 0 {
+		t.Fatalf("默认设置不安全: settings=%+v calls=%d", initialSettings, provider.callCount())
+	}
+
+	quotaRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(quotaRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/quotas", nil))
+	var initialQuota quotaResponse
+	if err := json.NewDecoder(quotaRecorder.Body).Decode(&initialQuota); err != nil {
+		t.Fatalf("解析初始 quota 失败: %v", err)
+	}
+	if initialQuota.Enabled || initialQuota.Items == nil || provider.callCount() != 0 {
+		t.Fatalf("GET quotas 绕过 consent: %+v calls=%d", initialQuota, provider.callCount())
+	}
+
+	forbidden := httptest.NewRecorder()
+	handler.ServeHTTP(
+		forbidden,
+		httptest.NewRequest(http.MethodPut, "/api/v1/settings", strings.NewReader(`{"codexQuotaConsent":true}`)),
+	)
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("无保护设置写入状态码 = %d，期望 403", forbidden.Code)
+	}
+	invalid := httptest.NewRequest(http.MethodPut, "/api/v1/settings", strings.NewReader(`{}`))
+	invalid.Header.Set("Origin", "http://127.0.0.1:5173")
+	invalid.Header.Set("X-Dora-Control-Token", "test-token")
+	invalidRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(invalidRecorder, invalid)
+	if invalidRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("缺失 consent 状态码 = %d，期望 400", invalidRecorder.Code)
+	}
+
+	enable := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/settings",
+		strings.NewReader(`{"codexQuotaConsent":true}`),
+	)
+	enable.Header.Set("Origin", "http://127.0.0.1:5173")
+	enable.Header.Set("X-Dora-Control-Token", "test-token")
+	enableRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(enableRecorder, enable)
+	if enableRecorder.Code != http.StatusOK {
+		t.Fatalf("启用 quota 状态码 = %d；响应: %s", enableRecorder.Code, enableRecorder.Body.String())
+	}
+
+	refresh := httptest.NewRequest(http.MethodPost, "/api/v1/quota/refresh", nil)
+	refresh.Header.Set("Origin", "http://127.0.0.1:5173")
+	refresh.Header.Set("X-Dora-Control-Token", "test-token")
+	refreshRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(refreshRecorder, refresh)
+	if refreshRecorder.Code != http.StatusOK {
+		t.Fatalf("刷新 quota 状态码 = %d；响应: %s", refreshRecorder.Code, refreshRecorder.Body.String())
+	}
+	var refreshed quotaResponse
+	responseBody := append([]byte(nil), refreshRecorder.Body.Bytes()...)
+	if err := json.Unmarshal(responseBody, &refreshed); err != nil {
+		t.Fatalf("解析刷新 quota 失败: %v", err)
+	}
+	if !refreshed.Enabled || refreshed.Status != "ready" || len(refreshed.Items) != 2 {
+		t.Fatalf("刷新 quota 响应错误: %+v", refreshed)
+	}
+	body := string(responseBody)
+	if strings.Contains(body, "fixture-access") || strings.Contains(body, "fixture-account") {
+		t.Fatalf("quota API 泄漏凭证: %s", body)
+	}
+
+	snapshotRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(snapshotRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/snapshot", nil))
+	var snapshot snapshotResponse
+	if err := json.NewDecoder(snapshotRecorder.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("解析 quota snapshot 失败: %v", err)
+	}
+	if len(snapshot.Quotas) != 2 || provider.callCount() != 1 {
+		t.Fatalf("snapshot quota 错误: %+v calls=%d", snapshot.Quotas, provider.callCount())
+	}
+
+	disable := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/settings",
+		strings.NewReader(`{"codexQuotaConsent":false}`),
+	)
+	disable.Header.Set("Origin", "http://127.0.0.1:5173")
+	disable.Header.Set("X-Dora-Control-Token", "test-token")
+	disableRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(disableRecorder, disable)
+	if disableRecorder.Code != http.StatusOK {
+		t.Fatalf("关闭 quota 状态码 = %d", disableRecorder.Code)
+	}
+	afterDisableRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(afterDisableRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/quotas", nil))
+	var afterDisable quotaResponse
+	if err := json.NewDecoder(afterDisableRecorder.Body).Decode(&afterDisable); err != nil {
+		t.Fatalf("解析关闭后 quota 失败: %v", err)
+	}
+	if afterDisable.Enabled || len(afterDisable.Items) != 0 {
+		t.Fatalf("关闭 consent 后仍返回 quota: %+v", afterDisable)
+	}
+}
+
+func TestQuotaCredentialsStayOutOfPersistenceAPIAndLogs(t *testing.T) {
+	const (
+		accessToken = "sentinel-access-token"
+		accountID   = "sentinel-account-id"
+		idToken     = "sentinel-id-token"
+	)
+	ctx := context.Background()
+	root := t.TempDir()
+	home := filepath.Join(root, "codex")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatalf("创建 auth 目录失败: %v", err)
+	}
+	authContent, err := json.Marshal(map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]string{
+			"access_token": accessToken,
+			"account_id":   accountID,
+			"id_token":     idToken,
+		},
+	})
+	if err != nil {
+		t.Fatalf("编码 auth fixture 失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), authContent, 0o600); err != nil {
+		t.Fatalf("写入 auth fixture 失败: %v", err)
+	}
+
+	dbPath := filepath.Join(root, "dora.db")
+	settingsPath := filepath.Join(root, "settings.json")
+	store, err := dorasqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("初始化测试数据库失败: %v", err)
+	}
+	defer store.Close()
+	settingsStore := settings.New(settingsPath)
+	if err := settingsStore.Save(settings.Values{CodexQuotaConsent: true}); err != nil {
+		t.Fatalf("保存 consent 失败: %v", err)
+	}
+	doer := &credentialQuotaHTTP{}
+	client := codex.NewQuotaClientWithHTTP([]string{home}, doer)
+	service := quota.NewService(client, store, settingsStore)
+
+	var logs bytes.Buffer
+	previousLogWriter := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousLogWriter)
+
+	view, err := service.Refresh(ctx, true)
+	if err != nil {
+		t.Fatalf("真实 quota 链路刷新失败: %v", err)
+	}
+	if len(view.Items) != 2 || doer.request == nil {
+		t.Fatalf("真实 quota 链路数据不完整: view=%+v request=%v", view, doer.request)
+	}
+	if doer.request.Header.Get("Authorization") != "Bearer "+accessToken ||
+		doer.request.Header.Get("ChatGPT-Account-ID") != accountID {
+		t.Fatalf("真实 quota 请求缺少认证头: %+v", doer.request.Header)
+	}
+
+	handler := NewHandler(store, Options{QuotaService: service, Settings: settingsStore})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/quotas", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("quota API 状态码 = %d；响应: %s", recorder.Code, recorder.Body.String())
+	}
+
+	settingsContent, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("读取 settings 失败: %v", err)
+	}
+	persisted := append([]byte(nil), settingsContent...)
+	databaseFiles, err := filepath.Glob(dbPath + "*")
+	if err != nil {
+		t.Fatalf("查找 SQLite 文件失败: %v", err)
+	}
+	for _, path := range databaseFiles {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("读取 SQLite 文件 %s 失败: %v", path, err)
+		}
+		persisted = append(persisted, content...)
+	}
+
+	for name, content := range map[string][]byte{
+		"SQLite/settings": persisted,
+		"API":             recorder.Body.Bytes(),
+		"log":             logs.Bytes(),
+	} {
+		for _, secret := range []string{accessToken, accountID, idToken} {
+			if bytes.Contains(content, []byte(secret)) {
+				t.Fatalf("%s 泄漏凭证 %q", name, secret)
+			}
+		}
+	}
+}
+
+type httpQuotaProvider struct {
+	mu    sync.Mutex
+	calls int
+}
+
+type credentialQuotaHTTP struct {
+	request *http.Request
+}
+
+func (c *credentialQuotaHTTP) Do(request *http.Request) (*http.Response, error) {
+	c.request = request.Clone(request.Context())
+	body := `{
+		"plan_type": "pro",
+		"rate_limit": {
+			"primary_window": {
+				"used_percent": 25,
+				"limit_window_seconds": 18000,
+				"reset_at": 1785474000
+			},
+			"secondary_window": {
+				"used_percent": 50,
+				"limit_window_seconds": 604800,
+				"reset_at": 1786057200
+			}
+		}
+	}`
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func (p *httpQuotaProvider) Fetch(context.Context) ([]domain.QuotaSnapshot, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	now := time.Now().UTC()
+	resetFiveHour := now.Add(5 * time.Hour)
+	resetSevenDay := now.Add(7 * 24 * time.Hour)
+	return []domain.QuotaSnapshot{
+		{
+			Provider:         domain.CodexSource,
+			WindowKey:        domain.QuotaWindowFiveHour,
+			Label:            "5 hours",
+			UsedPercent:      25,
+			RemainingPercent: 75,
+			ResetsAt:         &resetFiveHour,
+			FetchedAt:        now,
+			Source:           "codex_oauth",
+			SourceState:      "confirmed",
+			Plan:             "pro",
+			AccountLabel:     "Codex account 12345678",
+		},
+		{
+			Provider:         domain.CodexSource,
+			WindowKey:        domain.QuotaWindowSevenDay,
+			Label:            "7 days",
+			UsedPercent:      50,
+			RemainingPercent: 50,
+			ResetsAt:         &resetSevenDay,
+			FetchedAt:        now,
+			Source:           "codex_oauth",
+			SourceState:      "confirmed",
+			Plan:             "pro",
+			AccountLabel:     "Codex account 12345678",
+		},
+	}, nil
+}
+
+func (p *httpQuotaProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
 }
 
 func seedAnalyticsUsage(t *testing.T, store *dorasqlite.Store, now time.Time) {

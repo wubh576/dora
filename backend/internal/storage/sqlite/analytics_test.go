@@ -16,6 +16,9 @@ func TestUsageEventsInWindowUsesHalfOpenBoundary(t *testing.T) {
 		t.Fatalf("Open() 失败: %v", err)
 	}
 	defer store.Close()
+	if _, err := store.InitializedAt(ctx); err != nil {
+		t.Fatalf("预读初始化状态失败: %v", err)
+	}
 
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)

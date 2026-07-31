@@ -66,6 +66,32 @@ export type ScanResult = {
   finishedAt: string;
 };
 
+export type QuotaItem = {
+  provider: string;
+  windowKey: "five_hour" | "seven_day";
+  label: string;
+  usedPercent: number;
+  remainingPercent: number;
+  resetsAt: string | null;
+  fetchedAt: string;
+  sourceState: "confirmed" | "stale";
+  plan: string;
+  accountLabel: string;
+};
+
+export type QuotaData = {
+  enabled: boolean;
+  status: string;
+  lastSuccessAt: string | null;
+  items: QuotaItem[];
+  message: string;
+  advice: string;
+};
+
+export type DoraSettings = {
+  codexQuotaConsent: boolean;
+};
+
 export type UsageRange = "Today" | "7D" | "30D" | "All";
 
 export async function loadHealth(signal?: AbortSignal) {
@@ -79,6 +105,34 @@ export async function loadDashboard(range: UsageRange, signal?: AbortSignal): Pr
 
 export async function scanUsage(controlToken: string, full: boolean) {
   return request<ScanResult>(`/api/v1/scan?full=${full}`, {
+    method: "POST",
+    headers: {
+      "X-Dora-Control-Token": controlToken,
+    },
+  });
+}
+
+export async function loadQuotas(signal?: AbortSignal) {
+  return request<QuotaData>("/api/v1/quotas", { signal });
+}
+
+export async function loadSettings(signal?: AbortSignal) {
+  return request<DoraSettings>("/api/v1/settings", { signal });
+}
+
+export async function updateSettings(controlToken: string, codexQuotaConsent: boolean) {
+  return request<DoraSettings>("/api/v1/settings", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Dora-Control-Token": controlToken,
+    },
+    body: JSON.stringify({ codexQuotaConsent }),
+  });
+}
+
+export async function refreshCodexQuota(controlToken: string) {
+  return request<QuotaData>("/api/v1/quota/refresh", {
     method: "POST",
     headers: {
       "X-Dora-Control-Token": controlToken,

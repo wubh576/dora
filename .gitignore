@@ -24,6 +24,8 @@ frontend/dist/
 *.key
 *.pem
 credentials.*
+auth.json
+settings.json
 
 # macOS
 .DS_Store

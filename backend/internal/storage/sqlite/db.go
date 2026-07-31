@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const migrationVersion = 2
+const migrationVersion = 3
 
 type Store struct {
 	db     *sql.DB
@@ -52,18 +53,24 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 
-	readDB, err := sql.Open("sqlite", path)
+	readURL := &url.URL{Scheme: "file", Path: path}
+	query := readURL.Query()
+	query.Set("mode", "ro")
+	query.Add("_pragma", "query_only(1)")
+	query.Add("_pragma", "busy_timeout(5000)")
+	readURL.RawQuery = query.Encode()
+	readDB, err := sql.Open("sqlite", readURL.String())
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("打开 SQLite 读取连接: %w", err)
 	}
-	readDB.SetMaxOpenConns(1)
-	for _, statement := range []string{"PRAGMA query_only = ON", "PRAGMA busy_timeout = 5000"} {
-		if _, err := readDB.ExecContext(ctx, statement); err != nil {
-			readDB.Close()
-			db.Close()
-			return nil, fmt.Errorf("配置 SQLite 读取连接: %w", err)
-		}
+	readDB.SetMaxOpenConns(4)
+	// 被浏览器取消的查询会中断 SQLite 连接；不复用该连接可避免后续读取持续失败。
+	readDB.SetMaxIdleConns(0)
+	if err := readDB.PingContext(ctx); err != nil {
+		readDB.Close()
+		db.Close()
+		return nil, fmt.Errorf("配置 SQLite 读取连接: %w", err)
 	}
 	store.readDB = readDB
 	if err := secureSQLiteFiles(path); err != nil {
@@ -100,6 +107,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	migrations := []func(context.Context, *sql.Tx, int64) error{
 		migrateDoraState,
 		migrateUsage,
+		migrateQuota,
 	}
 	for index, migration := range migrations {
 		version := index + 1
@@ -242,6 +250,34 @@ func migrateUsage(ctx context.Context, tx *sql.Tx, _ int64) error {
 			last_usage_error    TEXT NOT NULL DEFAULT '',
 			last_quota_error    TEXT NOT NULL DEFAULT ''
 		)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateQuota(ctx context.Context, tx *sql.Tx, _ int64) error {
+	statements := []string{
+		`CREATE TABLE quota_snapshots (
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider           TEXT NOT NULL,
+			window_key         TEXT NOT NULL,
+			label              TEXT NOT NULL,
+			used_percent       REAL NOT NULL,
+			remaining_percent  REAL NOT NULL,
+			resets_at_ms       INTEGER,
+			fetched_at_ms      INTEGER NOT NULL,
+			source             TEXT NOT NULL,
+			source_state       TEXT NOT NULL,
+			plan               TEXT NOT NULL DEFAULT '',
+			account_label      TEXT NOT NULL DEFAULT '',
+			UNIQUE (provider, window_key, fetched_at_ms)
+		)`,
+		`CREATE INDEX idx_quota_provider_time
+			ON quota_snapshots (provider, fetched_at_ms DESC)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {

@@ -186,6 +186,49 @@ func TestWALAllowsReadDuringWriteTransaction(t *testing.T) {
 	}
 }
 
+func TestCanceledReadDoesNotPoisonLaterQueries(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("Open() 失败: %v", err)
+	}
+	defer store.Close()
+
+	queryCtx, cancel := context.WithCancel(ctx)
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		var total int64
+		done <- store.readDB.QueryRowContext(queryCtx, `
+			WITH RECURSIVE values_list(value) AS (
+				VALUES(0)
+				UNION ALL
+				SELECT value + 1 FROM values_list WHERE value < 100000000
+			)
+			SELECT SUM(value) FROM values_list
+		`).Scan(&total)
+	}()
+	<-started
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("取消长查询未返回错误")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("取消长查询超时")
+	}
+
+	if _, err := store.InitializedAt(ctx); err != nil {
+		t.Fatalf("取消查询污染了后续读取: %v", err)
+	}
+	if _, err := store.readDB.ExecContext(ctx, "UPDATE dora_state SET initialized_at_ms = 0"); err == nil {
+		t.Fatal("SQLite 读取连接允许写入")
+	}
+}
+
 func TestOpenMigratesVersionOneDatabaseWithoutResettingState(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "dora.db")
@@ -224,7 +267,7 @@ func TestOpenMigratesVersionOneDatabaseWithoutResettingState(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatalf("读取升级 migration 失败: %v", err)
 	}
-	if migrationCount != 2 {
-		t.Fatalf("migration 数 = %d，期望 2", migrationCount)
+	if migrationCount != migrationVersion {
+		t.Fatalf("migration 数 = %d，期望 %d", migrationCount, migrationVersion)
 	}
 }

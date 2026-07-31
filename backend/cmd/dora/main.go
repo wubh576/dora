@@ -17,7 +17,10 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/httpapi"
+	"github.com/wubh576/dora/backend/internal/provider/codex"
+	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
+	"github.com/wubh576/dora/backend/internal/settings"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
 
@@ -32,7 +35,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("用法: dora <serve|scan> [选项]")
+		return errors.New("用法: dora <serve|scan|quota> [选项]")
 	}
 
 	defaultDBPath, err := databasePath()
@@ -45,8 +48,10 @@ func run(args []string) error {
 		return serve(args[1:], defaultDBPath)
 	case "scan":
 		return scanUsage(args[1:], defaultDBPath)
+	case "quota":
+		return quotaCommand(args[1:], defaultDBPath)
 	default:
-		return fmt.Errorf("未知命令 %q；用法: dora <serve|scan> [选项]", args[0])
+		return fmt.Errorf("未知命令 %q；用法: dora <serve|scan|quota> [选项]", args[0])
 	}
 }
 
@@ -73,6 +78,8 @@ func serve(args []string, defaultDBPath string) error {
 	defer store.Close()
 
 	usageScanner := scan.New(store, codexHomes)
+	settingsStore := settings.New(filepath.Join(filepath.Dir(*dbPath), "settings.json"))
+	quotaService := quota.NewService(codex.NewQuotaClient(codexHomes), store, settingsStore)
 	controlToken, err := newControlToken()
 	if err != nil {
 		return err
@@ -89,17 +96,23 @@ func serve(args []string, defaultDBPath string) error {
 			Scanner:        usageScanner,
 			ControlToken:   controlToken,
 			AllowedOrigins: []string{"http://" + *addr, "http://127.0.0.1:5173"},
+			QuotaService:   quotaService,
+			Settings:       settingsStore,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	go runUsageScanLoop(ctx, usageScanner, usageScanInterval)
-
+	listener, err := net.Listen("tcp", *addr)
+	if err != nil {
+		return fmt.Errorf("监听 HTTP 地址: %w", err)
+	}
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("Dora 后端已启动: http://%s（初始化时间 %s）", *addr, initializedAt.Format(time.RFC3339))
-		serverErr <- server.ListenAndServe()
+		serverErr <- server.Serve(listener)
 	}()
+	go runUsageScanLoop(ctx, usageScanner, usageScanInterval)
+	go runQuotaRefreshLoop(ctx, quotaService, usageScanInterval)
 
 	select {
 	case err := <-serverErr:
@@ -115,6 +128,38 @@ func serve(args []string, defaultDBPath string) error {
 		}
 		return nil
 	}
+}
+
+func quotaCommand(args []string, defaultDBPath string) error {
+	if len(args) == 0 || args[0] != "refresh" {
+		return errors.New("用法: dora quota refresh [选项]")
+	}
+	flags := flag.NewFlagSet("quota refresh", flag.ContinueOnError)
+	dbPath := flags.String("db", defaultDBPath, "SQLite 数据库路径")
+	var codexHomes stringListFlag
+	flags.Var(&codexHomes, "codex-home", "Codex 数据目录，可重复指定")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	store, err := dorasqlite.Open(ctx, *dbPath)
+	if err != nil {
+		return fmt.Errorf("初始化 SQLite: %w", err)
+	}
+	defer store.Close()
+	settingsStore := settings.New(filepath.Join(filepath.Dir(*dbPath), "settings.json"))
+	service := quota.NewService(codex.NewQuotaClient(codexHomes), store, settingsStore)
+	view, err := service.Refresh(ctx, true)
+	if err != nil {
+		return fmt.Errorf("刷新 Codex 订阅配额: %w", err)
+	}
+	if !view.Enabled {
+		return errors.New("Codex 订阅配额尚未授权，请先在 Dora Diagnostics 中启用")
+	}
+	fmt.Printf("Codex 配额刷新完成：%d 个窗口\n", len(view.Items))
+	return nil
 }
 
 func scanUsage(args []string, defaultDBPath string) error {
@@ -156,6 +201,10 @@ type usageScanRunner interface {
 	Scan(context.Context, bool) (scan.Report, error)
 }
 
+type quotaRefreshRunner interface {
+	Refresh(context.Context, bool) (quota.View, error)
+}
+
 func runUsageScanLoop(ctx context.Context, scanner usageScanRunner, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -173,6 +222,27 @@ func runUsageScanLoop(ctx context.Context, scanner usageScanRunner, interval tim
 				report.EventsSeen,
 				report.EventsStored,
 			)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func runQuotaRefreshLoop(ctx context.Context, refresher quotaRefreshRunner, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		view, err := refresher.Refresh(ctx, false)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("Codex 配额自动刷新失败，本地 token 统计不受影响")
+			}
+		} else if view.Enabled {
+			log.Printf("Codex 配额刷新完成: windows=%d status=%s", len(view.Items), view.Status)
 		}
 
 		select {

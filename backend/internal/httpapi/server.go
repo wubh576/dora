@@ -9,7 +9,9 @@ import (
 	"github.com/wubh576/dora/backend/internal/analytics"
 	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
+	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
+	"github.com/wubh576/dora/backend/internal/settings"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
 
@@ -20,6 +22,8 @@ type server struct {
 	allowedOrigins map[string]struct{}
 	location       *time.Location
 	now            func() time.Time
+	quotaService   *quota.Service
+	settings       *settings.Store
 }
 
 type healthResponse struct {
@@ -35,6 +39,8 @@ type Options struct {
 	AllowedOrigins []string
 	Location       *time.Location
 	Now            func() time.Time
+	QuotaService   *quota.Service
+	Settings       *settings.Store
 }
 
 type scanResponse struct {
@@ -49,6 +55,7 @@ type scanResponse struct {
 
 type diagnosticsResponse struct {
 	Usage usageDiagnostics `json:"usage"`
+	Quota quotaDiagnostics `json:"quota"`
 }
 
 type usageDiagnostics struct {
@@ -94,7 +101,7 @@ type dashboardResponse struct {
 type snapshotResponse struct {
 	GeneratedAt string        `json:"generatedAt"`
 	Usage       snapshotUsage `json:"usage"`
-	Quotas      []any         `json:"quotas"`
+	Quotas      []quotaItem   `json:"quotas"`
 	Errors      []string      `json:"errors"`
 }
 
@@ -126,6 +133,8 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 		if options[0].Now != nil {
 			s.now = options[0].Now
 		}
+		s.quotaService = options[0].QuotaService
+		s.settings = options[0].Settings
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/health", s.health)
@@ -136,6 +145,9 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 	mux.HandleFunc("/api/v1/snapshot", s.snapshot)
 	mux.HandleFunc("/api/v1/diagnostics", s.diagnostics)
 	mux.HandleFunc("/api/v1/scan", s.scan)
+	mux.HandleFunc("/api/v1/quotas", s.quotas)
+	mux.HandleFunc("/api/v1/quota/refresh", s.refreshQuota)
+	mux.HandleFunc("/api/v1/settings", s.localSettings)
 	return mux
 }
 
@@ -179,7 +191,12 @@ func (s *server) diagnostics(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, diagnosticsResponse{Usage: usage})
+	quotaState, err := s.loadQuotaDiagnostics(r)
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "读取配额状态", "请检查本地数据库后重试")
+		return
+	}
+	writeJSON(w, diagnosticsResponse{Usage: usage, Quota: quotaState})
 }
 
 func (s *server) scan(w http.ResponseWriter, r *http.Request) {
@@ -408,7 +425,7 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 			TopModel:       topModel,
 			Stale:          true,
 		},
-		Quotas: []any{},
+		Quotas: []quotaItem{},
 		Errors: []string{},
 	}
 	if providerState.LastScanAt != nil {
@@ -418,6 +435,17 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	if providerState.Status == "error" {
 		response.Errors = append(response.Errors, "Codex 本地用量扫描失败")
+	}
+	if s.quotaService != nil {
+		quotaView, err := s.quotaService.Snapshot(r.Context())
+		if err != nil {
+			response.Errors = append(response.Errors, "Codex 配额状态读取失败")
+		} else {
+			response.Quotas = quotaItems(quotaView.Items)
+			if quotaView.Enabled && quotaView.Status == "error" {
+				response.Errors = append(response.Errors, quotaView.Message)
+			}
+		}
 	}
 	writeNoStoreJSON(w, response)
 }

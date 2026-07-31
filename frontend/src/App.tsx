@@ -2,12 +2,19 @@ import { useEffect, useState } from "react";
 import {
   type BreakdownItem,
   type DashboardData,
+  type DoraSettings,
   type HealthStatus,
+  type QuotaData,
+  type QuotaItem,
   type TimelinePoint,
   type UsageRange,
   loadDashboard,
   loadHealth,
+  loadQuotas,
+  loadSettings,
+  refreshCodexQuota,
   scanUsage,
+  updateSettings,
 } from "./api";
 
 type LoadState<T> =
@@ -22,9 +29,13 @@ function App() {
   const [range, setRange] = useState<UsageRange>("7D");
   const [health, setHealth] = useState<LoadState<HealthStatus>>({ kind: "loading" });
   const [dashboard, setDashboard] = useState<LoadState<DashboardData>>({ kind: "loading" });
+  const [quota, setQuota] = useState<LoadState<QuotaData>>({ kind: "loading" });
+  const [settings, setSettings] = useState<LoadState<DoraSettings>>({ kind: "loading" });
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [refreshing, setRefreshing] = useState<"incremental" | "full" | null>(null);
   const [refreshMessage, setRefreshMessage] = useState("");
+  const [quotaBusy, setQuotaBusy] = useState(false);
+  const [quotaMessage, setQuotaMessage] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -33,6 +44,23 @@ function App() {
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
           setHealth({ kind: "error", message: errorMessage(error) });
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    Promise.all([loadQuotas(controller.signal), loadSettings(controller.signal)])
+      .then(([quotaValue, settingsValue]) => {
+        setQuota({ kind: "ready", value: quotaValue });
+        setSettings({ kind: "ready", value: settingsValue });
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          const message = errorMessage(error);
+          setQuota({ kind: "error", message });
+          setSettings({ kind: "error", message });
         }
       });
     return () => controller.abort();
@@ -71,6 +99,61 @@ function App() {
     } finally {
       setRefreshing(null);
       setRefreshVersion((value) => value + 1);
+    }
+  }
+
+  async function refreshQuota() {
+    if (health.kind !== "ready") {
+      return;
+    }
+    setQuotaBusy(true);
+    setQuotaMessage("");
+    try {
+      const value = await refreshCodexQuota(health.value.controlToken);
+      setQuota({ kind: "ready", value });
+      setQuotaMessage("Subscription quota refreshed");
+    } catch (error) {
+      setQuotaMessage(errorMessage(error));
+      try {
+        setQuota({ kind: "ready", value: await loadQuotas() });
+      } catch (reloadError) {
+        setQuota({ kind: "error", message: errorMessage(reloadError) });
+      }
+    } finally {
+      setQuotaBusy(false);
+    }
+  }
+
+  async function setQuotaConsent(enabled: boolean) {
+    if (health.kind !== "ready") {
+      return;
+    }
+    setQuotaBusy(true);
+    setQuotaMessage("");
+    try {
+      const values = await updateSettings(health.value.controlToken, enabled);
+      setSettings({ kind: "ready", value: values });
+      if (enabled) {
+        const value = await refreshCodexQuota(health.value.controlToken);
+        setQuota({ kind: "ready", value });
+        setQuotaMessage("Codex subscription quota enabled");
+      } else {
+        setQuota({ kind: "ready", value: await loadQuotas() });
+        setQuotaMessage("Codex subscription quota disabled");
+      }
+    } catch (error) {
+      setQuotaMessage(errorMessage(error));
+      try {
+        const [quotaValue, settingsValue] = await Promise.all([loadQuotas(), loadSettings()]);
+        setQuota({ kind: "ready", value: quotaValue });
+        setSettings({ kind: "ready", value: settingsValue });
+      } catch (reloadError) {
+        const message = errorMessage(reloadError);
+        setQuota({ kind: "error", message });
+        setSettings({ kind: "error", message });
+      }
+    } finally {
+      setQuotaBusy(false);
     }
   }
 
@@ -126,6 +209,10 @@ function App() {
             refreshing={refreshing !== null}
             refreshMessage={refreshMessage}
             onRefresh={() => void refresh(false)}
+            quota={quota}
+            quotaBusy={quotaBusy}
+            quotaMessage={quotaMessage}
+            onQuotaRefresh={() => void refreshQuota()}
           />
         ) : (
           <Diagnostics
@@ -134,6 +221,12 @@ function App() {
             refreshing={refreshing}
             refreshMessage={refreshMessage}
             onScan={(full) => void refresh(full)}
+            quota={quota}
+            settings={settings}
+            quotaBusy={quotaBusy}
+            quotaMessage={quotaMessage}
+            onQuotaRefresh={() => void refreshQuota()}
+            onQuotaConsent={(enabled) => void setQuotaConsent(enabled)}
           />
         )}
       </main>
@@ -148,9 +241,24 @@ type DashboardProps = {
   refreshing: boolean;
   refreshMessage: string;
   onRefresh: () => void;
+  quota: LoadState<QuotaData>;
+  quotaBusy: boolean;
+  quotaMessage: string;
+  onQuotaRefresh: () => void;
 };
 
-function Dashboard({ range, setRange, state, refreshing, refreshMessage, onRefresh }: DashboardProps) {
+function Dashboard({
+  range,
+  setRange,
+  state,
+  refreshing,
+  refreshMessage,
+  onRefresh,
+  quota,
+  quotaBusy,
+  quotaMessage,
+  onQuotaRefresh,
+}: DashboardProps) {
   return (
     <>
       <section className="page-heading">
@@ -186,12 +294,32 @@ function Dashboard({ range, setRange, state, refreshing, refreshMessage, onRefre
       {state.kind === "error" && (
         <Notice tone="error" title="Usage could not be loaded" body={state.message} />
       )}
-      {state.kind === "ready" && <DashboardContent data={state.value} />}
+      {state.kind === "ready" && (
+        <DashboardContent
+          data={state.value}
+          quota={quota}
+          quotaBusy={quotaBusy}
+          quotaMessage={quotaMessage}
+          onQuotaRefresh={onQuotaRefresh}
+        />
+      )}
     </>
   );
 }
 
-function DashboardContent({ data }: { data: DashboardData }) {
+function DashboardContent({
+  data,
+  quota,
+  quotaBusy,
+  quotaMessage,
+  onQuotaRefresh,
+}: {
+  data: DashboardData;
+  quota: LoadState<QuotaData>;
+  quotaBusy: boolean;
+  quotaMessage: string;
+  onQuotaRefresh: () => void;
+}) {
   const { summary, diagnostics } = data;
   if (summary.eventCount === 0) {
     return (
@@ -213,6 +341,12 @@ function DashboardContent({ data }: { data: DashboardData }) {
               : "Choose a wider range or create a new Codex session."}
           </p>
         </section>
+        <QuotaPanel
+          state={quota}
+          busy={quotaBusy}
+          message={quotaMessage}
+          onRefresh={onQuotaRefresh}
+        />
       </>
     );
   }
@@ -273,14 +407,12 @@ function DashboardContent({ data }: { data: DashboardData }) {
         <BreakdownCard title="Projects" eyebrow="Project distribution" items={data.projects} />
       </section>
 
-      <section className="panel quota-placeholder">
-        <div>
-          <p className="panel-label">Codex quota</p>
-          <h2>Subscription limits are not enabled yet</h2>
-          <p>Usage analytics stays available independently of quota connectivity.</p>
-        </div>
-        <span className="muted-badge">Not configured</span>
-      </section>
+      <QuotaPanel
+        state={quota}
+        busy={quotaBusy}
+        message={quotaMessage}
+        onRefresh={onQuotaRefresh}
+      />
     </>
   );
 }
@@ -354,6 +486,111 @@ function BarSegment({ value, total, color }: { value: number; total: number; col
   return <span className={color} style={{ height: `${(value / total) * 100}%` }} />;
 }
 
+function QuotaPanel({
+  state,
+  busy,
+  message,
+  onRefresh,
+}: {
+  state: LoadState<QuotaData>;
+  busy: boolean;
+  message: string;
+  onRefresh: () => void;
+}) {
+  if (state.kind === "loading") {
+    return <section className="panel quota-placeholder" aria-label="Loading Codex quota" />;
+  }
+  if (state.kind === "error") {
+    return (
+      <section className="panel quota-placeholder">
+        <div>
+          <p className="panel-label">Codex quota</p>
+          <h2>Quota status is unavailable</h2>
+          <p>{state.message} Local token analytics remains available.</p>
+        </div>
+        <span className="muted-badge error">Unavailable</span>
+      </section>
+    );
+  }
+
+  const value = state.value;
+  if (!value.enabled) {
+    return (
+      <section className="panel quota-placeholder">
+        <div>
+          <p className="panel-label">Codex quota</p>
+          <h2>Subscription limits are not enabled</h2>
+          <p>Enable OAuth quota access in Diagnostics. Local token analytics stays independent.</p>
+        </div>
+        <span className="muted-badge">Not enabled</span>
+      </section>
+    );
+  }
+
+  return (
+    <section className="panel quota-panel">
+      <div className="panel-heading quota-heading">
+        <div>
+          <p className="panel-label">Codex quota</p>
+          <h2>Subscription windows</h2>
+          {value.items[0]?.accountLabel && (
+            <p className="quota-account">
+              {value.items[0].accountLabel}
+              {value.items[0].plan ? ` · ${value.items[0].plan}` : ""}
+            </p>
+          )}
+        </div>
+        <button type="button" disabled={busy} onClick={onRefresh}>
+          {busy ? "Refreshing…" : "Refresh quota"}
+        </button>
+      </div>
+
+      {value.status !== "ready" && value.items.length > 0 && (
+        <Notice tone="warning" title={value.message} body={value.advice} />
+      )}
+      {value.items.length === 0 ? (
+        <div className="quota-empty">
+          <strong>{value.message}</strong>
+          <p>{value.advice || "Refresh when Codex OAuth is available."}</p>
+        </div>
+      ) : (
+        <div className="quota-grid">
+          {value.items.map((item) => <QuotaCard key={item.windowKey} item={item} />)}
+        </div>
+      )}
+      {message && <p className="refresh-message quota-message" role="status">{message}</p>}
+    </section>
+  );
+}
+
+function QuotaCard({ item }: { item: QuotaItem }) {
+  return (
+    <article className="quota-card">
+      <div className="quota-card-heading">
+        <div>
+          <span>{item.label}</span>
+          {item.sourceState === "stale" && <small>Stale</small>}
+        </div>
+        <strong>{formatPercentValue(item.remainingPercent)} left</strong>
+      </div>
+      <div
+        className="quota-progress"
+        role="progressbar"
+        aria-label={`${item.label} quota used`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={item.usedPercent}
+      >
+        <span style={{ width: `${item.usedPercent}%` }} />
+      </div>
+      <div className="quota-meta">
+        <span>{formatPercentValue(item.usedPercent)} used</span>
+        <span>Resets {formatDate(item.resetsAt)}</span>
+      </div>
+    </article>
+  );
+}
+
 function TokenLegend() {
   return (
     <div className="token-legend">
@@ -403,10 +640,30 @@ type DiagnosticsProps = {
   refreshing: "incremental" | "full" | null;
   refreshMessage: string;
   onScan: (full: boolean) => void;
+  quota: LoadState<QuotaData>;
+  settings: LoadState<DoraSettings>;
+  quotaBusy: boolean;
+  quotaMessage: string;
+  onQuotaRefresh: () => void;
+  onQuotaConsent: (enabled: boolean) => void;
 };
 
-function Diagnostics({ state, health, refreshing, refreshMessage, onScan }: DiagnosticsProps) {
+function Diagnostics({
+  state,
+  health,
+  refreshing,
+  refreshMessage,
+  onScan,
+  quota,
+  settings,
+  quotaBusy,
+  quotaMessage,
+  onQuotaRefresh,
+  onQuotaConsent,
+}: DiagnosticsProps) {
   const data = state.kind === "ready" ? state.value.diagnostics : null;
+  const quotaData = quota.kind === "ready" ? quota.value : null;
+  const quotaConsent = settings.kind === "ready" && settings.value.codexQuotaConsent;
   return (
     <>
       <section className="page-heading compact">
@@ -461,6 +718,53 @@ function Diagnostics({ state, health, refreshing, refreshMessage, onScan }: Diag
           />
         </>
       )}
+
+      <section className="panel quota-settings">
+        <div className="quota-settings-copy">
+          <p className="panel-label">Codex subscription quota</p>
+          <h2>Allow Dora to read quota</h2>
+          <p>
+            When enabled, Dora reads the local Codex OAuth session and contacts only ChatGPT's
+            quota endpoint. Access tokens are never stored in SQLite, settings or logs.
+          </p>
+        </div>
+        <label className="consent-toggle">
+          <input
+            type="checkbox"
+            checked={quotaConsent}
+            disabled={settings.kind !== "ready" || quotaBusy || health.kind !== "ready"}
+            onChange={(event) => onQuotaConsent(event.target.checked)}
+          />
+          <span aria-hidden="true" />
+          <b>{quotaConsent ? "Enabled" : "Disabled"}</b>
+        </label>
+
+        {settings.kind === "error" && (
+          <Notice tone="error" title="Settings unavailable" body={settings.message} />
+        )}
+        {quota.kind === "error" && (
+          <Notice tone="error" title="Quota status unavailable" body={quota.message} />
+        )}
+        {quotaData && quotaData.enabled && (
+          <div className="quota-setting-status">
+            <div>
+              <span>Status</span>
+              <strong>{humanQuotaStatus(quotaData.status)}</strong>
+            </div>
+            <div>
+              <span>Last success</span>
+              <strong>{formatDate(quotaData.lastSuccessAt)}</strong>
+            </div>
+            <button type="button" disabled={quotaBusy} onClick={onQuotaRefresh}>
+              {quotaBusy ? "Refreshing…" : "Refresh now"}
+            </button>
+          </div>
+        )}
+        {quotaData && quotaData.status !== "ready" && (
+          <p className="quota-advice">{quotaData.message}{quotaData.advice ? ` · ${quotaData.advice}` : ""}</p>
+        )}
+        {quotaMessage && <p className="refresh-message" role="status">{quotaMessage}</p>}
+      </section>
     </>
   );
 }
@@ -507,6 +811,16 @@ function humanStatus(status: string) {
   return labels[status] ?? status;
 }
 
+function humanQuotaStatus(status: string) {
+  const labels: Record<string, string> = {
+    ready: "Ready",
+    error: "Last refresh failed",
+    unsupported: "Unsupported auth",
+    not_configured: "Login required",
+  };
+  return labels[status] ?? status;
+}
+
 function formatNumber(value: number) {
   return new Intl.NumberFormat().format(value);
 }
@@ -523,6 +837,12 @@ function formatPercent(value: number) {
     style: "percent",
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+function formatPercentValue(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 1,
+  }).format(value) + "%";
 }
 
 function formatDate(value: string | null) {

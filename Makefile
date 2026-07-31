@@ -1,4 +1,4 @@
-.PHONY: install dev backend frontend scan test build verify
+.PHONY: install dev backend frontend scan quota test build verify
 
 install:
 	cd backend && go mod download
@@ -15,6 +15,9 @@ frontend:
 
 scan:
 	cd backend && go run ./cmd/dora scan
+
+quota:
+	cd backend && go run ./cmd/dora quota refresh
 
 test:
 	cd backend && go test ./...

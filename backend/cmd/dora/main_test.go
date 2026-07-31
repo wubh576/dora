@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
 )
 
@@ -45,6 +46,19 @@ func TestRunManualScanWithConfiguredHome(t *testing.T) {
 	}
 }
 
+func TestQuotaCommandRequiresConsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dora.db")
+	err := run([]string{
+		"quota",
+		"refresh",
+		"--db", path,
+		"--codex-home", t.TempDir(),
+	})
+	if err == nil || err.Error() != "Codex 订阅配额尚未授权，请先在 Dora Diagnostics 中启用" {
+		t.Fatalf("未授权 quota refresh 错误 = %v", err)
+	}
+}
+
 func TestUsageScanLoopRunsImmediatelyAndOnInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -70,6 +84,31 @@ func TestUsageScanLoopRunsImmediatelyAndOnInterval(t *testing.T) {
 	}
 }
 
+func TestQuotaRefreshLoopRunsImmediatelyAndOnInterval(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := &fakeQuotaRefresher{called: make(chan struct{}, 3)}
+	done := make(chan struct{})
+	go func() {
+		runQuotaRefreshLoop(ctx, runner, 5*time.Millisecond)
+		close(done)
+	}()
+
+	for index := 0; index < 2; index++ {
+		select {
+		case <-runner.called:
+		case <-time.After(time.Second):
+			t.Fatal("等待 quota 自动刷新超时")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("quota 自动刷新循环未停止")
+	}
+}
+
 type fakeUsageScanner struct {
 	mu     sync.Mutex
 	count  int
@@ -82,4 +121,13 @@ func (f *fakeUsageScanner) Scan(context.Context, bool) (scan.Report, error) {
 	f.mu.Unlock()
 	f.called <- struct{}{}
 	return scan.Report{Mode: "incremental"}, nil
+}
+
+type fakeQuotaRefresher struct {
+	called chan struct{}
+}
+
+func (f *fakeQuotaRefresher) Refresh(context.Context, bool) (quota.View, error) {
+	f.called <- struct{}{}
+	return quota.View{}, nil
 }
