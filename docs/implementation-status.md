@@ -16,7 +16,8 @@
 | 8. 单进程生产运行 | 已完成 | `98ac8b2` |
 | 9. macOS 系统代理适配 | 已完成 | `62218e3` |
 | 10. Token API 等价费用估算 | 已完成 | `fa607f2` |
-| 11. 单进程 macOS 菜单栏 | 已完成 | 本次提交 |
+| 11. 单进程 macOS 菜单栏 | 已完成 | `66a8c48` |
+| 12. 当前用户 LaunchAgent 生命周期 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -241,3 +242,24 @@
 - 自动化 GUI 工具无法枚举 macOS 状态栏 extra，图标可见性需在菜单栏中人工确认；进程 activation policy、无窗口实现和状态项资源已通过代码与运行时检查。
 - `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check` 通过；菜单并发与生命周期测试重复运行通过。
 - Code Review：独立 Reviewer 发现异步 view 提交竞态、token 单位临界舍入、退出 wiring 测试缺口和刷新中操作状态 4 个问题；全部修复并复审通过，无剩余 P0/P1/P2/P3。
+
+## 里程碑 12：当前用户 LaunchAgent 生命周期
+
+已完成：
+
+- 增加顶层 `dora install`、`dora status` 和 `dora uninstall`，只管理当前 macOS 用户的 `gui/<uid>` LaunchAgent，不使用 sudo 或系统级 daemon。
+- install 校验生产 Web 资源，将当前二进制和 plist 原子安装到稳定用户路径，并按现代 `launchctl print/bootout/bootstrap/kickstart` 顺序幂等加载同一个 `dora menubar` 进程。
+- plist 固定使用 `io.github.wubh576.dora`，配置 RunAtLoad、仅异常退出恢复、10 秒重启节流和明确的 stdout/stderr 日志路径，不包含凭证。
+- status 综合安装文件、launchd 加载/运行状态和真实 loopback health；退出码 0、1、2 分别表示正常、未运行类状态和检查自身失败。
+- uninstall 幂等停止 LaunchAgent，只删除 plist、安装二进制和明确临时文件，保留 SQLite、settings、日志与 Codex 原始数据。
+
+验证记录：
+
+- 注入临时用户目录、当前二进制、UID、文件系统、命令 runner 和 health checker，自动测试未访问真实 LaunchAgent 或真实用户安装路径。
+- 测试覆盖路径、合法 plist、原子权限、生产资源检查、首次/重复安装、更新顺序、状态分类与退出码、launchctl 错误、参数化命令、卸载幂等和用户数据保留。
+- 当前 Mac 真实 install 后，plist 通过 `plutil`，`launchctl print` 显示用户 `gui/501` job 正常运行；同一 PID 提供菜单栏、8080 health 和嵌入页面，无子进程或 Node 进程。
+- 重复 install 首轮暴露 bootout 后 launchd 尚未完成清理的时序问题；增加明确的卸载等待后，重复安装可安全更换 PID 且始终只有一个 Dora 进程。
+- 使用临时数据库启动手动 `dora serve` 占用 8080 时，install 会在修改 LaunchAgent 前明确拒绝，不会终止现有进程或被旧 health 误导；测试服务随后正常退出并清理。
+- 真实 uninstall 后 status 返回 1，launchd job、plist、安装二进制和临时文件均消失，8080 释放，既有数据库 inode 保持不变；重复 uninstall 成功。
+- 最终生产二进制已重新安装并留驻运行；status 返回 0，LaunchAgent PID 37792 为唯一 Dora 进程且无子进程，安装副本与构建产物一致，health 与嵌入首页均返回 200。
+- Code Review：独立 Reviewer 发现 health 与目标 job 未绑定、README 主动退出语义和失败恢复指引 3 个问题；全部修复并复审通过，无剩余 P0/P1/P2/P3。

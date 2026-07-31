@@ -11,8 +11,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/wubh576/dora/backend/internal/app"
+	"github.com/wubh576/dora/backend/internal/launchagent"
 	doramenubar "github.com/wubh576/dora/backend/internal/menubar"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
 	"github.com/wubh576/dora/backend/internal/quota"
@@ -33,14 +35,25 @@ func main() {
 		defer runtime.UnlockOSThread()
 	}
 	if err := run(os.Args[1:]); err != nil {
-		log.Printf("Dora 启动失败: %v", err)
-		os.Exit(1)
+		var commandErr *commandExitError
+		if !errors.As(err, &commandErr) || commandErr.err != nil {
+			log.Printf("Dora 命令失败: %v", err)
+		}
+		os.Exit(commandExitCode(err))
 	}
 }
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("用法: dora <serve|menubar|scan|quota> [选项]")
+		return errors.New("用法: dora <serve|menubar|scan|quota|install|status|uninstall> [选项]")
+	}
+	switch args[0] {
+	case "install":
+		return installCommand(args[1:])
+	case "status":
+		return launchAgentStatusCommand(args[1:])
+	case "uninstall":
+		return uninstallCommand(args[1:])
 	}
 
 	defaultDBPath, err := databasePath()
@@ -58,8 +71,110 @@ func run(args []string) error {
 	case "quota":
 		return quotaCommand(args[1:], defaultDBPath)
 	default:
-		return fmt.Errorf("未知命令 %q；用法: dora <serve|menubar|scan|quota> [选项]", args[0])
+		return fmt.Errorf("未知命令 %q；用法: dora <serve|menubar|scan|quota|install|status|uninstall> [选项]", args[0])
 	}
+}
+
+type commandExitError struct {
+	code int
+	err  error
+}
+
+func (e *commandExitError) Error() string {
+	if e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *commandExitError) Unwrap() error { return e.err }
+
+func commandExitCode(err error) int {
+	var commandErr *commandExitError
+	if errors.As(err, &commandErr) {
+		return commandErr.code
+	}
+	return 1
+}
+
+func installCommand(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("install 不支持参数 %q", args[0])
+	}
+	manager, err := newLaunchAgentManager()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := manager.Install(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("Dora 已安装并正在运行\n菜单栏：点击 Dora 图标查看用量\n仪表盘：%s\n", launchagent.DashboardURL)
+	return nil
+}
+
+func launchAgentStatusCommand(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("status 不支持参数 %q", args[0])
+	}
+	manager, err := newLaunchAgentManager()
+	if err != nil {
+		return &commandExitError{code: 2, err: err}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	status, err := manager.Status(ctx)
+	if err != nil {
+		return &commandExitError{code: 2, err: fmt.Errorf("检查 Dora 状态: %w", err)}
+	}
+	installed, loaded := "否", "未加载"
+	if status.Installed() {
+		installed = "是"
+	}
+	if status.Loaded {
+		loaded = "已加载"
+	}
+	fmt.Printf("安装：%s\nLaunchAgent：%s\n运行：%s\n仪表盘：%s\n", installed, loaded, status.RunState(), status.DashboardURL)
+	if status.ExitCode() != 0 {
+		return &commandExitError{code: status.ExitCode()}
+	}
+	return nil
+}
+
+func uninstallCommand(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("uninstall 不支持参数 %q", args[0])
+	}
+	manager, err := newLaunchAgentManager()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := manager.Uninstall(ctx); err != nil {
+		return err
+	}
+	fmt.Println("Dora LaunchAgent 已卸载；数据库、设置和日志均已保留")
+	return nil
+}
+
+func newLaunchAgentManager() (*launchagent.Manager, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("读取当前用户目录: %w", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("读取当前 Dora 可执行文件: %w", err)
+	}
+	return launchagent.New(launchagent.Config{
+		Home:       home,
+		Executable: executable,
+		UID:        os.Getuid(),
+		GOOS:       runtime.GOOS,
+		Production: webassets.Files() != nil,
+	}), nil
 }
 
 func serve(args []string, defaultDBPath string) error {

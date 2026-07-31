@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,6 +25,15 @@ func TestParseMenubarOptions(t *testing.T) {
 	}
 	if options.address != "127.0.0.1:9090" || options.dbPath == defaultDB || !reflect.DeepEqual(options.codexHomes, []string{firstHome, secondHome}) {
 		t.Fatalf("menubar 参数解析错误: %+v", options)
+	}
+}
+
+func TestCommandExitCodes(t *testing.T) {
+	if got := commandExitCode(errors.New("regular")); got != 1 {
+		t.Fatalf("普通错误 exit code = %d", got)
+	}
+	if got := commandExitCode(&commandExitError{code: 2, err: errors.New("status")}); got != 2 {
+		t.Fatalf("状态检查错误 exit code = %d", got)
 	}
 }
 

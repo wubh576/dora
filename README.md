@@ -88,6 +88,42 @@ open http://127.0.0.1:8080
 
 `--addr` 必须是明确的 `127.0.0.1:<port>`。端口被占用时 Dora 会直接报告冲突，不会终止旧进程或偷偷换端口。菜单中的“打开仪表盘”始终使用进程实际监听的地址。
 
+### 登录后自动运行
+
+从生产构建安装当前用户的 LaunchAgent：
+
+```bash
+./bin/dora install
+```
+
+该命令会把自包含二进制原子复制到：
+
+```text
+~/Library/Application Support/Dora/bin/dora
+```
+
+并安装 `~/Library/LaunchAgents/io.github.wubh576.dora.plist`。LaunchAgent 在当前用户进入 macOS 桌面后运行同一个 `dora menubar` 进程；无需 `sudo`，不会创建 LaunchDaemon 或第二个后端。
+
+检查安装、加载、运行和真实 health API：
+
+```bash
+./bin/dora status
+```
+
+`status` 的退出码为：`0` 表示已安装且正常运行，`1` 表示未安装、未运行或运行异常，`2` 表示状态检查本身失败。输出的仪表盘地址固定为 `http://127.0.0.1:8080`。
+
+在菜单中点击“退出 Dora”后，LaunchAgent 会把这次成功退出视为用户主动停止，因此本次登录会话不会立即拉起 Dora；下次登录 macOS 时仍会按 `RunAtLoad` 自动启动。需要立刻重新启动时，再执行一次 `./bin/dora install`。
+
+卸载登录启动项和稳定位置中的二进制：
+
+```bash
+./bin/dora uninstall
+```
+
+卸载会停止 LaunchAgent，并删除 plist、安装二进制和安装临时文件；`dora.db`、`settings.json`、Codex 原始数据和日志都会保留。三个命令均只管理当前 macOS 用户，重复安装或卸载是安全的。
+
+`go run ./cmd/dora install` 等开发构建不包含生产 Web 资源，会被拒绝。请始终先执行 `make build`，再运行 `./bin/dora install`。
+
 ## Codex 本地用量扫描
 
 后端启动后会立即扫描，并每 5 分钟检查一次新增记录；每 24 小时至少执行一次全量校验：

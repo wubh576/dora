@@ -1060,25 +1060,31 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 第二期提供显式命令：
 
 ```text
-dora service install
-dora service uninstall
-dora service status
+dora install
+dora status
+dora uninstall
 ```
 
 安装内容：
 
-- `~/Library/LaunchAgents/<bundle-id>.core.plist`
-- Core 日志指向 `~/Library/Logs/Dora/`
+- 当前生产二进制原子复制到 `~/Library/Application Support/Dora/bin/dora`。
+- plist 固定为 `~/Library/LaunchAgents/io.github.wubh576.dora.plist`。
+- Label 固定为 `io.github.wubh576.dora`。
+- stdout/stderr 分别写入 `~/Library/Logs/Dora/dora.stdout.log` 和 `dora.stderr.log`。
 - `RunAtLoad=true`
-- `KeepAlive` 仅对异常退出生效
+- `KeepAlive.SuccessfulExit=false`
+- `ThrottleInterval=10`
 
 要求：
 
-- plist 中使用绝对 binary path。
-- 安装前验证 binary 存在。
-- 重复安装幂等。
-- uninstall 不删除 SQLite 数据。
-- 菜单栏退出与 Core service 停止是两个不同操作。
+- 只使用当前用户的 `gui/<uid>` domain，不使用 sudo、system domain、LaunchDaemon 或废弃的 load/unload。
+- install 只接受包含生产 Web 资源的可执行文件；开发构建提示先运行 `make build`。
+- plist 使用安装后二进制的绝对路径，ProgramArguments 仅为该路径和 `menubar`。
+- 二进制与 plist 都先写明确临时文件，再 rename 替换；重装按 `print → bootout → bootstrap → kickstart` 安全重载。
+- install 等待 loopback health，重复执行不会产生多个 LaunchAgent 或 Dora 常驻进程。
+- status 综合 plist、安装二进制、`launchctl print` 和 health；退出码 0 为正常，1 为未安装/未运行/异常，2 为检查失败。
+- uninstall 幂等，只删除 plist、安装二进制和对应临时文件，保留 SQLite、settings、日志和 Codex 原始数据。
+- 菜单“退出 Dora”产生成功退出，当前登录会话不立即重启；下次登录仍由 RunAtLoad 启动。
 
 ## 21. Claude Code 文件发现
 
@@ -1370,7 +1376,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 ### 第二期
 
 1. 固化 `/api/v1/snapshot`。
-2. 创建 SwiftUI MenuBarExtra。
+2. 实现单进程 AppKit 菜单栏状态项。
 3. 实现 LaunchAgent 管理。
 4. 编写 Claude fixtures。
 5. 实现 Claude main/subagent parser。
