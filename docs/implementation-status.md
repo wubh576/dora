@@ -22,7 +22,8 @@
 | 14. 后台失败日志真实原因 | 已完成 | `94a911c` |
 | 15. LaunchAgent 日志自动轮转 | 已完成 | `10c9463` |
 | 16. Provider 隔离与 Claude Code 只读采集 | 已完成 | `7a88a17`、`e2c905f` |
-| 17. 多 Provider 统一展示 | 已完成 | 本次提交 |
+| 17. 多 Provider 统一展示 | 已完成 | `ed41bf8`、`a950d69` |
+| 18. 统一统计起始日 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -141,7 +142,7 @@
 已完成：
 
 - 将通用界面文案调整为中文，保留 Input、Cache、Output、Reasoning 等必要技术术语。
-- 概览统一使用 `1D`、`7D`、`30D` 和 `ALL`，所有用量统计始于 `2026-07-29`。
+- 概览统一使用 `1D`、`7D`、`30D` 和 `ALL`，所有用量统计始于 `2026-07-01`。
 - Dashboard API 在同一份 SQLite 快照中返回完整活动序列，前端展示 GitHub 风格的 53 周 Token 热力图、累计 token、活跃天数和最长连续天数。
 - 采用适合 macOS 桌面浏览器的 Apple 风格视觉系统，并为有数据的热力图日期提供键盘聚焦、中文标签和可视精确值。
 - 集中维护 API 路径、服务端地址、统计起始日和重复视觉值；开发规则补充了适度避免散落硬编码的要求。
@@ -150,7 +151,7 @@
 
 - `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check`：通过。
 - Analytics 与 HTTP API 连续测试 50 次通过，前端 TypeScript 检查和 Vite 生产构建通过。
-- macOS 桌面浏览器端到端：`1D` 为 180 tokens，`7D`、`30D`、`ALL` 均为 540 tokens；热力图固定读取 `2026-07-29` 至今的 540 tokens，页面无横向溢出和 JavaScript 控制台错误。
+- macOS 桌面浏览器端到端：`1D` 为 180 tokens，`7D`、`30D`、`ALL` 均为 540 tokens；热力图固定读取统一统计起始日至今的 540 tokens，页面无横向溢出和 JavaScript 控制台错误。
 - Code Review：独立 Reviewer 发现热力图初始定位、键盘详情和重复视觉色值 3 个 P2；全部修复后复审通过，无剩余 P0/P1/P2。
 - Commit：`b5a4875 feat(dashboard): add Chinese token heatmap`
 - 推送分支：`main`
@@ -352,3 +353,11 @@
 - 无 Claude Code 目录的 production 冒烟正常启动；Claude diagnostics 为 `not_found`，Web dashboard 与菜单栏 snapshot 保持可用并返回固定的零值 provider 项。
 - `make verify`、`go vet ./...`、`go test -race ./...` 和 `git diff --check` 通过；前端 TypeScript、Vite production build 和嵌入式 Go 二进制构建通过。所有临时服务、端口、fixture 和 SQLite 均在验收后清理。
 - Code Review：独立 Reviewer 发现合并 snapshot 新鲜度可能被较新的 provider 掩盖、Claude 历史 generation 会遮住当前无会话空态，以及 Web/菜单栏 DTO 文档不准确；改为按参与合计的最旧扫描计算 stale、独立展示当前 Claude 空态并修正文档后复审通过。
+
+## 里程碑 18：统一统计起始日
+
+已完成：
+
+- 将 Dashboard、API、热力图和菜单栏“全部”用量的统一起点调整为 `2026-07-01`。
+- 今日、7 日和 30 日仍按 macOS 本地日历边界计算，只在范围早于统一起点时截断。
+- 菜单栏 token 继续合并 Codex 与 Claude Code；5 小时和 7 日配额继续只表示 Codex。

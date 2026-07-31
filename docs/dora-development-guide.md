@@ -462,7 +462,7 @@ type TimeWindow struct {
 
 - 查询使用 `[start, end)`。
 - Web 统一使用 1D、7D、30D、ALL；历史兼容输入只允许在统一时间窗口函数中处理。
-- 第一期用量统计统一始于 `2026-07-29`，任何范围都不能读取更早的数据。
+- 用量统计统一始于 `2026-07-01`，任何范围都不能读取更早的数据。
 - 统计起始日是产品口径，应使用具名常量集中维护，并由 API 返回给前端，不能在多个页面重复写死。
 - 1D、7D、30D、ALL 的边界由一个函数生成。
 - summary、timeline、model breakdown、project breakdown 必须复用同一个 `TimeWindow`。
@@ -991,7 +991,7 @@ dora doctor
 - summary total 等于五类明细和 `reported total` 的保真结果。
 - summary token 等于 timeline token 之和。
 - 1D 在本地时区午夜正确切换。
-- 所有时间窗口都不会早于 `2026-07-29`。
+- 所有时间窗口都不会早于 `2026-07-01`。
 - DST 切换日不重复或漏计。
 
 #### Quota

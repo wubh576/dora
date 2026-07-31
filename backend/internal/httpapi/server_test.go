@@ -290,7 +290,7 @@ func TestUsageAnalyticsEndpointsShareTokenWindow(t *testing.T) {
 	if err := json.NewDecoder(breakdownRecorder.Body).Decode(&breakdown); err != nil {
 		t.Fatalf("解析 breakdown 失败: %v", err)
 	}
-	if len(breakdown.Items) != 2 || breakdown.Items[0].Name != "gpt-a" || breakdown.Items[0].TotalTokens != 120 {
+	if len(breakdown.Items) != 2 || breakdown.Items[0].Name != "gpt-a" || breakdown.Items[0].TotalTokens != 130 {
 		t.Fatalf("breakdown 错误: %+v", breakdown)
 	}
 }
@@ -356,7 +356,7 @@ func TestMultiProviderAPICombinesTotalsAndKeepsSourcesTraceable(t *testing.T) {
 		t.Fatalf("解析 snapshot 失败: %v", err)
 	}
 	if snapshot.Usage.TodayTokens != 170 || snapshot.Usage.SevenDayTokens != 212 ||
-		snapshot.Usage.AllTimeTokens != 212 || len(snapshot.Usage.Providers) != 2 {
+		snapshot.Usage.AllTimeTokens != 222 || len(snapshot.Usage.Providers) != 2 {
 		t.Fatalf("多 provider snapshot 错误: %+v", snapshot)
 	}
 
@@ -458,15 +458,15 @@ func TestDashboardUsesOneConsistentSnapshot(t *testing.T) {
 	}
 	if dashboard.Activity.StartDate != analytics.TrackingStartDate ||
 		dashboard.Activity.EndDate != "2026-07-31" ||
-		len(dashboard.Activity.Days) != 2 {
+		len(dashboard.Activity.Days) != 3 {
 		t.Fatalf("dashboard 热力图错误: %+v", dashboard.Activity)
 	}
 	var activityTotal int64
 	for _, point := range dashboard.Activity.Days {
 		activityTotal += point.TotalTokens
 	}
-	if activityTotal != 162 {
-		t.Fatalf("dashboard 热力图总量 = %d，期望 162", activityTotal)
+	if activityTotal != 172 {
+		t.Fatalf("dashboard 热力图总量 = %d，期望 172", activityTotal)
 	}
 }
 
@@ -489,7 +489,7 @@ func TestSnapshotAndDiagnosticsUsePersistedUsage(t *testing.T) {
 	}
 	if snapshot.Usage.TodayTokens != 120 ||
 		snapshot.Usage.SevenDayTokens != 162 ||
-		snapshot.Usage.AllTimeTokens != 162 ||
+		snapshot.Usage.AllTimeTokens != 172 ||
 		snapshot.Usage.TopModel != "gpt-a" ||
 		snapshot.Usage.Stale ||
 		snapshot.Usage.LastScanAt == nil {

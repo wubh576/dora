@@ -45,13 +45,17 @@ func TestTimeWindowsUseLocalCalendarBoundaries(t *testing.T) {
 }
 
 func TestTimeWindowStartsAtConfiguredTrackingDate(t *testing.T) {
+	const expectedTrackingStartDate = "2026-07-01"
+	if TrackingStartDate != expectedTrackingStartDate {
+		t.Fatalf("TrackingStartDate = %s，期望 %s", TrackingStartDate, expectedTrackingStartDate)
+	}
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	window, err := NewTimeWindow(now, time.UTC, "ALL")
 	if err != nil {
 		t.Fatalf("NewTimeWindow() 失败: %v", err)
 	}
-	if got := window.StartUTC.Format(time.DateOnly); got != TrackingStartDate {
-		t.Fatalf("ALL 起始日 = %s，期望 %s", got, TrackingStartDate)
+	if got := window.StartUTC.Format(time.DateOnly); got != expectedTrackingStartDate {
+		t.Fatalf("ALL 起始日 = %s，期望 %s", got, expectedTrackingStartDate)
 	}
 }
 

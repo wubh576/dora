@@ -11,7 +11,7 @@ import (
 	"github.com/wubh576/dora/backend/internal/domain"
 )
 
-const TrackingStartDate = "2026-07-29"
+const TrackingStartDate = "2026-07-01"
 
 type TimeWindow struct {
 	StartUTC time.Time
