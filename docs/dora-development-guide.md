@@ -1339,6 +1339,9 @@ DORA_CLAUDE_OAUTH_TOKEN
 - parser version。
 - HTTP status category。
 - quota source state。
+- 后台扫描或配额刷新失败的操作上下文、底层错误原因和可行动建议。
+
+后台失败日志必须保持单行。正常 context cancellation 或 Dora 主动退出不记录为失败；配额网络和认证错误在 provider 边界保留有价值的 error chain，但不得包含请求 Header、OAuth token、Cookie 或响应正文。
 
 ### 25.2 禁止记录
 

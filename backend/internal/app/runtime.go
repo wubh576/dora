@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -189,13 +190,7 @@ func (r *Runtime) scanLoop(ctx context.Context, interval time.Duration) {
 	defer ticker.Stop()
 	for {
 		report, err := r.scanner.Scan(ctx, false)
-		if err != nil {
-			if ctx.Err() == nil {
-				r.logger.Printf("Codex 用量自动扫描失败，请运行 dora scan 查看详情")
-			}
-		} else {
-			r.logger.Printf("Codex 用量扫描完成: mode=%s files=%d events=%d stored=%d", report.Mode, report.FilesSeen, report.EventsSeen, report.EventsStored)
-		}
+		logUsageScanResult(ctx, r.logger, report, err)
 		select {
 		case <-ctx.Done():
 			return
@@ -210,19 +205,45 @@ func (r *Runtime) quotaLoop(ctx context.Context, interval time.Duration) {
 	defer ticker.Stop()
 	for {
 		view, err := r.quota.Refresh(ctx, false)
-		if err != nil {
-			if ctx.Err() == nil {
-				r.logger.Printf("Codex 配额自动刷新失败，本地 token 统计不受影响")
-			}
-		} else if view.Enabled {
-			r.logger.Printf("Codex 配额刷新完成: windows=%d status=%s", len(view.Items), view.Status)
-		}
+		logQuotaRefreshResult(ctx, r.logger, view, err)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
 	}
+}
+
+func logUsageScanResult(ctx context.Context, logger Logger, report scan.Report, err error) {
+	if err != nil {
+		if backgroundStopped(ctx, err) {
+			return
+		}
+		logger.Printf("Codex 用量自动扫描失败: %s；可运行 dora scan 重试并查看终端输出", singleLineError(err))
+		return
+	}
+	logger.Printf("Codex 用量扫描完成: mode=%s files=%d events=%d stored=%d", report.Mode, report.FilesSeen, report.EventsSeen, report.EventsStored)
+}
+
+func logQuotaRefreshResult(ctx context.Context, logger Logger, view quota.View, err error) {
+	if err != nil {
+		if backgroundStopped(ctx, err) {
+			return
+		}
+		logger.Printf("Codex 配额自动刷新失败: %s；本地 token 统计不受影响", singleLineError(err))
+		return
+	}
+	if view.Enabled {
+		logger.Printf("Codex 配额刷新完成: windows=%d status=%s", len(view.Items), view.Status)
+	}
+}
+
+func backgroundStopped(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, context.Canceled)
+}
+
+func singleLineError(err error) string {
+	return strings.NewReplacer("\r", " ", "\n", " ").Replace(err.Error())
 }
 
 func ValidateLoopbackAddress(address string) error {

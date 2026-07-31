@@ -28,11 +28,17 @@ type QuotaError struct {
 	State   string
 	Message string
 	Advice  string
+	Cause   error
 }
 
 func (e *QuotaError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+	}
 	return e.Message
 }
+
+func (e *QuotaError) Unwrap() error { return e.Cause }
 
 type QuotaHTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
@@ -122,7 +128,7 @@ func (c *QuotaClient) Fetch(ctx context.Context) ([]domain.QuotaSnapshot, error)
 func (c *QuotaClient) loadCredential() (quotaCredential, error) {
 	homes, err := ResolveHomes(c.homes)
 	if err != nil {
-		return quotaCredential{}, quotaFailure("error", "读取 Codex 登录信息失败", "请检查 Codex home 配置")
+		return quotaCredential{}, quotaFailureWithCause("error", "读取 Codex 登录信息失败", "请检查 Codex home 配置", err)
 	}
 
 	foundAuth := false
@@ -133,12 +139,12 @@ func (c *QuotaClient) loadCredential() (quotaCredential, error) {
 			continue
 		}
 		if err != nil {
-			return quotaCredential{}, quotaFailure("error", "读取 Codex 登录信息失败", "请检查 auth.json 权限")
+			return quotaCredential{}, quotaFailureWithCause("error", "读取 Codex 登录信息失败", "请检查 auth.json 权限", err)
 		}
 		foundAuth = true
 		var auth authFile
 		if err := json.Unmarshal(content, &auth); err != nil {
-			return quotaCredential{}, quotaFailure("error", "Codex 登录信息格式无效", "请重新运行 codex login")
+			return quotaCredential{}, quotaFailureWithCause("error", "Codex 登录信息格式无效", "请重新运行 codex login", err)
 		}
 		if strings.TrimSpace(auth.APIKey) != "" || strings.EqualFold(auth.AuthMode, "apikey") {
 			foundAPIKey = true
@@ -183,7 +189,7 @@ func (c *QuotaClient) fetch(
 
 	response, err := c.doer.Do(request)
 	if err != nil {
-		return nil, quotaFailure("error", "无法连接 Codex 配额服务", "请检查网络后重试")
+		return nil, quotaFailureWithCause("error", "无法连接 Codex 配额服务", "请检查网络后重试", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNotFound && endpoint == quotaPrimaryURL {
@@ -193,13 +199,13 @@ func (c *QuotaClient) fetch(
 		return nil, quotaFailure("error", "Codex 登录已过期或无权读取配额", "请重新运行 codex login")
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, quotaFailure("error", "Codex 配额服务返回错误", "请稍后重试")
+		return nil, quotaFailureWithCause("error", "Codex 配额服务返回错误", "请稍后重试", fmt.Errorf("HTTP %d", response.StatusCode))
 	}
 
 	var value upstreamQuota
 	decoder := json.NewDecoder(io.LimitReader(response.Body, quotaBodyLimit))
 	if err := decoder.Decode(&value); err != nil {
-		return nil, quotaFailure("error", "Codex 配额响应格式无效", "请稍后重试")
+		return nil, quotaFailureWithCause("error", "Codex 配额响应格式无效", "请稍后重试", err)
 	}
 	return &value, nil
 }
@@ -275,4 +281,8 @@ func anonymizedAccountLabel(idToken string) string {
 
 func quotaFailure(state, message, advice string) error {
 	return &QuotaError{State: state, Message: message, Advice: advice}
+}
+
+func quotaFailureWithCause(state, message, advice string, cause error) error {
+	return &QuotaError{State: state, Message: message, Advice: advice, Cause: cause}
 }

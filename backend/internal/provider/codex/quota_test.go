@@ -136,11 +136,15 @@ func TestQuotaReportsUnauthorizedNetworkAndUnsupportedAuth(t *testing.T) {
 
 	t.Run("network", func(t *testing.T) {
 		client := NewQuotaClient([]string{writeQuotaAuth(t, "chatgpt", true)})
-		client.doer = &quotaRoundTrip{returnErr: errors.New("fixture network failure")}
+		cause := errors.New("fixture network failure")
+		client.doer = &quotaRoundTrip{returnErr: cause}
 		_, err := client.Fetch(context.Background())
 		var quotaErr *QuotaError
-		if !errors.As(err, &quotaErr) || quotaErr.Message != "无法连接 Codex 配额服务" {
+		if !errors.As(err, &quotaErr) || quotaErr.Message != "无法连接 Codex 配额服务" || !errors.Is(err, cause) || !strings.Contains(err.Error(), cause.Error()) {
 			t.Fatalf("网络错误不明确: %v", err)
+		}
+		if strings.Contains(err.Error(), "fixture-access") || strings.Contains(err.Error(), "fixture-account") {
+			t.Fatalf("网络错误泄漏凭证: %v", err)
 		}
 	})
 

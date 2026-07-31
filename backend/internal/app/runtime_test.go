@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -15,7 +17,113 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/buildinfo"
+	"github.com/wubh576/dora/backend/internal/quota"
+	"github.com/wubh576/dora/backend/internal/scan"
 )
+
+func TestBackgroundFailureLogsIncludeActionableCause(t *testing.T) {
+	tests := []struct {
+		name   string
+		log    func(context.Context, Logger, error)
+		cause  error
+		values []string
+	}{
+		{
+			name: "usage scan",
+			log: func(ctx context.Context, logger Logger, err error) {
+				logUsageScanResult(ctx, logger, scan.Report{}, err)
+			},
+			cause:  errors.New("fixture parser failed\nsecond detail"),
+			values: []string{"Codex 用量自动扫描失败", "fixture parser failed second detail", "可运行 dora scan 重试并查看终端输出"},
+		},
+		{
+			name: "quota refresh",
+			log: func(ctx context.Context, logger Logger, err error) {
+				logQuotaRefreshResult(ctx, logger, quota.View{}, err)
+			},
+			cause:  errors.New("fixture quota transport failed"),
+			values: []string{"Codex 配额自动刷新失败", "fixture quota transport failed", "本地 token 统计不受影响"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			test.log(context.Background(), log.New(&output, "", 0), test.cause)
+			for _, value := range test.values {
+				if !strings.Contains(output.String(), value) {
+					t.Fatalf("后台失败日志缺少 %q: %q", value, output.String())
+				}
+			}
+			if strings.Count(strings.TrimSpace(output.String()), "\n") != 0 {
+				t.Fatalf("后台失败日志不是单行: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestBackgroundCancellationDoesNotLogFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, cancellation := range []struct {
+		name string
+		ctx  context.Context
+		err  error
+	}{
+		{name: "canceled context", ctx: ctx, err: errors.New("fixture shutdown race")},
+		{name: "wrapped cancellation", ctx: context.Background(), err: fmt.Errorf("后台退出: %w", context.Canceled)},
+	} {
+		t.Run(cancellation.name, func(t *testing.T) {
+			for _, logResult := range []func(context.Context, Logger, error){
+				func(ctx context.Context, logger Logger, err error) {
+					logUsageScanResult(ctx, logger, scan.Report{}, err)
+				},
+				func(ctx context.Context, logger Logger, err error) {
+					logQuotaRefreshResult(ctx, logger, quota.View{}, err)
+				},
+			} {
+				var output bytes.Buffer
+				logResult(cancellation.ctx, log.New(&output, "", 0), cancellation.err)
+				if output.Len() != 0 {
+					t.Fatalf("context cancellation 产生失败日志: %q", output.String())
+				}
+			}
+		})
+	}
+}
+
+func TestBackgroundSuccessLogsSurviveLateCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name string
+		log  func(Logger)
+		want string
+	}{
+		{
+			name: "usage scan",
+			log: func(logger Logger) {
+				logUsageScanResult(ctx, logger, scan.Report{Mode: "incremental", FilesSeen: 1}, nil)
+			},
+			want: "Codex 用量扫描完成",
+		},
+		{
+			name: "quota refresh",
+			log: func(logger Logger) {
+				logQuotaRefreshResult(ctx, logger, quota.View{Enabled: true, Status: "ready"}, nil)
+			},
+			want: "Codex 配额刷新完成",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			test.log(log.New(&output, "", 0))
+			if !strings.Contains(output.String(), test.want) {
+				t.Fatalf("成功日志在延迟取消后丢失: %q", output.String())
+			}
+		})
+	}
+}
 
 func TestRuntimeLogsBuildAndEnvironmentInfo(t *testing.T) {
 	var output bytes.Buffer

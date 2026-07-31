@@ -132,6 +132,17 @@ open http://127.0.0.1:8080
 
 `go run ./cmd/dora install` 等开发构建不包含生产 Web 资源，会被拒绝。请始终先执行 `make build`，再运行 `./bin/dora install`。
 
+### 日志与排障
+
+LaunchAgent 的日志位于：
+
+```text
+~/Library/Logs/Dora/dora.stdout.log
+~/Library/Logs/Dora/dora.stderr.log
+```
+
+后台 Codex 用量扫描和配额刷新失败时，日志会在单行内记录操作、底层错误原因以及重试建议或影响范围。错误不会包含 Authorization Header、OAuth token、control token、Cookie 或认证文件内容；Dora 主动退出产生的 context cancellation 不会记作后台失败。
+
 ## Codex 本地用量扫描
 
 后端启动后会立即扫描，并每 5 分钟检查一次新增记录；每 24 小时至少执行一次全量校验：

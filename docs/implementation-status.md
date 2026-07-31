@@ -19,6 +19,7 @@
 | 11. 单进程 macOS 菜单栏 | 已完成 | `66a8c48` |
 | 12. 当前用户 LaunchAgent 生命周期 | 已完成 | `690e214` |
 | 13. 构建来源与启动环境信息 | 已完成 | `0fae6ff` |
+| 14. 后台失败日志真实原因 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -280,3 +281,18 @@
 - 真实临时服务的 health API 返回与启动日志一致的运行中 build info，测试结束后进程和端口均已清理。
 - 启动日志不记录用户名、设备序列号、OAuth token 或其他凭证。
 - Code Review：独立 Reviewer 发现 `status` 混用了命令版本与 LaunchAgent 运行状态；改为通过 health API 读取运行中实例并明确标注来源后复审通过，无剩余 P0/P1/P2/P3。
+
+## 里程碑 14：后台失败日志真实原因
+
+已完成：
+
+- Codex 用量自动扫描和配额自动刷新失败日志在单行内包含 provider、操作、底层错误原因以及重试建议或影响范围。
+- 正常 context cancellation 与 Dora 主动退出不记录为后台失败，原有成功日志和扫描、配额业务流程保持不变。
+- 配额 provider 保留安全的底层文件、JSON、HTTP 状态和网络 error chain，不记录请求 Header、OAuth token、control token、Cookie 或响应正文。
+
+验证记录：
+
+- 使用 sentinel error 验证扫描和配额日志包含真实原因，换行错误被压成单行，context cancellation 不产生误导日志。
+- 配额网络错误测试确认 error chain 可追踪且不包含 fixture access token 或 account ID；测试未读取真实凭证或访问网络。
+- `make verify`、相关 race 测试、`go vet` 和 `git diff --check` 通过，前端生产构建与 production Go 构建通过。
+- Code Review：独立 Reviewer 发现延迟 context cancellation 会误吞成功日志；修复后补充成功日志回归测试，复审确认无剩余 P0/P1/P2/P3。
