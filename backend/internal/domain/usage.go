@@ -2,7 +2,14 @@ package domain
 
 import "time"
 
-const CodexSource = "provider.codex"
+const (
+	CodexSource      = "provider.codex"
+	ClaudeCodeSource = "provider.claude-code"
+)
+
+func IsUsageSource(source string) bool {
+	return source == CodexSource || source == ClaudeCodeSource
+}
 
 type UsageEvent struct {
 	Source                   string

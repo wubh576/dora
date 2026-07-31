@@ -104,7 +104,7 @@ func (s *Scanner) scan(ctx context.Context, forceFull bool) (report Report, retu
 	report.RunID = runID
 
 	report.Mode = "planning"
-	if err := s.store.BeginUsageScan(ctx, runID, report.Mode, startedAt); err != nil {
+	if err := s.store.BeginProviderUsageScan(ctx, domain.CodexSource, runID, report.Mode, startedAt); err != nil {
 		return Report{}, err
 	}
 	defer func() {
@@ -112,8 +112,9 @@ func (s *Scanner) scan(ctx context.Context, forceFull bool) (report Report, retu
 			return
 		}
 		finishedAt := s.now().UTC()
-		if err := s.store.FailUsageScan(
+		if err := s.store.FailProviderUsageScan(
 			context.Background(),
+			domain.CodexSource,
 			runID,
 			finishedAt,
 			report.FilesSeen,
@@ -221,8 +222,9 @@ func (s *Scanner) scan(ctx context.Context, forceFull bool) (report Report, retu
 	for _, file := range files {
 		orderedStates = append(orderedStates, states[file.Path])
 	}
-	if err := s.store.CompleteUsageScan(
+	if err := s.store.CompleteProviderUsageScan(
 		ctx,
+		domain.CodexSource,
 		runID,
 		report.FinishedAt,
 		events,

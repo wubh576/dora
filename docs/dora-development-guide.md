@@ -1,8 +1,8 @@
 # Dora：个人 AI Coding 用量 Demo 开发指南
 
-> 状态：第一、二期实施基线
+> 状态：第一期与第二期 A 已完成，第二期 B 实施基线
 > 目标平台：macOS，本地单用户
-> 范围：第一期 Codex 本地 Web 仪表盘；第二期 macOS 菜单栏与 Claude Code
+> 范围：第一期 Codex 本地 Web 仪表盘；第二期 A macOS 菜单栏；第二期 B Claude Code 本地用量
 > 不在本文范围：多 Agent session 管理、团队协作、排行榜、云端同步
 
 ## 1. 最终目标
@@ -13,15 +13,17 @@
 - 实际 token 用量与订阅配额同等重要，但两条链路相互独立。
 - 数据只存放在本机 SQLite，不需要 MySQL、PostgreSQL、Docker、登录系统或云服务。
 - Web 页面只监听 `127.0.0.1`，由同一个 Go 核心进程提供 API 和静态资源。
-- 第二期增加原生 macOS 菜单栏，并接入 Claude Code 的实际用量和订阅配额。
+- 第二期 A 增加原生 macOS 菜单栏；第二期 B 接入 Claude Code 的实际用量。
 - 不保存 prompt、回复正文、工具参数或完整 transcript 副本。
+- 不持久化 session ID、父子关系或完整项目路径；session 元数据只在扫描期间用于去重和聚合计数。
 
 推荐的两期产品形态如下：
 
 | 阶段 | 产品形态 | Usage 数据 | Quota 数据 |
 |---|---|---|---|
 | 第一期 | 本地 Web 仪表盘 | Codex transcript | Codex OAuth quota |
-| 第二期 | Web + macOS 菜单栏 | Codex + Claude Code transcript | Codex OAuth quota + Claude statusline quota |
+| 第二期 A | Web + macOS 菜单栏 | Codex transcript | Codex OAuth quota |
+| 第二期 B | Web + macOS 菜单栏 | Codex + Claude Code transcript | Codex OAuth quota |
 
 ## 2. 架构取舍
 
@@ -439,7 +441,9 @@ CREATE TABLE provider_state (
 - 可以检查 reported total 与明细差异。
 - 仍可通过 SQL 或 Go 聚合出 30 分钟和日级趋势。
 
-不要保存原始 JSON 行。`source_files` 保存路径和 checkpoint，`usage_events` 只保存统计元数据。
+不要保存原始 JSON 行。`source_files` 只保存增量扫描必需的 transcript 文件 checkpoint，`usage_events` 只保存统计元数据。每个 provider 独立完成 generation 切换；一个 provider 失败不得清空另一个 provider 的最后成功数据。
+
+不建立 session 数据表。Codex 和 Claude Code 的 session ID、父子关系与项目完整路径只允许在 parser/去重过程的内存中短暂存在，不得进入 SQLite、日志或 API。Diagnostics 只暴露聚合后的 session 数。
 
 ## 8. 时间窗口必须统一
 

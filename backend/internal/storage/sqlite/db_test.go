@@ -148,6 +148,87 @@ func TestRepositoryRejectsInvalidUsageAndPreservesActiveGeneration(t *testing.T)
 	}
 }
 
+func TestProviderUsageGenerationsRemainIsolated(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("Open() 失败: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	events := []domain.UsageEvent{
+		{
+			Source: domain.CodexSource, DedupKey: "codex-message", OccurredAt: now,
+			Model: "gpt", Project: "dora", InputTokens: 3, TotalTokens: 3,
+		},
+		{
+			Source: domain.ClaudeCodeSource, DedupKey: "claude-message", OccurredAt: now,
+			Model: "claude", Project: "dora", OutputTokens: 5, TotalTokens: 5,
+		},
+	}
+	for index, source := range []string{domain.CodexSource, domain.ClaudeCodeSource} {
+		runID := fmt.Sprintf("provider-run-%d", index)
+		if err := store.BeginProviderUsageScan(ctx, source, runID, "full", now); err != nil {
+			t.Fatalf("BeginProviderUsageScan(%s) 失败: %v", source, err)
+		}
+		if err := store.CompleteProviderUsageScan(
+			ctx, source, runID, now, events[index:index+1], nil, 1, 1, "",
+		); err != nil {
+			t.Fatalf("CompleteProviderUsageScan(%s) 失败: %v", source, err)
+		}
+	}
+	if err := store.BeginProviderUsageScan(ctx, domain.CodexSource, "mismatched-run", "full", now); err != nil {
+		t.Fatalf("创建 mismatch run 失败: %v", err)
+	}
+	if err := store.CompleteProviderUsageScan(
+		ctx, domain.ClaudeCodeSource, "mismatched-run", now, events[1:2], nil, 1, 1, "",
+	); err == nil {
+		t.Fatal("CompleteProviderUsageScan() 接受了其他 provider 的 runID")
+	}
+	if err := store.FailProviderUsageScan(
+		ctx, domain.ClaudeCodeSource, "mismatched-run", now, 1, 0, errors.New("fixture failure"),
+	); err == nil {
+		t.Fatal("FailProviderUsageScan() 接受了其他 provider 的 runID")
+	}
+	var mismatchStatus string
+	if err := store.db.QueryRowContext(
+		ctx,
+		"SELECT status FROM scan_runs WHERE run_id = ? AND source = ?",
+		"mismatched-run",
+		domain.CodexSource,
+	).Scan(&mismatchStatus); err != nil {
+		t.Fatalf("读取 mismatch run 失败: %v", err)
+	}
+	if mismatchStatus != "running" {
+		t.Fatalf("provider mismatch 修改了原 run 状态: %s", mismatchStatus)
+	}
+	if err := store.FailProviderUsageScan(
+		ctx, domain.CodexSource, "mismatched-run", now, 0, 0, errors.New("fixture cleanup"),
+	); err != nil {
+		t.Fatalf("清理 mismatch fixture 失败: %v", err)
+	}
+
+	if err := store.BeginProviderUsageScan(ctx, domain.ClaudeCodeSource, "claude-failure", "incremental", now); err != nil {
+		t.Fatalf("创建 Claude failure run 失败: %v", err)
+	}
+	if err := store.FailProviderUsageScan(
+		ctx, domain.ClaudeCodeSource, "claude-failure", now, 1, 0, errors.New("fixture failure"),
+	); err != nil {
+		t.Fatalf("记录 Claude failure run 失败: %v", err)
+	}
+
+	for index, source := range []string{domain.CodexSource, domain.ClaudeCodeSource} {
+		stored, err := store.LoadUsageEvents(ctx, source)
+		if err != nil {
+			t.Fatalf("LoadUsageEvents(%s) 失败: %v", source, err)
+		}
+		if len(stored) != 1 || stored[0].DedupKey != events[index].DedupKey {
+			t.Fatalf("provider generation 串扰: source=%s events=%+v", source, stored)
+		}
+	}
+}
+
 func TestFailedGenerationSwapCleansStagingAndPreservesActiveData(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))

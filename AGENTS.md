@@ -6,8 +6,9 @@ Dora 是一个仅供个人使用、运行在 macOS 本地的 AI 编程用量管�
 
 开发范围：
 
-- 第一期：本地 Web 仪表盘、SQLite、Codex token 使用量和订阅配额。
-- 第二期：macOS 菜单栏、Claude Code token 使用量和订阅配额。
+- 第一期：本地 Web 仪表盘、SQLite、Codex token 使用量和订阅配额，已完成。
+- 第二期 A：单进程生产运行、macOS 菜单栏和 LaunchAgent，已完成。
+- 第二期 B：Claude Code 本地 token 使用量；不持久化或管理 session。
 
 详细设计见：
 
@@ -36,6 +37,8 @@ Dora 是一个仅供个人使用、运行在 macOS 本地的 AI 编程用量管�
 - SQLite 数据完整性；
 - 增量扫描去重；
 - 已有用户数据。
+
+Session 只用于扫描期间的临时关联、去重和聚合计数。Dora 不持久化 session ID、父子关系或完整项目路径，也不提供 session 浏览、恢复或控制功能。
 
 ## 编码风格
 

@@ -12,13 +12,20 @@ import (
 )
 
 func (s *Store) BeginUsageScan(ctx context.Context, runID, mode string, startedAt time.Time) error {
+	return s.BeginProviderUsageScan(ctx, domain.CodexSource, runID, mode, startedAt)
+}
+
+func (s *Store) BeginProviderUsageScan(ctx context.Context, source, runID, mode string, startedAt time.Time) error {
+	if !domain.IsUsageSource(source) {
+		return fmt.Errorf("不支持的 usage provider %q", source)
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO scan_runs (
 			run_id, source, mode, started_at_ms, status
 		) VALUES (?, ?, ?, ?, 'running')
-	`, runID, domain.CodexSource, mode, startedAt.UTC().UnixMilli())
+	`, runID, source, mode, startedAt.UTC().UnixMilli())
 	if err != nil {
-		return fmt.Errorf("创建 Codex 扫描记录: %w", err)
+		return fmt.Errorf("创建 %s 扫描记录: %w", source, err)
 	}
 	return nil
 }
@@ -36,33 +43,45 @@ func (s *Store) UpdateUsageScanMode(ctx context.Context, runID, mode string) err
 }
 
 func (s *Store) FailUsageScan(ctx context.Context, runID string, finishedAt time.Time, filesSeen, eventsSeen int, scanErr error) error {
+	return s.FailProviderUsageScan(ctx, domain.CodexSource, runID, finishedAt, filesSeen, eventsSeen, scanErr)
+}
+
+func (s *Store) FailProviderUsageScan(ctx context.Context, source, runID string, finishedAt time.Time, filesSeen, eventsSeen int, scanErr error) error {
+	if !domain.IsUsageSource(source) {
+		return fmt.Errorf("不支持的 usage provider %q", source)
+	}
 	message := scanErr.Error()
-	var result error
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE scan_runs
-		SET finished_at_ms = ?, status = 'failed', files_seen = ?, events_seen = ?, error_message = ?
-		WHERE run_id = ?
-	`, finishedAt.UTC().UnixMilli(), filesSeen, eventsSeen, message, runID); err != nil {
-		result = errors.Join(result, fmt.Errorf("记录 Codex 扫描失败: %w", err))
-	}
-	if _, err := s.db.ExecContext(
-		ctx,
-		"DELETE FROM usage_events_staging WHERE run_id = ?",
-		runID,
-	); err != nil {
-		result = errors.Join(result, fmt.Errorf("清理失败扫描 staging: %w", err))
-	}
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO provider_state (
-			provider, usage_status, last_usage_error
-		) VALUES (?, 'error', ?)
-		ON CONFLICT(provider) DO UPDATE SET
-			usage_status = excluded.usage_status,
-			last_usage_error = excluded.last_usage_error
-	`, domain.CodexSource, message); err != nil {
-		result = errors.Join(result, fmt.Errorf("更新 Codex provider 状态: %w", err))
-	}
-	return result
+	return s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
+		if err := requireRunningScan(ctx, conn, source, runID); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, `
+			UPDATE scan_runs
+			SET finished_at_ms = ?, status = 'failed', files_seen = ?, events_seen = ?, error_message = ?
+			WHERE run_id = ? AND source = ? AND status = 'running'
+		`, finishedAt.UTC().UnixMilli(), filesSeen, eventsSeen, message, runID, source); err != nil {
+			return fmt.Errorf("记录 %s 扫描失败: %w", source, err)
+		}
+		if _, err := conn.ExecContext(
+			ctx,
+			"DELETE FROM usage_events_staging WHERE run_id = ? AND source = ?",
+			runID,
+			source,
+		); err != nil {
+			return fmt.Errorf("清理失败扫描 staging: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO provider_state (
+				provider, usage_status, last_usage_error
+			) VALUES (?, 'error', ?)
+			ON CONFLICT(provider) DO UPDATE SET
+				usage_status = excluded.usage_status,
+				last_usage_error = excluded.last_usage_error
+		`, source, message); err != nil {
+			return fmt.Errorf("更新 %s provider 状态: %w", source, err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) CompleteUsageScan(
@@ -75,17 +94,39 @@ func (s *Store) CompleteUsageScan(
 	eventsSeen int,
 	warning string,
 ) error {
+	return s.CompleteProviderUsageScan(
+		ctx, domain.CodexSource, runID, finishedAt, events, files, filesSeen, eventsSeen, warning,
+	)
+}
+
+func (s *Store) CompleteProviderUsageScan(
+	ctx context.Context,
+	source string,
+	runID string,
+	finishedAt time.Time,
+	events []domain.UsageEvent,
+	files []domain.SourceFileState,
+	filesSeen int,
+	eventsSeen int,
+	warning string,
+) error {
+	if !domain.IsUsageSource(source) {
+		return fmt.Errorf("不支持的 usage provider %q", source)
+	}
 	for _, file := range files {
-		if err := validateSourceFile(file); err != nil {
+		if err := validateSourceFile(source, file); err != nil {
 			return err
 		}
 	}
-	if err := s.stageUsageEvents(ctx, runID, events); err != nil {
+	if err := s.stageUsageEvents(ctx, source, runID, events); err != nil {
 		return err
 	}
 	return s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
-		if _, err := conn.ExecContext(ctx, "DELETE FROM usage_events WHERE source = ?", domain.CodexSource); err != nil {
-			return fmt.Errorf("清理旧 Codex usage: %w", err)
+		if err := requireRunningScan(ctx, conn, source, runID); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, "DELETE FROM usage_events WHERE source = ?", source); err != nil {
+			return fmt.Errorf("清理旧 %s usage: %w", source, err)
 		}
 		if _, err := conn.ExecContext(ctx, `
 			INSERT INTO usage_events (
@@ -102,13 +143,13 @@ func (s *Store) CompleteUsageScan(
 				reported_total_tokens, total_tokens, rollout_key,
 				parent_rollout_key, replay_fingerprint, inherited_replay, ?
 			FROM usage_events_staging
-			WHERE run_id = ?
-		`, finishedAt.UTC().UnixMilli(), runID); err != nil {
-			return fmt.Errorf("切换 Codex usage generation: %w", err)
+			WHERE run_id = ? AND source = ?
+		`, finishedAt.UTC().UnixMilli(), runID, source); err != nil {
+			return fmt.Errorf("切换 %s usage generation: %w", source, err)
 		}
 
-		if _, err := conn.ExecContext(ctx, "DELETE FROM source_files WHERE source = ?", domain.CodexSource); err != nil {
-			return fmt.Errorf("清理旧 Codex 文件状态: %w", err)
+		if _, err := conn.ExecContext(ctx, "DELETE FROM source_files WHERE source = ?", source); err != nil {
+			return fmt.Errorf("清理旧 %s 文件状态: %w", source, err)
 		}
 		for _, file := range files {
 			var lastSuccess any
@@ -136,7 +177,7 @@ func (s *Store) CompleteUsageScan(
 				lastSuccess,
 				file.LastError,
 			); err != nil {
-				return fmt.Errorf("保存 Codex 文件状态: %w", err)
+				return fmt.Errorf("保存 %s 文件状态: %w", source, err)
 			}
 		}
 
@@ -147,9 +188,9 @@ func (s *Store) CompleteUsageScan(
 		if _, err := conn.ExecContext(ctx, `
 			UPDATE scan_runs
 			SET finished_at_ms = ?, status = 'succeeded', files_seen = ?, events_seen = ?, error_message = ?
-			WHERE run_id = ?
-		`, finishedAt.UTC().UnixMilli(), filesSeen, eventsSeen, warning, runID); err != nil {
-			return fmt.Errorf("完成 Codex 扫描记录: %w", err)
+			WHERE run_id = ? AND source = ? AND status = 'running'
+		`, finishedAt.UTC().UnixMilli(), filesSeen, eventsSeen, warning, runID, source); err != nil {
+			return fmt.Errorf("完成 %s 扫描记录: %w", source, err)
 		}
 		if _, err := conn.ExecContext(ctx, `
 			INSERT INTO provider_state (
@@ -159,23 +200,46 @@ func (s *Store) CompleteUsageScan(
 				usage_status = excluded.usage_status,
 				last_usage_at_ms = excluded.last_usage_at_ms,
 				last_usage_error = excluded.last_usage_error
-		`, domain.CodexSource, status, finishedAt.UTC().UnixMilli(), warning); err != nil {
-			return fmt.Errorf("更新 Codex provider 状态: %w", err)
+		`, source, status, finishedAt.UTC().UnixMilli(), warning); err != nil {
+			return fmt.Errorf("更新 %s provider 状态: %w", source, err)
 		}
-		if _, err := conn.ExecContext(ctx, "DELETE FROM usage_events_staging WHERE run_id = ?", runID); err != nil {
+		if _, err := conn.ExecContext(ctx, "DELETE FROM usage_events_staging WHERE run_id = ? AND source = ?", runID, source); err != nil {
 			return fmt.Errorf("完成 usage staging 清理: %w", err)
 		}
 		return nil
 	})
 }
 
-func (s *Store) stageUsageEvents(ctx context.Context, runID string, events []domain.UsageEvent) error {
+type rowQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func requireRunningScan(ctx context.Context, db rowQueryer, source, runID string) error {
+	var exists bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM scan_runs
+			WHERE run_id = ? AND source = ? AND status = 'running'
+		)
+	`, runID, source).Scan(&exists); err != nil {
+		return fmt.Errorf("校验 %s 扫描记录: %w", source, err)
+	}
+	if !exists {
+		return fmt.Errorf("%s 扫描记录 %q 不存在或状态无效", source, runID)
+	}
+	return nil
+}
+
+func (s *Store) stageUsageEvents(ctx context.Context, source, runID string, events []domain.UsageEvent) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("开始 usage staging: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM usage_events_staging WHERE run_id = ?", runID); err != nil {
+	if err := requireRunningScan(ctx, tx, source, runID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM usage_events_staging WHERE run_id = ? AND source = ?", runID, source); err != nil {
 		return fmt.Errorf("清理 usage staging: %w", err)
 	}
 	statement, err := tx.PrepareContext(ctx, `
@@ -192,7 +256,7 @@ func (s *Store) stageUsageEvents(ctx context.Context, runID string, events []dom
 	}
 	defer statement.Close()
 	for _, event := range events {
-		if err := validateUsageEvent(event); err != nil {
+		if err := validateUsageEvent(source, event); err != nil {
 			return err
 		}
 		if _, err := statement.ExecContext(
@@ -431,8 +495,8 @@ func boolToInteger(value bool) int {
 	return 0
 }
 
-func validateUsageEvent(event domain.UsageEvent) error {
-	if event.Source != domain.CodexSource || event.DedupKey == "" || event.OccurredAt.IsZero() || event.Model == "" || event.Project == "" {
+func validateUsageEvent(source string, event domain.UsageEvent) error {
+	if event.Source != source || event.DedupKey == "" || event.OccurredAt.IsZero() || event.Model == "" || event.Project == "" {
 		return errors.New("usage event 缺少必要字段")
 	}
 	values := []int64{
@@ -462,8 +526,8 @@ func validateUsageEvent(event domain.UsageEvent) error {
 	return nil
 }
 
-func validateSourceFile(file domain.SourceFileState) error {
-	if file.Source != domain.CodexSource || file.Path == "" || file.ParserVersion <= 0 {
+func validateSourceFile(source string, file domain.SourceFileState) error {
+	if file.Source != source || file.Path == "" || file.ParserVersion <= 0 {
 		return errors.New("source file 缺少必要字段")
 	}
 	if file.SizeBytes < 0 ||
