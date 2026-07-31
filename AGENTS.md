@@ -27,6 +27,7 @@ Dora 是一个仅供个人使用、运行在 macOS 本地的 AI 编程用量管�
 - 不按照多租户、分布式或大型企业系统设计。
 - 遇到普通技术选择时，由 Agent 自主决定。
 - 用户只负责最终功能验收。
+- 本地开发和 CI 的 Go 工具链固定为 1.26.5；`backend/go.mod` 中的 `go 1.21` 只表示最低兼容版本。除明确的兼容性或安全原因外不调整工具链版本，确需调整时同步更新本地环境、CI 和 README。
 
 简单实现不能破坏：
 
@@ -183,6 +184,8 @@ Co-authored-by: Codex <noreply@openai.com>
 - `refactor(scope): description`
 - `test(scope): description`
 - `docs(scope): description`
+
+术语 `CI` 在文档、说明和提交信息中统一大写。CI 相关提交使用 `CI: description`，不使用 `ci: description`。
 
 推送当前分支：
 

@@ -4,10 +4,12 @@ Dora 是一个运行在 macOS 本地的 AI 编程用量管理工具。当前使�
 
 ## 环境要求
 
-- Go 1.21+
+- Go 1.26.5
 - Node.js 20.19+ 或 22.12+
 - npm
 - Make
+
+本地开发和 CI 固定使用 Go 1.26.5；`backend/go.mod` 中的 `go 1.21` 仅表示源码和依赖的最低兼容版本。
 
 ## 安装依赖
 
@@ -140,4 +142,4 @@ make verify
 
 提交前运行该命令，它会执行后端测试并构建前端。
 
-推送到 `main` 或创建 Pull Request 后，GitHub Actions 会在 macOS 上使用 Go 1.21 和 Node.js 22 重新安装依赖、检查 Go module 是否干净，并执行相同验证与 `go vet`。
+推送到 `main` 或创建 Pull Request 后，GitHub Actions 会在 macOS 上使用 Go 1.26.5 和 Node.js 22 重新安装依赖、检查 Go module 是否干净，并执行相同验证与 `go vet`。
