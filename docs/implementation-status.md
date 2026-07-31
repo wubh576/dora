@@ -10,7 +10,7 @@
 | 2. Codex 本地用量采集 | 已完成 | `738d1a9` |
 | 3. Token 统计 API 与 Web 仪表盘 | 已完成 | `7718e42` |
 | 4. Codex 订阅配额 | 已完成 | `accba4e` |
-| 5. 第一期整体收尾 | 进行中 | - |
+| 5. 第一期整体收尾 | 已完成 | `09d822e` |
 
 ## 里程碑 1：基础运行链路
 
@@ -103,4 +103,23 @@
 
 ## 里程碑 5：第一期整体收尾
 
-当前状态：未开始。
+已完成：
+
+- 修复 total-only 累计快照在增量扫描中的重复计数，并持久化 last-only 到 cumulative 的待对账状态；五类 token 明细在对账后保持准确。
+- 失败扫描不再刷新最后成功时间，旧 generation 保持可读，遗留 staging 数据会被清理。
+- 扫描使用固定文件快照；计划后的纯追加延后到下一轮处理，截断、替换或非追加改写会明确失败且不污染现有数据。
+- 本地诊断和 CLI 保留可操作的目标文件路径，HTTP API 对错误内容继续脱敏。
+- README 的安装、单命令启动、扫描、配额授权和验证步骤已与最终实现一致。
+
+最终验证记录：
+
+- `make dev`：前后端可由一条命令同时启动。
+- 浏览器端到端：Dashboard 通过真实 API 展示 SQLite 中的 180 tokens、2 条事件和五类非重叠明细；Diagnostics 显示 `Ready`、parser v2，并成功执行无新增的手动增量扫描。
+- API 验收：health、summary、timeline、breakdown、dashboard、snapshot、diagnostics、quotas 和 settings 均返回 HTTP 200。
+- 持久化验收：复用同一 SQLite 重启后，初始化时间保持 `2026-07-31T04:55:52Z`，2 条 usage event 保持不变，启动扫描为无新增的 incremental。
+- 当前机器真实数据：最终 Reviewer 使用临时 SQLite 全量扫描 43 个 Codex 文件，解析 3493 条记录并去重为 1668 条；后续两次增量扫描正常且无 warning。
+- `make verify`、`go vet ./...`、`go test -race ./...`、随机顺序全量测试 20 次和 `git diff --check`：通过。
+- 关键 provider 与 scan 包重复测试 100 次，SQLite、HTTP API 与 CLI 重复测试 50 次：通过。
+- Code Review：独立 Reviewer 复核累计 token、pending 对账、失败保旧、staging 清理、错误脱敏和并发文件快照；所有发现均已修复，最终无剩余 P0/P1/P2 问题。
+- Commit：`09d822e fix(usage): harden incremental scan accuracy`
+- 推送分支：`main`
