@@ -69,13 +69,13 @@ open http://127.0.0.1:8080
 
 `make build` 会先清理旧前端产物，执行 Vite 生产构建，再把生成的页面资源嵌入 `bin/dora`。`menubar` 由同一个进程运行菜单栏、HTTP/API、SQLite、扫描器和配额服务，不会额外启动 `dora serve`、Node.js、npm 或 Vite。
 
-构建会把版本、Git commit 和 UTC 构建时间写入二进制。仅当当前 commit 有精确 Git tag 且工作区干净时使用该 tag 作为正式版本；其他构建使用 `dev+<short-commit>`，存在未提交修改时追加 `-dirty`。查看完整构建与运行环境：
+构建会把 Git commit、工作区状态和 UTC 构建时间写入二进制。Dora 是个人本地工具，不维护独立版本号，也不要求为提交创建 Git tag；每个 Git commit 就是唯一构建来源。
 
 ```bash
-./bin/dora version
+./bin/dora status
 ```
 
-输出包含 Dora 版本、commit、构建时间、Go 版本、`GOOS/GOARCH` 和 macOS 版本。`./bin/dora status` 同时显示版本、commit、架构、macOS 版本和版本来源；LaunchAgent 正常时这些字段来自运行中的服务，避免与尚未安装的新构建混淆。`serve` 与 `menubar` 每次启动都会把相同信息写入日志，但不会记录用户名、设备序列号、OAuth token 或其他凭证。
+`status` 输出短 commit 构建标识、完整 commit、`dirty/clean`、构建时间、Go 版本、`GOOS/GOARCH`、macOS 版本和构建来源。LaunchAgent 正常时这些字段来自运行中的服务，避免与尚未安装的新构建混淆。`serve` 与 `menubar` 每次启动都会把相同信息写入日志，但不会记录用户名、设备序列号、OAuth token 或其他凭证。
 
 菜单栏标题显示今日 token；点开后可查看今日、7 日、全部 token、最高用量模型、Codex 5 小时/7 日配额和最近状态。菜单支持异步刷新、打开真实 loopback 仪表盘和正常退出。退出会关闭 HTTP 服务并释放端口。
 

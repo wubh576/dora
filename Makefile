@@ -4,18 +4,9 @@ FRONTEND_DIST := frontend/dist
 WEB_ASSET_STAGE := backend/internal/webassets/dist
 BINARY := bin/dora
 GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null || printf unknown)
-GIT_SHORT_COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf unknown)
-GIT_TAG := $(shell git describe --tags --exact-match HEAD 2>/dev/null)
-GIT_DIRTY := $(shell test -z "$$(git status --porcelain --untracked-files=normal 2>/dev/null)" || printf '%s' -dirty)
+GIT_DIRTY := $(if $(strip $(shell git status --porcelain --untracked-files=normal 2>/dev/null)),true,false)
 BUILD_TIME := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
-ifeq ($(strip $(GIT_TAG)),)
-BUILD_VERSION := dev+$(GIT_SHORT_COMMIT)$(GIT_DIRTY)
-else ifneq ($(strip $(GIT_DIRTY)),)
-BUILD_VERSION := dev+$(GIT_SHORT_COMMIT)$(GIT_DIRTY)
-else
-BUILD_VERSION := $(GIT_TAG)
-endif
-BUILD_LDFLAGS := -X github.com/wubh576/dora/backend/internal/buildinfo.version=$(BUILD_VERSION) -X github.com/wubh576/dora/backend/internal/buildinfo.commit=$(GIT_COMMIT) -X github.com/wubh576/dora/backend/internal/buildinfo.buildTime=$(BUILD_TIME)
+BUILD_LDFLAGS := -X github.com/wubh576/dora/backend/internal/buildinfo.commit=$(GIT_COMMIT) -X github.com/wubh576/dora/backend/internal/buildinfo.buildTime=$(BUILD_TIME) -X github.com/wubh576/dora/backend/internal/buildinfo.dirty=$(GIT_DIRTY)
 
 install:
 	go -C backend mod download

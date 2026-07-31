@@ -192,7 +192,7 @@ func TestStatusDistinguishesInstallLoadRunAndHealth(t *testing.T) {
 			if status.Installed() != test.installed || status.Loaded != test.loaded || status.Running != test.running || status.RunState() != test.runState || status.ExitCode() != test.exitCode {
 				t.Fatalf("Status() = %+v state=%s exit=%d", status, status.RunState(), status.ExitCode())
 			}
-			if test.runState == "正常" && (status.BuildInfo == nil || status.BuildInfo.Version != "v1.2.3") {
+			if test.runState == "正常" && (status.BuildInfo == nil || status.BuildInfo.BuildID() != "abc123") {
 				t.Fatalf("正常状态未返回运行中 build info: %+v", status.BuildInfo)
 			}
 		})
@@ -445,7 +445,7 @@ func (health *fakeHealth) Check(context.Context, string) (buildinfo.Info, error)
 	if after != nil {
 		after()
 	}
-	return buildinfo.New("v1.2.3", "abc123", "2026-07-31T08:00:00Z", "go1.26.5", "darwin", "arm64", "15.6"), err
+	return buildinfo.New("abc123", false, "2026-07-31T08:00:00Z", "go1.26.5", "darwin", "arm64", "15.6"), err
 }
 
 type fakePort struct {

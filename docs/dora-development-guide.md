@@ -1086,12 +1086,13 @@ dora uninstall
 - uninstall 幂等，只删除 plist、安装二进制和对应临时文件，保留 SQLite、settings、日志和 Codex 原始数据。
 - 菜单“退出 Dora”产生成功退出，当前登录会话不立即重启；下次登录仍由 RunAtLoad 启动。
 
-### 20.4 构建版本与启动环境
+### 20.4 构建来源与启动环境
 
-- `make build` 通过 Go `-ldflags` 注入 version、完整 Git commit 和 UTC build time。
-- 当前 commit 有精确 Git tag 且工作区干净时，tag 是正式版本；否则版本为 `dev+<short-commit>`，有未提交修改时追加 `-dirty`。
-- `dora version` 输出 version、commit、build time、Go version、`GOOS/GOARCH` 和 macOS product version。
-- `dora status` 输出 Dora 版本、commit、架构、macOS 版本和版本来源；LaunchAgent 正常时通过本机 health API 读取运行中实例的 build info，不得混用调用命令的版本。
+- Dora 是个人本地工具，不维护独立版本号，也不要求为每个提交创建 Git tag；Git commit 是唯一构建来源。
+- `make build` 通过 Go `-ldflags` 注入完整 Git commit、工作区 `dirty/clean` 状态和 UTC build time。
+- 构建标识使用 12 位短 commit，脏工作区追加 `-dirty`；该标识只用于定位源码，不作为产品版本号。
+- 不提供独立 `dora version` 命令。`dora status` 输出构建标识、完整 commit、工作区状态、构建时间、Go version、`GOOS/GOARCH`、macOS product version 和构建来源。
+- LaunchAgent 正常时，`status` 通过本机 health API 读取运行中实例的 build info，不得混用调用命令的信息。
 - `serve` 和 `menubar` 启动日志记录同一份 build info；日志不得包含用户名、设备序列号、OAuth token 或其他凭证。
 
 ## 21. Claude Code 文件发现

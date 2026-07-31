@@ -18,7 +18,7 @@
 | 10. Token API 等价费用估算 | 已完成 | `fa607f2` |
 | 11. 单进程 macOS 菜单栏 | 已完成 | `66a8c48` |
 | 12. 当前用户 LaunchAgent 生命周期 | 已完成 | `690e214` |
-| 13. 构建版本与启动环境信息 | 已完成 | 本次提交 |
+| 13. 构建来源与启动环境信息 | 已完成 | `0fae6ff` |
 
 ## 里程碑 1：基础运行链路
 
@@ -265,18 +265,18 @@
 - 最终生产二进制已重新安装并留驻运行；status 返回 0，LaunchAgent PID 37792 为唯一 Dora 进程且无子进程，安装副本与构建产物一致，health 与嵌入首页均返回 200。
 - Code Review：独立 Reviewer 发现 health 与目标 job 未绑定、README 主动退出语义和失败恢复指引 3 个问题；全部修复并复审通过，无剩余 P0/P1/P2/P3。
 
-## 里程碑 13：构建版本与启动环境信息
+## 里程碑 13：构建来源与启动环境信息
 
 已完成：
 
-- 增加统一 build info，覆盖 Dora version、Git commit、UTC build time、Go version、`GOOS/GOARCH` 和 macOS product version。
-- `make build` 和 `make dev` 通过 `-ldflags` 注入构建元数据；精确 tag 且工作区干净时使用正式版本，否则生成带短 commit 的 dev 版本，脏工作区追加 `dirty`。
-- 增加 `dora version`；`dora status` 增加版本、commit、架构和 macOS 信息；运行时启动日志记录同一份非敏感环境信息。
+- 增加统一 build info，覆盖 Git commit、`dirty/clean`、UTC build time、Go version、`GOOS/GOARCH` 和 macOS product version。
+- Dora 不维护独立产品版本号，也不要求 Git tag；`make build` 和 `make dev` 通过 `-ldflags` 注入 commit、工作区状态和构建时间，12 位短 commit 作为构建标识。
+- `dora status` 展示构建标识和完整环境信息；运行时启动日志记录同一份非敏感信息，不提供独立 `dora version` 命令。
 
 验证记录：
 
-- build info 格式、缺省值、短 commit、version 命令与启动日志均有自动测试。
-- 生产二进制在脏工作区构建时显示 `dirty`，提交后重建则显示当前干净 commit。
+- build info 格式、缺省值、短 commit、`dirty/clean`、status 输出与启动日志均有自动测试。
+- 生产二进制在脏工作区构建时标识追加 `dirty`，提交后重建则只显示当前短 commit。
 - 真实临时服务的 health API 返回与启动日志一致的运行中 build info，测试结束后进程和端口均已清理。
 - 启动日志不记录用户名、设备序列号、OAuth token 或其他凭证。
 - Code Review：独立 Reviewer 发现 `status` 混用了命令版本与 LaunchAgent 运行状态；改为通过 health API 读取运行中实例并明确标注来源后复审通过，无剩余 P0/P1/P2/P3。

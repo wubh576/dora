@@ -47,11 +47,9 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("用法: dora <serve|menubar|scan|quota|install|status|uninstall|version> [选项]")
+		return errors.New("用法: dora <serve|menubar|scan|quota|install|status|uninstall> [选项]")
 	}
 	switch args[0] {
-	case "version":
-		return versionCommand(args[1:], os.Stdout, buildinfo.Current())
 	case "install":
 		return installCommand(args[1:])
 	case "status":
@@ -75,7 +73,7 @@ func run(args []string) error {
 	case "quota":
 		return quotaCommand(args[1:], defaultDBPath)
 	default:
-		return fmt.Errorf("未知命令 %q；用法: dora <serve|menubar|scan|quota|install|status|uninstall|version> [选项]", args[0])
+		return fmt.Errorf("未知命令 %q；用法: dora <serve|menubar|scan|quota|install|status|uninstall> [选项]", args[0])
 	}
 }
 
@@ -99,14 +97,6 @@ func commandExitCode(err error) int {
 		return commandErr.code
 	}
 	return 1
-}
-
-func versionCommand(args []string, output io.Writer, info buildinfo.Info) error {
-	if len(args) != 0 {
-		return fmt.Errorf("version 不支持参数 %q", args[0])
-	}
-	_, err := fmt.Fprintln(output, info.String())
-	return err
 }
 
 func installCommand(args []string) error {
@@ -161,7 +151,11 @@ func writeLaunchAgentStatus(output io.Writer, status launchagent.Status, install
 	if status.BuildInfo != nil {
 		info, source = *status.BuildInfo, "运行中的 LaunchAgent"
 	}
-	_, err := fmt.Fprintf(output, "安装：%s\nLaunchAgent：%s\n运行：%s\n仪表盘：%s\n版本来源：%s\nDora 版本：%s\nCommit：%s\n架构：%s\nmacOS：%s\n", installed, loaded, status.RunState(), status.DashboardURL, source, info.Version, info.GitCommit, info.Platform(), info.MacOSVersion)
+	state := "clean"
+	if info.Dirty {
+		state = "dirty"
+	}
+	_, err := fmt.Fprintf(output, "安装：%s\nLaunchAgent：%s\n运行：%s\n仪表盘：%s\n构建来源：%s\n构建标识：%s\nCommit：%s\n构建状态：%s\n构建时间：%s\nGo：%s\n架构：%s\nmacOS：%s\n", installed, loaded, status.RunState(), status.DashboardURL, source, info.BuildID(), info.GitCommit, state, info.BuildTime, info.GoVersion, info.Platform(), info.MacOSVersion)
 	return err
 }
 

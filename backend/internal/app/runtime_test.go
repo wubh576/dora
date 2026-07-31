@@ -25,7 +25,7 @@ func TestRuntimeLogsBuildAndEnvironmentInfo(t *testing.T) {
 		CodexHomes:   []string{t.TempDir()},
 		ScanInterval: time.Hour,
 		Logger:       log.New(&output, "", 0),
-		BuildInfo:    buildinfo.New("dev+abc123-dirty", "abc123", "2026-07-31T08:00:00Z", "go1.26.5", "darwin", "arm64", "15.6"),
+		BuildInfo:    buildinfo.New("abc123", true, "2026-07-31T08:00:00Z", "go1.26.5", "darwin", "arm64", "15.6"),
 	})
 	if err != nil {
 		t.Fatalf("Start() 失败: %v", err)
@@ -34,7 +34,7 @@ func TestRuntimeLogsBuildAndEnvironmentInfo(t *testing.T) {
 		t.Fatalf("Close() 失败: %v", err)
 	}
 	logOutput := output.String()
-	for _, value := range []string{"version=dev+abc123-dirty", "commit=abc123", "build_time=2026-07-31T08:00:00Z", "go=go1.26.5", "platform=darwin/arm64", "macos=15.6"} {
+	for _, value := range []string{"build=abc123-dirty", "commit=abc123", "dirty=true", "build_time=2026-07-31T08:00:00Z", "go=go1.26.5", "platform=darwin/arm64", "macos=15.6"} {
 		if !strings.Contains(logOutput, value) {
 			t.Fatalf("启动日志缺少 %q: %q", value, logOutput)
 		}
