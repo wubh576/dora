@@ -9,8 +9,8 @@
 | 1. 基础运行链路 | 已完成 | `68db287` |
 | 2. Codex 本地用量采集 | 已完成 | `738d1a9` |
 | 3. Token 统计 API 与 Web 仪表盘 | 已完成 | `7718e42` |
-| 4. Codex 订阅配额 | 未开始 | - |
-| 5. 第一期整体收尾 | 未开始 | - |
+| 4. Codex 订阅配额 | 已完成 | `accba4e` |
+| 5. 第一期整体收尾 | 进行中 | - |
 
 ## 里程碑 1：基础运行链路
 
@@ -82,7 +82,24 @@
 
 ## 里程碑 4：Codex 订阅配额
 
-当前状态：未开始。
+已完成：
+
+- 配额读取默认关闭，只有用户在 Diagnostics 明确授权后才读取本地 Codex OAuth 登录并请求固定的 ChatGPT 配额地址。
+- 按窗口时长识别 5 小时和 7 日配额，不依赖 primary/secondary 顺序；仅主地址返回 404 时尝试备用地址。
+- SQLite 保存最后成功配额，失败只更新 provider 状态；网络或登录失败保留旧值，超过 10 分钟标记 stale。
+- 提供配额、设置和手动刷新 API，以及 `dora quota refresh` 命令；后台最多每 5 分钟自动刷新一次。
+- Dashboard 展示已用、剩余、重置时间、账号脱敏标签和 stale 状态；Diagnostics 展示授权、状态、最后成功时间和手动刷新入口。
+- access token 只用于单次请求，不写入 SQLite、settings、日志或 API；HTTP 禁止重定向，避免认证头离开固定地址。
+
+验证记录：
+
+- `make verify`、`go test -race ./...`、`go vet ./...`、`git diff --check`：通过。
+- 浏览器端到端：默认未授权时 Dashboard 正常展示本地 usage，配额卡片显示未启用；Diagnostics 显示明确且未勾选的授权开关。
+- 测试覆盖 5h/7d 窗口交换、404 fallback、401/403、百分比边界、singleflight、5 分钟缓存、stale fallback、失败保留历史和关闭授权后隐藏旧值。
+- 安全回归使用 sentinel 凭证跑通真实 client、service、SQLite 和 HTTP API，确认凭证不出现在数据库、settings、API 或日志。
+- Code Review：独立 Reviewer 发现重定向认证头边界、并发测试时序、旧快照错误提示和安全测试缺口；全部修复后复审通过。
+- Commit：`accba4e feat(quota): add Codex subscription limits`
+- 推送分支：`main`
 
 ## 里程碑 5：第一期整体收尾
 
