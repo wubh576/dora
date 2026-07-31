@@ -78,18 +78,16 @@ func TestQuotaUsesDurationWhenPrimaryAndSecondaryAreSwapped(t *testing.T) {
 		snapshots[1].RemainingPercent != 58 {
 		t.Fatalf("quota 窗口识别错误: %+v", snapshots)
 	}
-	if len(fake.requests) != 1 ||
-		fake.requests[0].URL.String() != quotaPrimaryURL ||
-		fake.requests[0].Header.Get("Authorization") != "Bearer fixture-access" ||
-		fake.requests[0].Header.Get("ChatGPT-Account-ID") != "fixture-account" {
-		t.Fatalf("quota 请求错误: %+v", fake.requests)
+	if len(fake.requests) != 1 {
+		t.Fatalf("quota 请求次数 = %d，期望 1", len(fake.requests))
 	}
+	assertQuotaRequest(t, fake.requests[0], quotaPrimaryURL)
 	encoded, err := json.Marshal(snapshots)
 	if err != nil {
 		t.Fatalf("编码 snapshots 失败: %v", err)
 	}
 	if strings.Contains(string(encoded), "fixture-access") || strings.Contains(string(encoded), "fixture-account") {
-		t.Fatalf("quota snapshot 泄漏凭证: %s", encoded)
+		t.Fatal("quota snapshot 泄漏凭证")
 	}
 }
 
@@ -105,9 +103,11 @@ func TestQuotaFallsBackOnlyOnPrimary404(t *testing.T) {
 	if _, err := client.Fetch(context.Background()); err != nil {
 		t.Fatalf("404 fallback 失败: %v", err)
 	}
-	if len(fake.requests) != 2 || fake.requests[1].URL.String() != quotaFallbackURL {
-		t.Fatalf("fallback 请求错误: %+v", fake.requests)
+	if len(fake.requests) != 2 {
+		t.Fatalf("fallback 请求次数 = %d，期望 2", len(fake.requests))
 	}
+	assertQuotaRequest(t, fake.requests[0], quotaPrimaryURL)
+	assertQuotaRequest(t, fake.requests[1], quotaFallbackURL)
 
 	fake = &quotaRoundTrip{statuses: []int{http.StatusInternalServerError}, bodies: []string{""}}
 	client.doer = fake
@@ -216,4 +216,16 @@ func writeQuotaAuth(t *testing.T, mode string, oauth bool) string {
 		t.Fatalf("写入 auth fixture 失败: %v", err)
 	}
 	return home
+}
+
+func assertQuotaRequest(t *testing.T, request *http.Request, expectedURL string) {
+	t.Helper()
+	if request.URL.String() != expectedURL ||
+		request.Header.Get("Authorization") != "Bearer fixture-access" ||
+		request.Header.Get("Accept") != "application/json" ||
+		request.Header.Get("ChatGPT-Account-ID") != "fixture-account" ||
+		request.Header.Get("X-Account-ID") != "fixture-account" ||
+		request.Header.Get("ChatClaude-Account-ID") != "fixture-account" {
+		t.Fatal("quota 请求缺少固定地址或兼容认证头")
+	}
 }

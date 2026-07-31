@@ -754,6 +754,7 @@ Codex quota 是第一期唯一允许的 provider 网络访问：
 - access token 只保存在函数局部内存。
 - 不写 SQLite、不写 settings、不写日志。
 - URL hard-code 到允许的官方域名，不能被环境变量改写。
+- account ID 非空时，对固定配额地址同时发送 `ChatGPT-Account-ID`、`X-Account-ID` 和 `ChatClaude-Account-ID`，三者使用同一个值。
 - 连接与总请求均设置超时。
 - 不发送 prompt、usage event 或本地文件信息。
 

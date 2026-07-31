@@ -515,7 +515,7 @@ func TestQuotaConsentRefreshAndReadFlow(t *testing.T) {
 	}
 	body := string(responseBody)
 	if strings.Contains(body, "fixture-access") || strings.Contains(body, "fixture-account") {
-		t.Fatalf("quota API 泄漏凭证: %s", body)
+		t.Fatal("quota API 泄漏凭证")
 	}
 
 	snapshotRecorder := httptest.NewRecorder()
@@ -602,12 +602,18 @@ func TestQuotaCredentialsStayOutOfPersistenceAPIAndLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("真实 quota 链路刷新失败: %v", err)
 	}
-	if len(view.Items) != 2 || doer.request == nil {
-		t.Fatalf("真实 quota 链路数据不完整: view=%+v request=%v", view, doer.request)
+	if len(view.Items) != 2 {
+		t.Fatalf("真实 quota 链路配额窗口 = %d，期望 2", len(view.Items))
+	}
+	if doer.request == nil {
+		t.Fatal("真实 quota 链路未发出请求")
 	}
 	if doer.request.Header.Get("Authorization") != "Bearer "+accessToken ||
-		doer.request.Header.Get("ChatGPT-Account-ID") != accountID {
-		t.Fatalf("真实 quota 请求缺少认证头: %+v", doer.request.Header)
+		doer.request.Header.Get("Accept") != "application/json" ||
+		doer.request.Header.Get("ChatGPT-Account-ID") != accountID ||
+		doer.request.Header.Get("X-Account-ID") != accountID ||
+		doer.request.Header.Get("ChatClaude-Account-ID") != accountID {
+		t.Fatal("真实 quota 请求缺少兼容认证头")
 	}
 
 	handler := NewHandler(store, Options{QuotaService: service, Settings: settingsStore})
@@ -641,7 +647,7 @@ func TestQuotaCredentialsStayOutOfPersistenceAPIAndLogs(t *testing.T) {
 	} {
 		for _, secret := range []string{accessToken, accountID, idToken} {
 			if bytes.Contains(content, []byte(secret)) {
-				t.Fatalf("%s 泄漏凭证 %q", name, secret)
+				t.Fatalf("%s 泄漏凭证", name)
 			}
 		}
 	}

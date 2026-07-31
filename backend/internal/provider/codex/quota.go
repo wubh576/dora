@@ -173,7 +173,11 @@ func (c *QuotaClient) fetch(
 		return nil, quotaFailure("error", "创建 Codex 配额请求失败", "请重试")
 	}
 	request.Header.Set("Authorization", "Bearer "+credential.accessToken)
-	request.Header.Set("ChatGPT-Account-ID", credential.accountID)
+	if credential.accountID != "" {
+		request.Header.Set("ChatGPT-Account-ID", credential.accountID)
+		request.Header.Set("X-Account-ID", credential.accountID)
+		request.Header.Set("ChatClaude-Account-ID", credential.accountID)
+	}
 	request.Header.Set("Accept", "application/json")
 
 	response, err := c.doer.Do(request)
