@@ -48,11 +48,12 @@ type SourceFileState struct {
 }
 
 type UsageProviderState struct {
-	Status      string
-	LastScanAt  *time.Time
-	LastError   string
-	LastRunID   string
-	LastRunMode string
-	FilesSeen   int
-	EventsSeen  int
+	Status       string
+	LastScanAt   *time.Time
+	LastError    string
+	LastRunID    string
+	LastRunMode  string
+	FilesSeen    int
+	EventsSeen   int
+	StoredEvents int
 }

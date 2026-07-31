@@ -262,7 +262,7 @@ func (s *Store) LoadSourceFiles(ctx context.Context, source string) ([]domain.So
 }
 
 func (s *Store) LoadUsageEvents(ctx context.Context, source string) ([]domain.UsageEvent, error) {
-	rows, err := s.readDB.QueryContext(ctx, `
+	return s.queryUsageEvents(ctx, `
 		SELECT
 			source, dedup_key, occurred_at_ms, model, project,
 			input_tokens, output_tokens, cached_input_tokens,
@@ -273,6 +273,24 @@ func (s *Store) LoadUsageEvents(ctx context.Context, source string) ([]domain.Us
 		WHERE source = ?
 		ORDER BY occurred_at_ms, dedup_key
 	`, source)
+}
+
+func (s *Store) UsageEventsInWindow(ctx context.Context, source string, start, end time.Time) ([]domain.UsageEvent, error) {
+	return s.queryUsageEvents(ctx, `
+		SELECT
+			source, dedup_key, occurred_at_ms, model, project,
+			input_tokens, output_tokens, cached_input_tokens,
+			cache_creation_input_tokens, reasoning_output_tokens,
+			reported_total_tokens, total_tokens, rollout_key,
+			parent_rollout_key, replay_fingerprint, inherited_replay
+		FROM usage_events
+		WHERE source = ? AND occurred_at_ms >= ? AND occurred_at_ms < ?
+		ORDER BY occurred_at_ms, dedup_key
+	`, source, start.UTC().UnixMilli(), end.UTC().UnixMilli())
+}
+
+func (s *Store) queryUsageEvents(ctx context.Context, query string, arguments ...any) ([]domain.UsageEvent, error) {
+	rows, err := s.readDB.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("读取 Codex usage: %w", err)
 	}
@@ -334,7 +352,8 @@ func (s *Store) UsageProviderState(ctx context.Context, source string) (domain.U
 		SELECT
 			p.usage_status, p.last_usage_at_ms, p.last_usage_error,
 			COALESCE(r.run_id, ''), COALESCE(r.mode, ''),
-			COALESCE(r.files_seen, 0), COALESCE(r.events_seen, 0)
+			COALESCE(r.files_seen, 0), COALESCE(r.events_seen, 0),
+			(SELECT COUNT(*) FROM usage_events WHERE source = p.provider)
 		FROM provider_state p
 		LEFT JOIN scan_runs r ON r.run_id = (
 			SELECT run_id
@@ -352,6 +371,7 @@ func (s *Store) UsageProviderState(ctx context.Context, source string) (domain.U
 		&result.LastRunMode,
 		&result.FilesSeen,
 		&result.EventsSeen,
+		&result.StoredEvents,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.UsageProviderState{Status: "not_scanned"}, nil

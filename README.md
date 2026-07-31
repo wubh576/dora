@@ -32,12 +32,9 @@ make dev
 http://127.0.0.1:5173
 ```
 
-页面会通过 Vite 的同源代理调用真实后端 API，并展示：
+页面会通过 Vite 的同源代理调用真实后端 API。Dashboard 展示本机真实 Codex token 总量、五类非重叠 token、cache 命中率、每日趋势、模型分布和项目分布；Diagnostics 展示扫描状态、文件数、存储事件数、parser 版本和初始化时间。
 
-- `Dora is running`
-- `Backend connected`
-- `SQLite ready`
-- Dora 初始化时间
+Dashboard 支持 `Today`、`7D`、`30D` 和 `All`。所有范围按 macOS 本地时区的日历日计算，汇总、趋势和分布来自同一份 SQLite 数据快照。
 
 状态 API：
 
@@ -93,6 +90,19 @@ GET http://127.0.0.1:8080/api/v1/diagnostics
 页面使用的手动扫描接口为 `POST /api/v1/scan`。该写接口同时校验本次后端启动生成的 control token 和本地页面 `Origin`。
 
 Dora 只保存 token 统计元数据、脱敏项目名和扫描 checkpoint，不保存 prompt、回复正文、工具参数或 JSONL 原始行。Codex 原始文件和 Dora SQLite 数据库都不会提交到 Git。
+
+## Token 统计 API
+
+```text
+GET /api/v1/summary?range=7D
+GET /api/v1/timeline?range=30D&granularity=day
+GET /api/v1/breakdown?range=30D&dimension=model
+GET /api/v1/breakdown?range=30D&dimension=project
+GET /api/v1/dashboard?range=7D
+GET /api/v1/snapshot
+```
+
+`/api/v1/dashboard` 是 Web 页面使用的统一快照，保证标题总量、每日趋势和两个分布复用同一个时间窗口。`/api/v1/snapshot` 提供今日、7 日、全部 token、最高用量模型和扫描新鲜度，供后续本地客户端复用。
 
 ## 验证
 
