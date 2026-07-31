@@ -143,6 +143,10 @@ LaunchAgent 的日志位于：
 
 后台 Codex 用量扫描和配额刷新失败时，日志会在单行内记录操作、底层错误原因以及重试建议或影响范围。错误不会包含 Authorization Header、OAuth token、control token、Cookie 或认证文件内容；Dora 主动退出产生的 context cancellation 不会记作后台失败。
 
+LaunchAgent 启动时检查一次日志大小，之后每 10 分钟检查一次。`dora.stdout.log` 和 `dora.stderr.log` 分别以 `200 MiB（200 * 1024 * 1024 bytes）` 为活动文件阈值，不是两个文件合计 200 MiB。达到阈值后，Dora 将当前内容保存到同名 `.1` 文件并清空原活动文件；下一次轮转覆盖旧 `.1`，不会生成 `.2` 或无限历史。备份后采用 truncate 原文件，因此 launchd 已打开的文件描述符会继续写入原活动路径。
+
+每个日志只保留一个备份，磁盘占用应合计评估 stdout/stderr 的两个活动文件和两个 `.1` 文件。轮转只在官方 launchd service、安装后二进制路径以及 stdout/stderr 文件描述符都与 Dora plist 匹配时启用；手动运行 `dora serve`、普通 `dora menubar`，甚至只手动追加 `--launchagent`，都不会操作这些日志。`dora uninstall` 仍会保留活动日志和备份。
+
 ## Codex 本地用量扫描
 
 后端启动后会立即扫描，并每 5 分钟检查一次新增记录；每 24 小时至少执行一次全量校验：

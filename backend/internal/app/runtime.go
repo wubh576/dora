@@ -35,6 +35,11 @@ type Logger interface {
 	Printf(string, ...any)
 }
 
+type LogRotator interface {
+	Check()
+	Run(context.Context)
+}
+
 type Config struct {
 	Address      string
 	DBPath       string
@@ -43,6 +48,7 @@ type Config struct {
 	ScanInterval time.Duration
 	Logger       Logger
 	BuildInfo    buildinfo.Info
+	LogRotator   LogRotator
 }
 
 // Runtime 统一持有 HTTP、SQLite、扫描器和配额服务，serve 与 menubar 共用它。
@@ -137,10 +143,17 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		errors:        make(chan error, 1),
 	}
 
+	if config.LogRotator != nil {
+		config.LogRotator.Check()
+	}
 	runtime.wg.Add(3)
 	go runtime.serve()
 	go runtime.scanLoop(ctx, config.ScanInterval)
 	go runtime.quotaLoop(ctx, config.ScanInterval)
+	if config.LogRotator != nil {
+		runtime.wg.Add(1)
+		go runtime.logRotationLoop(ctx, config.LogRotator)
+	}
 	config.Logger.Printf("Dora 构建信息: %s", config.BuildInfo.LogString())
 	config.Logger.Printf("Dora 已启动：http://%s（初始化时间 %s）", actualAddress, initializedAt.Format(time.RFC3339))
 	return runtime, nil
@@ -212,6 +225,11 @@ func (r *Runtime) quotaLoop(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (r *Runtime) logRotationLoop(ctx context.Context, rotator LogRotator) {
+	defer r.wg.Done()
+	rotator.Run(ctx)
 }
 
 func logUsageScanResult(ctx context.Context, logger Logger, report scan.Report, err error) {

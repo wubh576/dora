@@ -48,6 +48,7 @@ func TestPlistIsValidAndContainsRequiredLifecycle(t *testing.T) {
 		"<string>io.github.wubh576.dora</string>",
 		"<string>/Users/A&amp;B/Library/Application Support/Dora/bin/dora</string>",
 		"<string>menubar</string>",
+		"<string>--launchagent</string>",
 		"<key>RunAtLoad</key>\n  <true/>",
 		"<key>SuccessfulExit</key>\n    <false/>",
 		"<key>ThrottleInterval</key>\n  <integer>10</integer>",

@@ -44,6 +44,176 @@ func TestParseMenubarOptions(t *testing.T) {
 	}
 }
 
+func TestParseMenubarLaunchAgentLogRotation(t *testing.T) {
+	defaults, err := parseApplicationOptions("menubar", []string{"--launchagent"}, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("解析默认 LaunchAgent 轮转参数失败: %v", err)
+	}
+	if defaults.logRotationBytes != launchagent.DefaultLogMaxBytes || defaults.logRotationInterval != launchagent.DefaultLogCheckInterval {
+		t.Fatalf("LaunchAgent 未使用生产轮转默认值: %+v", defaults)
+	}
+
+	options, err := parseApplicationOptions("menubar", []string{"--launchagent", "--log-rotation-bytes", "128", "--log-rotation-interval", "10ms"}, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("解析 LaunchAgent 轮转参数失败: %v", err)
+	}
+	if !options.launchAgent || options.logRotationBytes != 128 || options.logRotationInterval != 10*time.Millisecond {
+		t.Fatalf("LaunchAgent 轮转参数错误: %+v", options)
+	}
+	if _, err := parseApplicationOptions("menubar", []string{"--log-rotation-bytes", "128"}, filepath.Join(t.TempDir(), "dora.db")); err == nil || !strings.Contains(err.Error(), "--launchagent") {
+		t.Fatalf("未拒绝脱离 LaunchAgent 的轮转参数: %v", err)
+	}
+	if _, err := parseApplicationOptions("serve", []string{"--launchagent"}, filepath.Join(t.TempDir(), "dora.db")); err == nil {
+		t.Fatal("serve 接受了 LaunchAgent 日志轮转参数")
+	}
+}
+
+func TestOnlyLaunchAgentApplicationRotatesUserLogPaths(t *testing.T) {
+	home := t.TempDir()
+	paths := launchagent.PathsForHome(home)
+	for _, directory := range []string{paths.Logs, filepath.Dir(paths.Binary)} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(paths.Binary, []byte("fixture binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.StdoutLog, []byte("manual"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.StderrLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manual, err := startApplication(context.Background(), applicationOptions{
+		address:    "127.0.0.1:0",
+		dbPath:     filepath.Join(t.TempDir(), "manual.db"),
+		codexHomes: []string{t.TempDir()},
+	})
+	if err != nil {
+		t.Fatalf("启动手动 runtime 失败: %v", err)
+	}
+	if err := manual.Close(); err != nil {
+		t.Fatalf("关闭手动 runtime 失败: %v", err)
+	}
+	if _, err := os.Stat(paths.StdoutLog + ".1"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("手动 runtime 操作了 LaunchAgent 日志: %v", err)
+	}
+
+	stdout, err := os.OpenFile(paths.StdoutLog, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	stderr, err := os.OpenFile(paths.StderrLog, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	rotationOptions := applicationOptions{
+		launchAgent:         true,
+		logRotationBytes:    6,
+		logRotationInterval: time.Hour,
+	}
+	rotator, err := launchAgentLogRotator(rotationOptions, launchAgentProcess{
+		serviceName: launchagent.Label,
+		home:        home,
+		executable:  paths.Binary,
+		stdout:      stdout,
+		stderr:      stderr,
+	})
+	if err != nil {
+		t.Fatalf("创建 LaunchAgent 轮转任务失败: %v", err)
+	}
+	managed, err := app.Start(context.Background(), app.Config{
+		Address:      "127.0.0.1:0",
+		DBPath:       filepath.Join(t.TempDir(), "managed.db"),
+		CodexHomes:   []string{t.TempDir()},
+		ScanInterval: time.Hour,
+		LogRotator:   rotator,
+	})
+	if err != nil {
+		t.Fatalf("启动 LaunchAgent runtime 失败: %v", err)
+	}
+	if err := managed.Close(); err != nil {
+		t.Fatalf("关闭 LaunchAgent runtime 失败: %v", err)
+	}
+	backup, err := os.ReadFile(paths.StdoutLog + ".1")
+	if err != nil || string(backup) != "manual" {
+		t.Fatalf("LaunchAgent 启动轮转错误: backup=%q err=%v", backup, err)
+	}
+	active, err := os.ReadFile(paths.StdoutLog)
+	if err != nil || len(active) != 0 {
+		t.Fatalf("LaunchAgent 活动日志未清空: active=%q err=%v", active, err)
+	}
+}
+
+func TestLaunchAgentLogRotationRejectsUnmanagedProcess(t *testing.T) {
+	home := t.TempDir()
+	paths := launchagent.PathsForHome(home)
+	if err := os.MkdirAll(paths.Logs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.StdoutLog, paths.StderrLog} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, err := os.OpenFile(paths.StdoutLog, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	stderr, err := os.OpenFile(paths.StderrLog, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	options := applicationOptions{launchAgent: true, logRotationBytes: 1, logRotationInterval: time.Second}
+
+	tests := []struct {
+		name    string
+		process launchAgentProcess
+		want    string
+	}{
+		{
+			name:    "not launchd service",
+			process: launchAgentProcess{serviceName: "terminal", home: home, executable: paths.Binary, stdout: stdout, stderr: stderr},
+			want:    launchagent.Label,
+		},
+		{
+			name:    "wrong executable",
+			process: launchAgentProcess{serviceName: launchagent.Label, home: home, executable: filepath.Join(home, "manual-dora"), stdout: stdout, stderr: stderr},
+			want:    "可执行文件路径不匹配",
+		},
+		{
+			name:    "wrong stdout",
+			process: launchAgentProcess{serviceName: launchagent.Label, home: home, executable: paths.Binary, stdout: os.Stderr, stderr: stderr},
+			want:    "stdout 未指向",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := launchAgentLogRotator(options, test.process); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("未拒绝非受管进程: %v", err)
+			}
+		})
+	}
+
+	t.Setenv(launchAgentServiceEnvironment, "")
+	if _, err := startApplication(context.Background(), applicationOptions{
+		address:             "127.0.0.1:0",
+		dbPath:              filepath.Join(t.TempDir(), "dora.db"),
+		codexHomes:          []string{t.TempDir()},
+		launchAgent:         true,
+		logRotationBytes:    1,
+		logRotationInterval: time.Second,
+	}); err == nil || !strings.Contains(err.Error(), launchagent.Label) {
+		t.Fatalf("手动 --launchagent 未被拒绝: %v", err)
+	}
+}
+
 func TestCommandExitCodes(t *testing.T) {
 	if got := commandExitCode(errors.New("regular")); got != 1 {
 		t.Fatalf("普通错误 exit code = %d", got)

@@ -19,7 +19,8 @@
 | 11. 单进程 macOS 菜单栏 | 已完成 | `66a8c48` |
 | 12. 当前用户 LaunchAgent 生命周期 | 已完成 | `690e214` |
 | 13. 构建来源与启动环境信息 | 已完成 | `0fae6ff` |
-| 14. 后台失败日志真实原因 | 已完成 | 本次提交 |
+| 14. 后台失败日志真实原因 | 已完成 | `94a911c` |
+| 15. LaunchAgent 日志自动轮转 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -296,3 +297,21 @@
 - 配额网络错误测试确认 error chain 可追踪且不包含 fixture access token 或 account ID；测试未读取真实凭证或访问网络。
 - `make verify`、相关 race 测试、`go vet` 和 `git diff --check` 通过，前端生产构建与 production Go 构建通过。
 - Code Review：独立 Reviewer 发现延迟 context cancellation 会误吞成功日志；修复后补充成功日志回归测试，复审确认无剩余 P0/P1/P2/P3。
+
+## 里程碑 15：LaunchAgent 日志自动轮转
+
+已完成：
+
+- LaunchAgent stdout 和 stderr 各自以 200 MiB 为活动文件阈值，启动时检查一次，运行中每 10 分钟检查一次。
+- 达到或超过阈值后，当前内容原子覆盖同名 `.1` 备份，再 truncate 原活动文件；只保留一个备份，已打开的 append 文件描述符继续写入原路径。
+- 两个日志独立处理，缺失或未达阈值时无操作；一侧失败只记录原因并等待下次重试，不影响另一侧和 Dora 主流程。
+- 轮转任务由共享 runtime context 管理，只有 launchd service、安装二进制和 stdout/stderr inode 均与 Dora plist 匹配时才启用；手动 `serve`、普通 `menubar`、伪加 `--launchagent` 和 uninstall 不操作或删除日志。
+
+验证记录：
+
+- 临时目录自动测试覆盖低于、等于和超过阈值，轮转后打开描述符继续写入活动路径，覆盖 `.1`、不生成 `.2`、双流独立、缺失文件与单侧失败继续处理。
+- 周期检查使用可注入的小阈值和毫秒级周期，验证 runtime 启动检查及 context cancellation 后退出；生产常量回归确认 200 MiB 和 10 分钟。
+- `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check` 通过；前端 TypeScript、Vite production build 和 production Go 二进制构建通过。
+- 真实 macOS production 冒烟使用临时 HOME、稳定安装路径、SQLite、Codex 目录和日志，以 2 KiB 阈值验证启动检查和运行期检查；stdout/stderr 活动 inode 始终不变，`.1` 内容被正确覆盖，活动 stderr 继续收到当前进程的轮转成功日志，目录始终只有两个活动文件和两个备份。
+- 冒烟期间菜单栏进程保持运行，独立 loopback health 返回 HTTP 200；结束后进程正常退出、端口释放，临时二进制、数据库和日志全部清理，未触碰真实用户数据或设置。
+- Code Review：独立 Reviewer 发现手动伪加 `--launchagent` 可误启轮转，以及随机临时文件在强制退出后可能累积；增加 service、安装路径和日志 inode 三重门禁并改用可恢复的固定 `.1.tmp` 后，复审确认无剩余 P0/P1/P2/P3。

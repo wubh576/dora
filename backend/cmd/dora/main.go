@@ -27,7 +27,8 @@ import (
 )
 
 const (
-	defaultServerAddress = app.DefaultAddress
+	defaultServerAddress          = app.DefaultAddress
+	launchAgentServiceEnvironment = "XPC_SERVICE_NAME"
 )
 
 func main() {
@@ -250,8 +251,11 @@ func runMenubarApplication(ctx context.Context, stop context.CancelFunc, applica
 }
 
 type applicationOptions struct {
-	address, dbPath string
-	codexHomes      []string
+	address, dbPath     string
+	codexHomes          []string
+	launchAgent         bool
+	logRotationBytes    int64
+	logRotationInterval time.Duration
 }
 
 func parseApplicationOptions(command string, args []string, defaultDBPath string) (applicationOptions, error) {
@@ -260,6 +264,14 @@ func parseApplicationOptions(command string, args []string, defaultDBPath string
 	dbPath := flags.String("db", defaultDBPath, "SQLite 数据库路径")
 	var codexHomes stringListFlag
 	flags.Var(&codexHomes, "codex-home", "Codex 数据目录，可重复指定")
+	var launchAgent bool
+	logRotationBytes := launchagent.DefaultLogMaxBytes
+	logRotationInterval := launchagent.DefaultLogCheckInterval
+	if command == "menubar" {
+		flags.BoolVar(&launchAgent, "launchagent", false, "使用当前用户 LaunchAgent 日志轮转")
+		flags.Int64Var(&logRotationBytes, "log-rotation-bytes", logRotationBytes, "LaunchAgent 单个活动日志轮转阈值")
+		flags.DurationVar(&logRotationInterval, "log-rotation-interval", logRotationInterval, "LaunchAgent 日志轮转检查周期")
+	}
 	if err := flags.Parse(args); err != nil {
 		return applicationOptions{}, err
 	}
@@ -269,11 +281,93 @@ func parseApplicationOptions(command string, args []string, defaultDBPath string
 	if err := app.ValidateLoopbackAddress(*address); err != nil {
 		return applicationOptions{}, err
 	}
-	return applicationOptions{address: *address, dbPath: *dbPath, codexHomes: append([]string(nil), codexHomes...)}, nil
+	rotationOverride := false
+	flags.Visit(func(value *flag.Flag) {
+		if value.Name == "log-rotation-bytes" || value.Name == "log-rotation-interval" {
+			rotationOverride = true
+		}
+	})
+	if rotationOverride && !launchAgent {
+		return applicationOptions{}, errors.New("日志轮转参数只能与 menubar --launchagent 一起使用")
+	}
+	options := applicationOptions{address: *address, dbPath: *dbPath, codexHomes: append([]string(nil), codexHomes...)}
+	if launchAgent {
+		if logRotationBytes <= 0 || logRotationInterval <= 0 {
+			return applicationOptions{}, errors.New("LaunchAgent 日志轮转阈值和检查周期必须大于 0")
+		}
+		options.launchAgent = true
+		options.logRotationBytes = logRotationBytes
+		options.logRotationInterval = logRotationInterval
+	}
+	return options, nil
 }
 
 func startApplication(ctx context.Context, options applicationOptions) (*app.Runtime, error) {
-	return app.Start(ctx, app.Config{Address: options.address, DBPath: options.dbPath, CodexHomes: options.codexHomes, StaticFS: webassets.Files(), BuildInfo: buildinfo.Current()})
+	var logRotator app.LogRotator
+	if options.launchAgent {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("读取 LaunchAgent 用户目录: %w", err)
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("读取 LaunchAgent 可执行文件: %w", err)
+		}
+		logRotator, err = launchAgentLogRotator(options, launchAgentProcess{
+			serviceName: os.Getenv(launchAgentServiceEnvironment),
+			home:        home,
+			executable:  executable,
+			stdout:      os.Stdout,
+			stderr:      os.Stderr,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return app.Start(ctx, app.Config{Address: options.address, DBPath: options.dbPath, CodexHomes: options.codexHomes, StaticFS: webassets.Files(), BuildInfo: buildinfo.Current(), LogRotator: logRotator})
+}
+
+type launchAgentProcess struct {
+	serviceName string
+	home        string
+	executable  string
+	stdout      *os.File
+	stderr      *os.File
+}
+
+func launchAgentLogRotator(options applicationOptions, process launchAgentProcess) (*launchagent.LogRotator, error) {
+	paths := launchagent.PathsForHome(process.home)
+	if process.serviceName != launchagent.Label {
+		return nil, fmt.Errorf("--launchagent 只能由 Dora LaunchAgent %s 启用", launchagent.Label)
+	}
+	if filepath.Clean(process.executable) != filepath.Clean(paths.Binary) {
+		return nil, fmt.Errorf("LaunchAgent 可执行文件路径不匹配: 当前 %s，期望 %s", process.executable, paths.Binary)
+	}
+	for _, stream := range []struct {
+		name string
+		file *os.File
+		path string
+	}{
+		{name: "stdout", file: process.stdout, path: paths.StdoutLog},
+		{name: "stderr", file: process.stderr, path: paths.StderrLog},
+	} {
+		streamInfo, err := stream.file.Stat()
+		if err != nil {
+			return nil, fmt.Errorf("检查 LaunchAgent %s: %w", stream.name, err)
+		}
+		pathInfo, err := os.Stat(stream.path)
+		if err != nil {
+			return nil, fmt.Errorf("检查 LaunchAgent %s 日志 %s: %w", stream.name, stream.path, err)
+		}
+		if !os.SameFile(streamInfo, pathInfo) {
+			return nil, fmt.Errorf("LaunchAgent %s 未指向 Dora 日志 %s", stream.name, stream.path)
+		}
+	}
+	return launchagent.NewLogRotator(launchagent.LogRotationConfig{
+		Files:         []string{paths.StdoutLog, paths.StderrLog},
+		MaxBytes:      options.logRotationBytes,
+		CheckInterval: options.logRotationInterval,
+	}), nil
 }
 
 func waitForRuntime(ctx context.Context, application *app.Runtime) error {

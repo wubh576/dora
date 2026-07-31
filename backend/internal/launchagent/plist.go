@@ -17,6 +17,7 @@ func buildPlist(paths Paths) ([]byte, error) {
 	document.WriteString("  <key>ProgramArguments</key>\n  <array>\n")
 	writeString(&document, paths.Binary, 4)
 	writeString(&document, "menubar", 4)
+	writeString(&document, "--launchagent", 4)
 	document.WriteString("  </array>\n")
 	document.WriteString("  <key>RunAtLoad</key>\n  <true/>\n")
 	document.WriteString("  <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n")

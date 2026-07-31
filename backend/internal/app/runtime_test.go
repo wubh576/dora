@@ -149,6 +149,52 @@ func TestRuntimeLogsBuildAndEnvironmentInfo(t *testing.T) {
 	}
 }
 
+func TestRuntimeChecksAndStopsLogRotation(t *testing.T) {
+	rotator := &testLogRotator{running: make(chan struct{}), stopped: make(chan struct{})}
+	runtime, err := Start(context.Background(), Config{
+		Address:      "127.0.0.1:0",
+		DBPath:       filepath.Join(t.TempDir(), "dora.db"),
+		CodexHomes:   []string{t.TempDir()},
+		ScanInterval: time.Hour,
+		LogRotator:   rotator,
+	})
+	if err != nil {
+		t.Fatalf("Start() 失败: %v", err)
+	}
+	if rotator.checks != 1 {
+		t.Fatalf("启动阶段轮转检查次数 = %d", rotator.checks)
+	}
+	select {
+	case <-rotator.running:
+	case <-time.After(time.Second):
+		t.Fatal("轮转周期任务未启动")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Close() 失败: %v", err)
+	}
+	select {
+	case <-rotator.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("轮转周期任务未随 runtime 退出")
+	}
+}
+
+type testLogRotator struct {
+	checks  int
+	running chan struct{}
+	stopped chan struct{}
+}
+
+func (r *testLogRotator) Check() {
+	r.checks++
+}
+
+func (r *testLogRotator) Run(ctx context.Context) {
+	close(r.running)
+	<-ctx.Done()
+	close(r.stopped)
+}
+
 func TestRuntimeServesHealthAndEmbeddedPage(t *testing.T) {
 	runtime, err := Start(context.Background(), Config{
 		Address:    "127.0.0.1:0",

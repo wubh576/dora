@@ -1079,12 +1079,15 @@ dora uninstall
 
 - 只使用当前用户的 `gui/<uid>` domain，不使用 sudo、system domain、LaunchDaemon 或废弃的 load/unload。
 - install 只接受包含生产 Web 资源的可执行文件；开发构建提示先运行 `make build`。
-- plist 使用安装后二进制的绝对路径，ProgramArguments 仅为该路径和 `menubar`。
+- plist 使用安装后二进制的绝对路径，ProgramArguments 为该路径、`menubar` 和用于启用受管日志轮转的 `--launchagent` 标记。
 - 二进制与 plist 都先写明确临时文件，再 rename 替换；重装按 `print → bootout → bootstrap → kickstart` 安全重载。
 - install 等待 loopback health，重复执行不会产生多个 LaunchAgent 或 Dora 常驻进程。
 - status 综合 plist、安装二进制、`launchctl print` 和 health；退出码 0 为正常，1 为未安装/未运行/异常，2 为检查失败。
 - uninstall 幂等，只删除 plist、安装二进制和对应临时文件，保留 SQLite、settings、日志和 Codex 原始数据。
 - 菜单“退出 Dora”产生成功退出，当前登录会话不立即重启；下次登录仍由 RunAtLoad 启动。
+- stdout 和 stderr 各自以 200 MiB 为活动文件阈值；启动时检查一次，运行中每 10 分钟检查一次，任一侧失败不阻断另一侧或应用主流程。
+- 达到阈值时先原子覆盖同名 `.1` 备份，再 truncate 原活动文件，保证 launchd 已打开的文件描述符继续写入原 inode；每侧只保留一个备份，不生成 `.2`。
+- 轮转由共享 application runtime 管理 context 生命周期。启用前必须同时确认 `XPC_SERVICE_NAME` 为官方 Label、当前可执行文件位于安装路径，并且 stdout/stderr 文件描述符与 plist 的两个日志为同一文件；手动 `serve`、普通 `menubar` 或只伪加 `--launchagent` 都不得操作已安装日志。
 
 ### 20.4 构建来源与启动环境
 
@@ -1342,6 +1345,8 @@ DORA_CLAUDE_OAUTH_TOKEN
 - 后台扫描或配额刷新失败的操作上下文、底层错误原因和可行动建议。
 
 后台失败日志必须保持单行。正常 context cancellation 或 Dora 主动退出不记录为失败；配额网络和认证错误在 provider 边界保留有价值的 error chain，但不得包含请求 Header、OAuth token、Cookie 或响应正文。
+
+LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，各覆盖一个 `.1` 备份。阈值按单个活动文件计算，不按两个日志合计；磁盘占用评估必须同时计入两个活动文件和两个备份。轮转失败只记录单行原因并在下个周期重试，不影响 Web、菜单栏、扫描或配额服务；uninstall 不删除活动日志或备份。
 
 ### 25.2 禁止记录
 
