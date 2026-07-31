@@ -349,5 +349,6 @@
 - Analytics、SQLite、HTTP API 和菜单栏测试覆盖 Codex-only、Codex + Claude Code 精确合计、同名模型来源、provider 诊断、snapshot 与 Codex quota 标签。
 - 脱敏 production 浏览器冒烟显示合计 182 tokens、Codex 125、Claude Code 57；两个 provider 使用同名模型时仍分别展示。Diagnostics 增量扫描后维持 2 条事件，浏览器控制台无 warning/error。
 - 当前 Mac 使用真实目录和临时 SQLite 只读扫描 62 个 Codex transcript 与 9 个 Claude Code transcript，分别保存 3794 与 68 条去重事件；health、summary、timeline、provider breakdown、provider-model breakdown、dashboard、snapshot、diagnostics 和内嵌页面全部成功。
+- 无 Claude Code 目录的 production 冒烟正常启动；Claude diagnostics 为 `not_found`，Web dashboard 与菜单栏 snapshot 保持可用并返回固定的零值 provider 项。
 - `make verify`、`go vet ./...`、`go test -race ./...` 和 `git diff --check` 通过；前端 TypeScript、Vite production build 和嵌入式 Go 二进制构建通过。所有临时服务、端口、fixture 和 SQLite 均在验收后清理。
 - Code Review：独立 Reviewer 发现合并 snapshot 新鲜度可能被较新的 provider 掩盖、Claude 历史 generation 会遮住当前无会话空态，以及 Web/菜单栏 DTO 文档不准确；改为按参与合计的最旧扫描计算 stale、独立展示当前 Claude 空态并修正文档后复审通过。

@@ -1054,7 +1054,7 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 - “打开仪表盘”。
 - “退出”。
 
-当前菜单展示 Codex 5h/7d quota；Claude Code 接入时复用相同 DTO 扩展。菜单不实现复杂趋势图、项目表格或设置页面。
+当前菜单使用统一 snapshot 展示 Codex + Claude Code 用量，并单独展示 Codex 5h/7d quota。菜单不实现复杂趋势图、项目表格或设置页面。
 
 ### 20.2 刷新
 
