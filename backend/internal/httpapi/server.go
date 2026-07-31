@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/analytics"
+	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/pricing"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
@@ -26,13 +27,15 @@ type server struct {
 	now            func() time.Time
 	quotaService   *quota.Service
 	settings       *settings.Store
+	buildInfo      buildinfo.Info
 }
 
 type healthResponse struct {
-	Backend       bool   `json:"backend"`
-	SQLite        bool   `json:"sqlite"`
-	InitializedAt string `json:"initializedAt"`
-	ControlToken  string `json:"controlToken,omitempty"`
+	Backend       bool           `json:"backend"`
+	SQLite        bool           `json:"sqlite"`
+	InitializedAt string         `json:"initializedAt"`
+	ControlToken  string         `json:"controlToken,omitempty"`
+	BuildInfo     buildinfo.Info `json:"buildInfo"`
 }
 
 type Options struct {
@@ -44,6 +47,7 @@ type Options struct {
 	QuotaService   *quota.Service
 	Settings       *settings.Store
 	StaticFS       fs.FS
+	BuildInfo      buildinfo.Info
 }
 
 type scanResponse struct {
@@ -146,6 +150,7 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 		}
 		s.quotaService = options[0].QuotaService
 		s.settings = options[0].Settings
+		s.buildInfo = options[0].BuildInfo
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/health", s.health)
@@ -178,7 +183,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	initializedAt, err := s.store.InitializedAt(r.Context())
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		writeJSON(w, healthResponse{Backend: true})
+		writeJSON(w, healthResponse{Backend: true, BuildInfo: s.buildInfo})
 		return
 	}
 
@@ -187,6 +192,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 		SQLite:        true,
 		InitializedAt: initializedAt.Format("2006-01-02T15:04:05.000Z07:00"),
 		ControlToken:  s.controlToken,
+		BuildInfo:     s.buildInfo,
 	})
 }
 

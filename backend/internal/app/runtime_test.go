@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -11,7 +13,33 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/wubh576/dora/backend/internal/buildinfo"
 )
+
+func TestRuntimeLogsBuildAndEnvironmentInfo(t *testing.T) {
+	var output bytes.Buffer
+	runtime, err := Start(context.Background(), Config{
+		Address:      "127.0.0.1:0",
+		DBPath:       filepath.Join(t.TempDir(), "dora.db"),
+		CodexHomes:   []string{t.TempDir()},
+		ScanInterval: time.Hour,
+		Logger:       log.New(&output, "", 0),
+		BuildInfo:    buildinfo.New("dev+abc123-dirty", "abc123", "2026-07-31T08:00:00Z", "go1.26.5", "darwin", "arm64", "15.6"),
+	})
+	if err != nil {
+		t.Fatalf("Start() 失败: %v", err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Close() 失败: %v", err)
+	}
+	logOutput := output.String()
+	for _, value := range []string{"version=dev+abc123-dirty", "commit=abc123", "build_time=2026-07-31T08:00:00Z", "go=go1.26.5", "platform=darwin/arm64", "macos=15.6"} {
+		if !strings.Contains(logOutput, value) {
+			t.Fatalf("启动日志缺少 %q: %q", value, logOutput)
+		}
+	}
+}
 
 func TestRuntimeServesHealthAndEmbeddedPage(t *testing.T) {
 	runtime, err := Start(context.Background(), Config{

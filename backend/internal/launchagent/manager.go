@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/wubh576/dora/backend/internal/buildinfo"
 )
 
 const (
@@ -187,6 +189,7 @@ type Status struct {
 	Running       bool
 	Healthy       bool
 	DashboardURL  string
+	BuildInfo     *buildinfo.Info
 }
 
 func (s Status) Installed() bool {
@@ -235,7 +238,7 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 		DashboardURL:  DashboardURL,
 	}
 	if launchd.Loaded && launchd.Running {
-		if m.config.Health.Check(ctx, DashboardURL) == nil {
+		if info, healthErr := m.config.Health.Check(ctx, DashboardURL); healthErr == nil {
 			confirmed, inspectErr := m.inspectLaunchd(ctx)
 			if inspectErr != nil {
 				return Status{}, inspectErr
@@ -243,6 +246,9 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 			status.Loaded = confirmed.Loaded
 			status.Running = confirmed.Running
 			status.Healthy = confirmed.Loaded && confirmed.Running
+			if status.Healthy && info != (buildinfo.Info{}) {
+				status.BuildInfo = &info
+			}
 		}
 	}
 	return status, nil
@@ -308,7 +314,7 @@ func (m *Manager) waitForHealth(ctx context.Context) error {
 	defer cancel()
 	var lastErr error
 	for {
-		if err := m.config.Health.Check(waitCtx, DashboardURL); err == nil {
+		if _, err := m.config.Health.Check(waitCtx, DashboardURL); err == nil {
 			return nil
 		} else {
 			lastErr = err

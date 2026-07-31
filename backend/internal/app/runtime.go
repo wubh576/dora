@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/httpapi"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
 	"github.com/wubh576/dora/backend/internal/quota"
@@ -40,6 +41,7 @@ type Config struct {
 	StaticFS     fs.FS
 	ScanInterval time.Duration
 	Logger       Logger
+	BuildInfo    buildinfo.Info
 }
 
 // Runtime 统一持有 HTTP、SQLite、扫描器和配额服务，serve 与 menubar 共用它。
@@ -68,6 +70,9 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 	}
 	if config.Logger == nil {
 		config.Logger = log.Default()
+	}
+	if config.BuildInfo == (buildinfo.Info{}) {
+		config.BuildInfo = buildinfo.Current()
 	}
 	if err := ValidateLoopbackAddress(config.Address); err != nil {
 		return nil, err
@@ -114,6 +119,7 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 			QuotaService:   quotaService,
 			Settings:       settingsStore,
 			StaticFS:       config.StaticFS,
+			BuildInfo:      config.BuildInfo,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -134,6 +140,7 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 	go runtime.serve()
 	go runtime.scanLoop(ctx, config.ScanInterval)
 	go runtime.quotaLoop(ctx, config.ScanInterval)
+	config.Logger.Printf("Dora 构建信息: %s", config.BuildInfo.LogString())
 	config.Logger.Printf("Dora 已启动：http://%s（初始化时间 %s）", actualAddress, initializedAt.Format(time.RFC3339))
 	return runtime, nil
 }

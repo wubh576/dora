@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/analytics"
+	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
 	"github.com/wubh576/dora/backend/internal/quota"
@@ -112,6 +113,27 @@ func TestHealthReturnsStartupControlToken(t *testing.T) {
 	}
 	if body.ControlToken != "test-token" {
 		t.Fatalf("controlToken = %q，期望 test-token", body.ControlToken)
+	}
+}
+
+func TestHealthReturnsRunningBuildInfo(t *testing.T) {
+	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("初始化测试数据库失败: %v", err)
+	}
+	defer store.Close()
+
+	info := buildinfo.New("v1.2.3", "abc123", "2026-07-31T08:00:00Z", "go1.26.5", "darwin", "arm64", "15.6")
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	response := httptest.NewRecorder()
+	NewHandler(store, Options{BuildInfo: info}).ServeHTTP(response, request)
+
+	var body healthResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if body.BuildInfo != info {
+		t.Fatalf("buildInfo = %+v，期望 %+v", body.BuildInfo, info)
 	}
 }
 

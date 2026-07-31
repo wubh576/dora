@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/app"
+	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/launchagent"
 	doramenubar "github.com/wubh576/dora/backend/internal/menubar"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
@@ -45,9 +47,11 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("用法: dora <serve|menubar|scan|quota|install|status|uninstall> [选项]")
+		return errors.New("用法: dora <serve|menubar|scan|quota|install|status|uninstall|version> [选项]")
 	}
 	switch args[0] {
+	case "version":
+		return versionCommand(args[1:], os.Stdout, buildinfo.Current())
 	case "install":
 		return installCommand(args[1:])
 	case "status":
@@ -71,7 +75,7 @@ func run(args []string) error {
 	case "quota":
 		return quotaCommand(args[1:], defaultDBPath)
 	default:
-		return fmt.Errorf("未知命令 %q；用法: dora <serve|menubar|scan|quota|install|status|uninstall> [选项]", args[0])
+		return fmt.Errorf("未知命令 %q；用法: dora <serve|menubar|scan|quota|install|status|uninstall|version> [选项]", args[0])
 	}
 }
 
@@ -95,6 +99,14 @@ func commandExitCode(err error) int {
 		return commandErr.code
 	}
 	return 1
+}
+
+func versionCommand(args []string, output io.Writer, info buildinfo.Info) error {
+	if len(args) != 0 {
+		return fmt.Errorf("version 不支持参数 %q", args[0])
+	}
+	_, err := fmt.Fprintln(output, info.String())
+	return err
 }
 
 func installCommand(args []string) error {
@@ -135,11 +147,22 @@ func launchAgentStatusCommand(args []string) error {
 	if status.Loaded {
 		loaded = "已加载"
 	}
-	fmt.Printf("安装：%s\nLaunchAgent：%s\n运行：%s\n仪表盘：%s\n", installed, loaded, status.RunState(), status.DashboardURL)
+	if err := writeLaunchAgentStatus(os.Stdout, status, installed, loaded, buildinfo.Current()); err != nil {
+		return &commandExitError{code: 2, err: err}
+	}
 	if status.ExitCode() != 0 {
 		return &commandExitError{code: status.ExitCode()}
 	}
 	return nil
+}
+
+func writeLaunchAgentStatus(output io.Writer, status launchagent.Status, installed, loaded string, commandInfo buildinfo.Info) error {
+	info, source := commandInfo, "当前命令"
+	if status.BuildInfo != nil {
+		info, source = *status.BuildInfo, "运行中的 LaunchAgent"
+	}
+	_, err := fmt.Fprintf(output, "安装：%s\nLaunchAgent：%s\n运行：%s\n仪表盘：%s\n版本来源：%s\nDora 版本：%s\nCommit：%s\n架构：%s\nmacOS：%s\n", installed, loaded, status.RunState(), status.DashboardURL, source, info.Version, info.GitCommit, info.Platform(), info.MacOSVersion)
+	return err
 }
 
 func uninstallCommand(args []string) error {
@@ -256,7 +279,7 @@ func parseApplicationOptions(command string, args []string, defaultDBPath string
 }
 
 func startApplication(ctx context.Context, options applicationOptions) (*app.Runtime, error) {
-	return app.Start(ctx, app.Config{Address: options.address, DBPath: options.dbPath, CodexHomes: options.codexHomes, StaticFS: webassets.Files()})
+	return app.Start(ctx, app.Config{Address: options.address, DBPath: options.dbPath, CodexHomes: options.codexHomes, StaticFS: webassets.Files(), BuildInfo: buildinfo.Current()})
 }
 
 func waitForRuntime(ctx context.Context, application *app.Runtime) error {

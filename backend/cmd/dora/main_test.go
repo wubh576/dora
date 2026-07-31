@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -12,9 +13,40 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/app"
+	"github.com/wubh576/dora/backend/internal/buildinfo"
+	"github.com/wubh576/dora/backend/internal/launchagent"
 	"github.com/wubh576/dora/backend/internal/menubar"
 	"github.com/wubh576/dora/backend/internal/settings"
 )
+
+func TestVersionCommand(t *testing.T) {
+	info := buildinfo.New("v1.2.3", "abc123", "2026-07-31T08:00:00Z", "go1.26.5", "darwin", "arm64", "15.6")
+	var output bytes.Buffer
+	if err := versionCommand(nil, &output, info); err != nil {
+		t.Fatalf("versionCommand() 失败: %v", err)
+	}
+	for _, value := range []string{"Dora v1.2.3", "Git commit: abc123", "Go version: go1.26.5", "Platform: darwin/arm64", "macOS version: 15.6"} {
+		if !strings.Contains(output.String(), value) {
+			t.Fatalf("version 输出缺少 %q: %q", value, output.String())
+		}
+	}
+	if err := versionCommand([]string{"extra"}, &output, info); err == nil {
+		t.Fatal("version 接受了多余参数")
+	}
+}
+
+func TestStatusUsesRunningLaunchAgentBuildInfo(t *testing.T) {
+	commandInfo := buildinfo.New("dev+new", "new", "new-time", "go1.26.5", "darwin", "arm64", "15.6")
+	runningInfo := buildinfo.New("v1.2.3", "running", "running-time", "go1.26.5", "darwin", "arm64", "15.6")
+	status := launchagent.Status{Loaded: true, Running: true, Healthy: true, DashboardURL: launchagent.DashboardURL, BuildInfo: &runningInfo}
+	var output bytes.Buffer
+	if err := writeLaunchAgentStatus(&output, status, "是", "已加载", commandInfo); err != nil {
+		t.Fatalf("writeLaunchAgentStatus() 失败: %v", err)
+	}
+	if !strings.Contains(output.String(), "版本来源：运行中的 LaunchAgent") || !strings.Contains(output.String(), "Dora 版本：v1.2.3") || strings.Contains(output.String(), "dev+new") {
+		t.Fatalf("status 未展示运行中的 build info: %q", output.String())
+	}
+}
 
 func TestParseMenubarOptions(t *testing.T) {
 	defaultDB := filepath.Join(t.TempDir(), "default.db")

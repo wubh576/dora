@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/wubh576/dora/backend/internal/buildinfo"
 )
 
 type ManagedFile interface {
@@ -52,7 +54,7 @@ func (CommandRunner) Run(ctx context.Context, name string, args ...string) (stri
 }
 
 type HealthChecker interface {
-	Check(context.Context, string) error
+	Check(context.Context, string) (buildinfo.Info, error)
 }
 
 type PortChecker interface {
@@ -73,34 +75,35 @@ type HTTPHealthChecker struct {
 	Client *http.Client
 }
 
-func (checker HTTPHealthChecker) Check(ctx context.Context, baseURL string) error {
+func (checker HTTPHealthChecker) Check(ctx context.Context, baseURL string) (buildinfo.Info, error) {
 	client := checker.Client
 	if client == nil {
 		client = &http.Client{Timeout: 2 * time.Second}
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v1/health", nil)
 	if err != nil {
-		return err
+		return buildinfo.Info{}, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return buildinfo.Info{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("health 返回 HTTP %d", response.StatusCode)
+		return buildinfo.Info{}, fmt.Errorf("health 返回 HTTP %d", response.StatusCode)
 	}
 	var health struct {
-		Backend bool `json:"backend"`
-		SQLite  bool `json:"sqlite"`
+		Backend   bool           `json:"backend"`
+		SQLite    bool           `json:"sqlite"`
+		BuildInfo buildinfo.Info `json:"buildInfo"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		return fmt.Errorf("解析 health: %w", err)
+		return buildinfo.Info{}, fmt.Errorf("解析 health: %w", err)
 	}
 	if !health.Backend || !health.SQLite {
-		return fmt.Errorf("health 未就绪: backend=%t sqlite=%t", health.Backend, health.SQLite)
+		return buildinfo.Info{}, fmt.Errorf("health 未就绪: backend=%t sqlite=%t", health.Backend, health.SQLite)
 	}
-	return nil
+	return health.BuildInfo, nil
 }
 
 func atomicCopy(files FileSystem, source, temporary, target string, mode os.FileMode) error {
