@@ -20,16 +20,22 @@ func TestTimeWindowsUseLocalCalendarBoundaries(t *testing.T) {
 		startDate string
 		label     string
 	}{
-		{value: "Today", startDate: "2026-07-31", label: "Today"},
+		{value: "1D", startDate: "2026-07-31", label: "1D"},
+		{value: "Today", startDate: "2026-07-31", label: "1D"},
 		{value: "7D", startDate: "2026-07-25", label: "7D"},
 		{value: "30D", startDate: "2026-07-02", label: "30D"},
+		{value: "ALL", startDate: TrackingStartDate, label: "ALL"},
 	}
 	for _, test := range tests {
 		window, err := NewTimeWindow(now, location, test.value)
 		if err != nil {
 			t.Fatalf("NewTimeWindow(%s) 失败: %v", test.value, err)
 		}
-		if got := window.StartUTC.In(location).Format("2006-01-02 15:04"); got != test.startDate+" 00:00" {
+		expectedTime := test.startDate + " 00:00"
+		if test.startDate < TrackingStartDate {
+			expectedTime = TrackingStartDate + " 00:00"
+		}
+		if got := window.StartUTC.In(location).Format("2006-01-02 15:04"); got != expectedTime {
 			t.Fatalf("%s start = %s", test.value, got)
 		}
 		if window.Range != test.label || !window.EndUTC.Equal(now.UTC()) {
@@ -38,17 +44,28 @@ func TestTimeWindowsUseLocalCalendarBoundaries(t *testing.T) {
 	}
 }
 
+func TestTimeWindowStartsAtConfiguredTrackingDate(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	window, err := NewTimeWindow(now, time.UTC, "ALL")
+	if err != nil {
+		t.Fatalf("NewTimeWindow() 失败: %v", err)
+	}
+	if got := window.StartUTC.Format(time.DateOnly); got != TrackingStartDate {
+		t.Fatalf("ALL 起始日 = %s，期望 %s", got, TrackingStartDate)
+	}
+}
+
 func TestTimeWindowHandlesDSTByCalendarDay(t *testing.T) {
 	location, err := time.LoadLocation("America/New_York")
 	if err != nil {
 		t.Fatalf("加载 DST 时区失败: %v", err)
 	}
-	now := time.Date(2026, 3, 9, 12, 0, 0, 0, location)
+	now := time.Date(2027, 3, 15, 12, 0, 0, 0, location)
 	window, err := NewTimeWindow(now, location, "7D")
 	if err != nil {
 		t.Fatalf("NewTimeWindow() 失败: %v", err)
 	}
-	if got := window.StartUTC.In(location).Format("2006-01-02 15:04 MST"); got != "2026-03-03 00:00 EST" {
+	if got := window.StartUTC.In(location).Format("2006-01-02 15:04 MST"); got != "2027-03-09 00:00 EST" {
 		t.Fatalf("DST 窗口起点错误: %s", got)
 	}
 	if duration := window.EndUTC.Sub(window.StartUTC); duration != 155*time.Hour {
@@ -70,13 +87,13 @@ func TestDailyTimelineDoesNotLoseOrDuplicateDSTEvents(t *testing.T) {
 	}{
 		{
 			name: "spring forward",
-			now:  time.Date(2026, 3, 9, 12, 0, 0, 0, location),
+			now:  time.Date(2027, 3, 15, 12, 0, 0, 0, location),
 			events: []domain.UsageEvent{
-				{OccurredAt: time.Date(2026, 3, 8, 6, 30, 0, 0, time.UTC), TotalTokens: 10},
-				{OccurredAt: time.Date(2026, 3, 8, 7, 30, 0, 0, time.UTC), TotalTokens: 20},
-				{OccurredAt: time.Date(2026, 3, 9, 4, 15, 0, 0, time.UTC), TotalTokens: 30},
+				{OccurredAt: time.Date(2027, 3, 14, 6, 30, 0, 0, time.UTC), TotalTokens: 10},
+				{OccurredAt: time.Date(2027, 3, 14, 7, 30, 0, 0, time.UTC), TotalTokens: 20},
+				{OccurredAt: time.Date(2027, 3, 15, 4, 15, 0, 0, time.UTC), TotalTokens: 30},
 			},
-			dates:  []string{"2026-03-08", "2026-03-09"},
+			dates:  []string{"2027-03-14", "2027-03-15"},
 			totals: []int64{30, 30},
 		},
 		{
@@ -115,13 +132,13 @@ func TestDailyTimelineDoesNotLoseOrDuplicateDSTEvents(t *testing.T) {
 
 func TestSummaryEqualsTimelineAndPreservesReportedTotal(t *testing.T) {
 	location := time.UTC
-	window, err := NewTimeWindow(time.Date(2026, 1, 3, 12, 0, 0, 0, location), location, "7D")
+	window, err := NewTimeWindow(time.Date(2026, 7, 31, 12, 0, 0, 0, location), location, "7D")
 	if err != nil {
 		t.Fatalf("NewTimeWindow() 失败: %v", err)
 	}
 	events := []domain.UsageEvent{
 		{
-			OccurredAt:               time.Date(2026, 1, 2, 3, 0, 0, 0, location),
+			OccurredAt:               time.Date(2026, 7, 30, 3, 0, 0, 0, location),
 			InputTokens:              60,
 			CachedInputTokens:        30,
 			CacheCreationInputTokens: 10,
@@ -131,7 +148,7 @@ func TestSummaryEqualsTimelineAndPreservesReportedTotal(t *testing.T) {
 			TotalTokens:              120,
 		},
 		{
-			OccurredAt:          time.Date(2026, 1, 3, 3, 0, 0, 0, location),
+			OccurredAt:          time.Date(2026, 7, 31, 3, 0, 0, 0, location),
 			ReportedTotalTokens: 42,
 			TotalTokens:         42,
 		},

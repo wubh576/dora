@@ -467,7 +467,10 @@ type TimeWindow struct {
 规则：
 
 - 查询使用 `[start, end)`。
-- Today、7D、30D、All 的边界由一个函数生成。
+- Web 统一使用 1D、7D、30D、ALL；历史兼容输入只允许在统一时间窗口函数中处理。
+- 第一期用量统计统一始于 `2026-07-29`，任何范围都不能读取更早的数据。
+- 统计起始日是产品口径，应使用具名常量集中维护，并由 API 返回给前端，不能在多个页面重复写死。
+- 1D、7D、30D、ALL 的边界由一个函数生成。
 - summary、timeline、model breakdown、project breakdown 必须复用同一个 `TimeWindow`。
 - 日级 label 在用户的 macOS 时区中生成。
 - 不允许每个 handler 自己计算 `time.Now()`。
@@ -846,7 +849,7 @@ input / 1M × input price
 
 #### Dashboard
 
-- Today / 7D / 30D / All。
+- 1D / 7D / 30D / ALL。
 - 总 token。
 - 普通输入、cache read、cache creation、普通输出、reasoning。
 - cache 命中率：
@@ -856,6 +859,7 @@ cache read / (input + cache read + cache creation)
 ```
 
 - 每日趋势堆叠图。
+- GitHub 风格的 53 周 Token 热力图，明确展示统计起始日；热力图通过统一 API 获取完整活动数据，不跟随当前汇总范围截断。
 - 模型分布。
 - 项目分布。
 - 可选费用。
@@ -972,7 +976,8 @@ dora doctor
 
 - summary total 等于五类明细和 `reported total` 的保真结果。
 - summary token 等于 timeline token 之和。
-- Today 在本地时区午夜正确切换。
+- 1D 在本地时区午夜正确切换。
+- 所有时间窗口都不会早于 `2026-07-29`。
 - DST 切换日不重复或漏计。
 
 #### Quota
@@ -1031,7 +1036,7 @@ Claude statusline ─────→ │ + /api/v1       │
 
 Popover：
 
-- 今日 / 7D / All token。
+- 1D / 7D / ALL token。
 - top model。
 - Codex 5h/7d quota。
 - Claude Code 5h/7d quota。

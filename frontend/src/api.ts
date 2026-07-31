@@ -54,6 +54,11 @@ export type DashboardData = {
   timeline: TimelinePoint[];
   models: BreakdownItem[];
   projects: BreakdownItem[];
+  activity: {
+    startDate: string;
+    endDate: string;
+    days: TimelinePoint[];
+  };
   diagnostics: UsageDiagnostics;
 };
 
@@ -92,19 +97,21 @@ export type DoraSettings = {
   codexQuotaConsent: boolean;
 };
 
-export type UsageRange = "Today" | "7D" | "30D" | "All";
+export type UsageRange = "1D" | "7D" | "30D" | "ALL";
+
+const API_BASE_PATH = "/api/v1";
 
 export async function loadHealth(signal?: AbortSignal) {
-  return request<HealthStatus>("/api/v1/health", { signal });
+  return request<HealthStatus>("/health", { signal });
 }
 
 export async function loadDashboard(range: UsageRange, signal?: AbortSignal): Promise<DashboardData> {
   const query = encodeURIComponent(range);
-  return request<DashboardData>(`/api/v1/dashboard?range=${query}`, { signal });
+  return request<DashboardData>(`/dashboard?range=${query}`, { signal });
 }
 
 export async function scanUsage(controlToken: string, full: boolean) {
-  return request<ScanResult>(`/api/v1/scan?full=${full}`, {
+  return request<ScanResult>(`/scan?full=${full}`, {
     method: "POST",
     headers: {
       "X-Dora-Control-Token": controlToken,
@@ -113,15 +120,15 @@ export async function scanUsage(controlToken: string, full: boolean) {
 }
 
 export async function loadQuotas(signal?: AbortSignal) {
-  return request<QuotaData>("/api/v1/quotas", { signal });
+  return request<QuotaData>("/quotas", { signal });
 }
 
 export async function loadSettings(signal?: AbortSignal) {
-  return request<DoraSettings>("/api/v1/settings", { signal });
+  return request<DoraSettings>("/settings", { signal });
 }
 
 export async function updateSettings(controlToken: string, codexQuotaConsent: boolean) {
-  return request<DoraSettings>("/api/v1/settings", {
+  return request<DoraSettings>("/settings", {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
@@ -132,7 +139,7 @@ export async function updateSettings(controlToken: string, codexQuotaConsent: bo
 }
 
 export async function refreshCodexQuota(controlToken: string) {
-  return request<QuotaData>("/api/v1/quota/refresh", {
+  return request<QuotaData>("/quota/refresh", {
     method: "POST",
     headers: {
       "X-Dora-Control-Token": controlToken,
@@ -141,7 +148,7 @@ export async function refreshCodexQuota(controlToken: string) {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(`${API_BASE_PATH}${path}`, {
     ...init,
     cache: "no-store",
   });
@@ -149,7 +156,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const error = await response.json().catch(() => null);
     const advice =
       error && typeof error.advice === "string" ? ` ${error.advice}` : "";
-    throw new Error(`Request failed (${response.status}).${advice}`);
+    throw new Error(`请求失败（${response.status}）。${advice}`);
   }
   return (await response.json()) as T;
 }

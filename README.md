@@ -32,9 +32,9 @@ make dev
 http://127.0.0.1:5173
 ```
 
-页面会通过 Vite 的同源代理调用真实后端 API。Dashboard 展示本机真实 Codex token 总量、五类非重叠 token、cache 命中率、每日趋势、模型分布和项目分布；Diagnostics 展示扫描状态、文件数、存储事件数、parser 版本和初始化时间。
+页面会通过 Vite 的同源代理调用真实后端 API。“概览”展示本机真实 Codex token 总量、五类非重叠 token、Cache 命中率、每日趋势、模型分布、项目分布和 53 周 Token 热力图；“诊断”展示扫描状态、文件数、存储事件数、parser 版本和初始化时间。
 
-Dashboard 支持 `Today`、`7D`、`30D` 和 `All`。所有范围按 macOS 本地时区的日历日计算，汇总、趋势和分布来自同一份 SQLite 数据快照。
+概览支持 `1D`、`7D`、`30D` 和 `ALL`。Dora 的用量统计统一始于 `2026-07-29`，所有范围按 macOS 本地时区的日历日计算；汇总、趋势、分布和热力图来自同一份 SQLite 数据快照。所选范围可以改变汇总与趋势，热力图始终保留从统计起始日至今的完整足迹。
 
 状态 API：
 
@@ -93,7 +93,7 @@ Dora 只保存 token 统计元数据、脱敏项目名和扫描 checkpoint，不
 
 ## Codex 订阅配额
 
-配额读取默认关闭。在页面进入 `Diagnostics`，明确开启 `Allow Dora to read quota` 后，Dora 才会读取本地 Codex OAuth 登录并访问 ChatGPT 官方配额接口。页面会展示 5 小时和 7 日窗口的已用比例、剩余比例、重置时间、stale 状态和脱敏账号标签。
+配额读取默认关闭。在页面进入“诊断”，明确开启“允许 Dora 读取订阅配额”后，Dora 才会读取本地 Codex OAuth 登录并访问 ChatGPT 官方配额接口。页面会展示 5 小时和 7 日窗口的已用比例、剩余比例、重置时间、过期状态和脱敏账号标签。
 
 安全边界：
 

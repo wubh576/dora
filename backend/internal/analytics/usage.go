@@ -11,6 +11,8 @@ import (
 	"github.com/wubh576/dora/backend/internal/domain"
 )
 
+const TrackingStartDate = "2026-07-29"
+
 type TimeWindow struct {
 	StartUTC time.Time
 	EndUTC   time.Time
@@ -55,13 +57,17 @@ func NewTimeWindow(now time.Time, location *time.Location, value string) (TimeWi
 	if canonical == "" {
 		canonical = "7D"
 	}
+	trackingStart, err := time.ParseInLocation(time.DateOnly, TrackingStartDate, location)
+	if err != nil {
+		return TimeWindow{}, fmt.Errorf("解析 Dora 统计起始日: %w", err)
+	}
 
 	var start time.Time
 	var label string
 	switch canonical {
-	case "TODAY":
+	case "TODAY", "1D":
 		start = localMidnight(now)
-		label = "Today"
+		label = "1D"
 	case "7D":
 		start = localMidnight(now).AddDate(0, 0, -6)
 		label = "7D"
@@ -69,10 +75,16 @@ func NewTimeWindow(now time.Time, location *time.Location, value string) (TimeWi
 		start = localMidnight(now).AddDate(0, 0, -29)
 		label = "30D"
 	case "ALL":
-		start = time.Unix(0, 0).In(location)
-		label = "All"
+		start = trackingStart
+		label = "ALL"
 	default:
 		return TimeWindow{}, fmt.Errorf("不支持的时间范围 %q", value)
+	}
+	if start.Before(trackingStart) {
+		start = trackingStart
+	}
+	if start.After(now) {
+		start = now
 	}
 	return TimeWindow{
 		StartUTC: start.UTC(),

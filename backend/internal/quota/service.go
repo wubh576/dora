@@ -75,8 +75,8 @@ func (s *Service) Snapshot(ctx context.Context) (View, error) {
 		return View{
 			Status:  "not_configured",
 			Items:   []domain.QuotaSnapshot{},
-			Message: "Codex subscription quota is not enabled",
-			Advice:  "Enable it in Diagnostics when you want Dora to contact ChatGPT",
+			Message: "尚未启用 Codex 订阅配额",
+			Advice:  "如需读取配额，请在诊断页明确授权",
 		}, nil
 	}
 
@@ -105,18 +105,18 @@ func (s *Service) Snapshot(ctx context.Context) (View, error) {
 	}
 	switch state.Status {
 	case "ready":
-		view.Message = "Codex subscription quota is ready"
+		view.Message = "Codex 订阅配额已就绪"
 	case "unsupported":
-		view.Message = "API key auth does not expose subscription quota"
-		view.Advice = "Run codex login with a ChatGPT subscription account"
+		view.Message = "API key 登录无法读取订阅配额"
+		view.Advice = "请使用 ChatGPT 订阅账号运行 codex login"
 	case "not_configured":
-		view.Message = "No Codex OAuth login was found"
-		view.Advice = "Run codex login"
+		view.Message = "未找到 Codex OAuth 登录"
+		view.Advice = "请运行 codex login"
 	case "error":
 		view.Message = state.LastError
 		view.Advice = quotaAdvice(state.LastError)
 	default:
-		view.Message = "Codex quota has not been refreshed"
+		view.Message = "Codex 配额尚未刷新"
 	}
 	return view, nil
 }
@@ -170,7 +170,7 @@ func (s *Service) refresh(ctx context.Context) (View, error) {
 	snapshots, fetchErr := s.provider.Fetch(ctx)
 	if fetchErr != nil {
 		status := "error"
-		message := "Codex quota refresh failed"
+		message := "Codex 配额刷新失败"
 		var quotaErr *codex.QuotaError
 		if errors.As(fetchErr, &quotaErr) {
 			status = quotaErr.State
@@ -194,10 +194,10 @@ func (s *Service) refresh(ctx context.Context) (View, error) {
 func quotaAdvice(message string) string {
 	switch message {
 	case "Codex 登录已过期或无权读取配额":
-		return "Run codex login again"
+		return "请重新运行 codex login"
 	case "无法连接 Codex 配额服务":
-		return "Check the network and retry; the last successful quota is preserved"
+		return "请检查网络后重试，最后一次成功配额已保留"
 	default:
-		return "Retry later; local token usage remains available"
+		return "请稍后重试，本地 token 用量不受影响"
 	}
 }

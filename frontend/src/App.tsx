@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ActivityHeatmap } from "./ActivityHeatmap";
 import {
   type BreakdownItem,
   type DashboardData,
@@ -22,7 +23,7 @@ type LoadState<T> =
   | { kind: "ready"; value: T }
   | { kind: "error"; message: string };
 
-const ranges: UsageRange[] = ["Today", "7D", "30D", "All"];
+const ranges: UsageRange[] = ["1D", "7D", "30D", "ALL"];
 
 function App() {
   const [view, setView] = useState<"dashboard" | "diagnostics">("dashboard");
@@ -89,11 +90,11 @@ function App() {
       const result = await scanUsage(health.value.controlToken, full);
       const imported =
         result.mode === "full"
-          ? `${formatNumber(result.eventsSeen)} records verified`
+          ? `已校验 ${formatNumber(result.eventsSeen)} 条记录`
           : result.eventsSeen > 0
-          ? `${formatNumber(result.eventsSeen)} new records parsed`
-          : "Already up to date";
-      setRefreshMessage(`${imported} · ${formatNumber(result.eventsStored)} events stored`);
+          ? `解析到 ${formatNumber(result.eventsSeen)} 条新记录`
+          : "已是最新状态";
+      setRefreshMessage(`${imported} · 共保存 ${formatNumber(result.eventsStored)} 条事件`);
     } catch (error) {
       setRefreshMessage(errorMessage(error));
     } finally {
@@ -111,7 +112,7 @@ function App() {
     try {
       const value = await refreshCodexQuota(health.value.controlToken);
       setQuota({ kind: "ready", value });
-      setQuotaMessage("Subscription quota refreshed");
+      setQuotaMessage("订阅配额已刷新");
     } catch (error) {
       setQuotaMessage(errorMessage(error));
       try {
@@ -136,10 +137,10 @@ function App() {
       if (enabled) {
         const value = await refreshCodexQuota(health.value.controlToken);
         setQuota({ kind: "ready", value });
-        setQuotaMessage("Codex subscription quota enabled");
+        setQuotaMessage("已启用 Codex 订阅配额");
       } else {
         setQuota({ kind: "ready", value: await loadQuotas() });
-        setQuotaMessage("Codex subscription quota disabled");
+        setQuotaMessage("已关闭 Codex 订阅配额");
       }
     } catch (error) {
       setQuotaMessage(errorMessage(error));
@@ -167,14 +168,14 @@ function App() {
           <span>Dora</span>
         </button>
 
-        <nav className="primary-nav" aria-label="Primary">
+        <nav className="primary-nav" aria-label="主导航">
           <button
             className={view === "dashboard" ? "active" : ""}
             type="button"
             aria-pressed={view === "dashboard"}
             onClick={() => setView("dashboard")}
           >
-            Dashboard
+            概览
           </button>
           <button
             className={view === "diagnostics" ? "active" : ""}
@@ -182,13 +183,13 @@ function App() {
             aria-pressed={view === "diagnostics"}
             onClick={() => setView("diagnostics")}
           >
-            Diagnostics
+            诊断
           </button>
         </nav>
 
         <div className={`connection-pill ${online ? "online" : ""}`}>
           <span aria-hidden="true" />
-          {online ? "Local data" : "Disconnected"}
+          {online ? "本地数据" : "连接断开"}
         </div>
       </header>
 
@@ -196,8 +197,8 @@ function App() {
         {health.kind === "error" && (
           <Notice
             tone="error"
-            title="Dora backend is unavailable"
-            body={`Start the backend and refresh this page. ${health.message}`}
+            title="Dora 后端暂时不可用"
+            body={`请启动后端后刷新页面。${health.message}`}
           />
         )}
 
@@ -263,18 +264,18 @@ function Dashboard({
     <>
       <section className="page-heading">
         <div>
-          <p className="eyebrow">Codex usage</p>
-          <h1>Your local activity, clearly counted.</h1>
-          <p className="lede">Private token analytics built from the Codex data already on this Mac.</p>
+          <p className="eyebrow">CODEX 用量</p>
+          <h1>让每一次编码，<br />都清清楚楚。</h1>
+          <p className="lede">只在这台 Mac 上，安静地整理你的 Codex token 用量。</p>
         </div>
         <button className="refresh-button" type="button" disabled={refreshing} onClick={onRefresh}>
           <RefreshIcon spinning={refreshing} />
-          {refreshing ? "Scanning…" : "Refresh usage"}
+          {refreshing ? "正在扫描…" : "刷新用量"}
         </button>
       </section>
 
       <div className="range-row">
-        <div className="range-picker" aria-label="Usage range">
+        <div className="range-picker" aria-label="用量时间范围">
           {ranges.map((value) => (
             <button
               className={range === value ? "active" : ""}
@@ -292,7 +293,7 @@ function Dashboard({
 
       {state.kind === "loading" && <DashboardSkeleton />}
       {state.kind === "error" && (
-        <Notice tone="error" title="Usage could not be loaded" body={state.message} />
+        <Notice tone="error" title="暂时无法读取用量" body={state.message} />
       )}
       {state.kind === "ready" && (
         <DashboardContent
@@ -333,14 +334,15 @@ function DashboardContent({
         )}
         <section className="empty-state">
           <div className="empty-mark">0</div>
-          <p className="eyebrow">No usage yet</p>
-          <h2>{diagnostics.filesSeen === 0 ? "No Codex sessions found" : "No token events in this range"}</h2>
+          <p className="eyebrow">暂无用量</p>
+          <h2>{diagnostics.filesSeen === 0 ? "还没有找到 Codex 会话" : "这个时间范围内暂无 token 记录"}</h2>
           <p>
             {diagnostics.filesSeen === 0
-              ? "Run Codex once, then refresh usage. Dora scans the local sessions and archived sessions folders."
-              : "Choose a wider range or create a new Codex session."}
+              ? "先运行一次 Codex，再刷新用量。Dora 会扫描本地 sessions 与 archived_sessions 目录。"
+              : "可以切换到更长的时间范围，或创建一次新的 Codex 会话。"}
           </p>
         </section>
+        <ActivityHeatmap {...data.activity} />
         <QuotaPanel
           state={quota}
           busy={quotaBusy}
@@ -359,16 +361,16 @@ function DashboardContent({
 
       <section className="summary-grid">
         <article className="hero-metric panel">
-          <p className="panel-label">Total tokens · {summary.range}</p>
+          <p className="panel-label">Token 总量 · {summary.range}</p>
           <strong>{formatCompact(summary.totalTokens)}</strong>
-          <span>{formatNumber(summary.totalTokens)} exact tokens</span>
+          <span>{formatNumber(summary.totalTokens)} 个精确 token</span>
           <div className="hero-meta">
             <div>
-              <small>Events</small>
+              <small>事件数</small>
               <b>{formatNumber(summary.eventCount)}</b>
             </div>
             <div>
-              <small>Cache hit</small>
+              <small>Cache 命中</small>
               <b>{formatPercent(summary.cacheHitRate)}</b>
             </div>
           </div>
@@ -377,8 +379,8 @@ function DashboardContent({
         <article className="token-mix panel">
           <div className="panel-heading">
             <div>
-              <p className="panel-label">Token mix</p>
-              <h2>Non-overlapping usage</h2>
+              <p className="panel-label">Token 构成</p>
+              <h2>五类互不重叠的用量</h2>
             </div>
           </div>
           <div className="metric-list">
@@ -391,11 +393,13 @@ function DashboardContent({
         </article>
       </section>
 
+      <ActivityHeatmap {...data.activity} />
+
       <section className="panel trend-panel">
         <div className="panel-heading">
           <div>
-            <p className="panel-label">Daily trend</p>
-            <h2>Where the tokens went</h2>
+            <p className="panel-label">每日趋势</p>
+            <h2>Token 都花在了哪里</h2>
           </div>
           <TokenLegend />
         </div>
@@ -403,8 +407,8 @@ function DashboardContent({
       </section>
 
       <section className="breakdown-grid">
-        <BreakdownCard title="Models" eyebrow="Model distribution" items={data.models} />
-        <BreakdownCard title="Projects" eyebrow="Project distribution" items={data.projects} />
+        <BreakdownCard title="模型" eyebrow="模型分布" items={data.models} />
+        <BreakdownCard title="项目" eyebrow="项目分布" items={data.projects} />
       </section>
 
       <QuotaPanel
@@ -450,33 +454,35 @@ function TimelineChart({ points }: { points: TimelinePoint[] }) {
           );
         })}
       </div>
-      <table className="sr-only">
-        <caption>Daily token usage by token type</caption>
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Total</th>
-            <th>Input</th>
-            <th>Cache read</th>
-            <th>Cache creation</th>
-            <th>Output</th>
-            <th>Reasoning</th>
-          </tr>
-        </thead>
-        <tbody>
-          {points.map((point) => (
-            <tr key={point.date}>
-              <th>{point.date}</th>
-              <td>{point.totalTokens}</td>
-              <td>{point.inputTokens}</td>
-              <td>{point.cachedInputTokens}</td>
-              <td>{point.cacheCreationInputTokens}</td>
-              <td>{point.outputTokens}</td>
-              <td>{point.reasoningOutputTokens}</td>
+      <div className="sr-only">
+        <table>
+          <caption>按 token 类型统计的每日用量</caption>
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th>总量</th>
+              <th>Input</th>
+              <th>Cache read</th>
+              <th>Cache creation</th>
+              <th>Output</th>
+              <th>Reasoning</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {points.map((point) => (
+              <tr key={point.date}>
+                <th>{point.date}</th>
+                <td>{point.totalTokens}</td>
+                <td>{point.inputTokens}</td>
+                <td>{point.cachedInputTokens}</td>
+                <td>{point.cacheCreationInputTokens}</td>
+                <td>{point.outputTokens}</td>
+                <td>{point.reasoningOutputTokens}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -498,17 +504,17 @@ function QuotaPanel({
   onRefresh: () => void;
 }) {
   if (state.kind === "loading") {
-    return <section className="panel quota-placeholder" aria-label="Loading Codex quota" />;
+    return <section className="panel quota-placeholder" aria-label="正在加载 Codex 配额" />;
   }
   if (state.kind === "error") {
     return (
       <section className="panel quota-placeholder">
         <div>
-          <p className="panel-label">Codex quota</p>
-          <h2>Quota status is unavailable</h2>
-          <p>{state.message} Local token analytics remains available.</p>
+          <p className="panel-label">Codex 配额</p>
+          <h2>暂时无法读取配额</h2>
+          <p>{state.message} 本地 token 统计仍可正常使用。</p>
         </div>
-        <span className="muted-badge error">Unavailable</span>
+        <span className="muted-badge error">不可用</span>
       </section>
     );
   }
@@ -518,11 +524,11 @@ function QuotaPanel({
     return (
       <section className="panel quota-placeholder">
         <div>
-          <p className="panel-label">Codex quota</p>
-          <h2>Subscription limits are not enabled</h2>
-          <p>Enable OAuth quota access in Diagnostics. Local token analytics stays independent.</p>
+          <p className="panel-label">Codex 配额</p>
+          <h2>尚未启用订阅配额</h2>
+          <p>在诊断页明确授权后即可读取；本地 token 统计不会受到影响。</p>
         </div>
-        <span className="muted-badge">Not enabled</span>
+        <span className="muted-badge">未启用</span>
       </section>
     );
   }
@@ -531,8 +537,8 @@ function QuotaPanel({
     <section className="panel quota-panel">
       <div className="panel-heading quota-heading">
         <div>
-          <p className="panel-label">Codex quota</p>
-          <h2>Subscription windows</h2>
+          <p className="panel-label">Codex 配额</p>
+          <h2>订阅配额窗口</h2>
           {value.items[0]?.accountLabel && (
             <p className="quota-account">
               {value.items[0].accountLabel}
@@ -541,7 +547,7 @@ function QuotaPanel({
           )}
         </div>
         <button type="button" disabled={busy} onClick={onRefresh}>
-          {busy ? "Refreshing…" : "Refresh quota"}
+          {busy ? "正在刷新…" : "刷新配额"}
         </button>
       </div>
 
@@ -551,7 +557,7 @@ function QuotaPanel({
       {value.items.length === 0 ? (
         <div className="quota-empty">
           <strong>{value.message}</strong>
-          <p>{value.advice || "Refresh when Codex OAuth is available."}</p>
+          <p>{value.advice || "Codex OAuth 可用后再刷新。"}</p>
         </div>
       ) : (
         <div className="quota-grid">
@@ -564,19 +570,20 @@ function QuotaPanel({
 }
 
 function QuotaCard({ item }: { item: QuotaItem }) {
+  const label = quotaWindowLabel(item.windowKey);
   return (
     <article className="quota-card">
       <div className="quota-card-heading">
         <div>
-          <span>{item.label}</span>
-          {item.sourceState === "stale" && <small>Stale</small>}
+          <span>{label}</span>
+          {item.sourceState === "stale" && <small>已过期</small>}
         </div>
-        <strong>{formatPercentValue(item.remainingPercent)} left</strong>
+        <strong>剩余 {formatPercentValue(item.remainingPercent)}</strong>
       </div>
       <div
         className="quota-progress"
         role="progressbar"
-        aria-label={`${item.label} quota used`}
+        aria-label={`${label}配额已使用`}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={item.usedPercent}
@@ -584,8 +591,8 @@ function QuotaCard({ item }: { item: QuotaItem }) {
         <span style={{ width: `${item.usedPercent}%` }} />
       </div>
       <div className="quota-meta">
-        <span>{formatPercentValue(item.usedPercent)} used</span>
-        <span>Resets {formatDate(item.resetsAt)}</span>
+        <span>已用 {formatPercentValue(item.usedPercent)}</span>
+        <span>重置于 {formatDate(item.resetsAt)}</span>
       </div>
     </article>
   );
@@ -668,44 +675,44 @@ function Diagnostics({
     <>
       <section className="page-heading compact">
         <div>
-          <p className="eyebrow">Diagnostics</p>
-          <h1>Local data health.</h1>
-          <p className="lede">A concise view of discovery, parsing and persistence.</p>
+          <p className="eyebrow">诊断</p>
+          <h1>本地数据，一切有据可查。</h1>
+          <p className="lede">用最少的信息，说明发现、解析与持久化是否正常。</p>
         </div>
       </section>
 
       {state.kind === "loading" && <DashboardSkeleton />}
-      {state.kind === "error" && <Notice tone="error" title="Diagnostics unavailable" body={state.message} />}
+      {state.kind === "error" && <Notice tone="error" title="诊断信息暂时不可用" body={state.message} />}
       {data && (
         <>
           <section className="diagnostic-grid">
-            <DiagnosticMetric label="Status" value={humanStatus(data.status)} tone={data.status} />
-            <DiagnosticMetric label="Files seen" value={formatNumber(data.filesSeen)} />
-            <DiagnosticMetric label="Stored events" value={formatNumber(data.storedEvents)} />
-            <DiagnosticMetric label="Parser version" value={`v${data.parserVersion}`} />
+            <DiagnosticMetric label="状态" value={humanStatus(data.status)} tone={data.status} />
+            <DiagnosticMetric label="扫描文件" value={formatNumber(data.filesSeen)} />
+            <DiagnosticMetric label="已存事件" value={formatNumber(data.storedEvents)} />
+            <DiagnosticMetric label="Parser 版本" value={`v${data.parserVersion}`} />
           </section>
 
           <section className="panel diagnostic-detail">
             <div>
-              <p className="panel-label">Codex source</p>
-              <h2>Automatic local discovery</h2>
+              <p className="panel-label">Codex 数据源</p>
+              <h2>自动发现本地数据</h2>
             </div>
             <dl>
-              <div><dt>Directories</dt><dd>sessions + archived_sessions</dd></div>
-              <div><dt>Last scan</dt><dd>{formatDate(data.lastScanAt)}</dd></div>
-              <div><dt>Last mode</dt><dd>{data.lastRunMode || "Not scanned"}</dd></div>
-              <div><dt>Last parsed</dt><dd>{formatNumber(data.eventsSeen)} records</dd></div>
+              <div><dt>扫描目录</dt><dd>sessions + archived_sessions</dd></div>
+              <div><dt>最近扫描</dt><dd>{formatDate(data.lastScanAt)}</dd></div>
+              <div><dt>扫描模式</dt><dd>{humanScanMode(data.lastRunMode)}</dd></div>
+              <div><dt>最近解析</dt><dd>{formatNumber(data.eventsSeen)} 条记录</dd></div>
               <div>
-                <dt>Dora initialized</dt>
-                <dd>{health.kind === "ready" ? formatDate(health.value.initializedAt) : "Unavailable"}</dd>
+                <dt>Dora 初始化</dt>
+                <dd>{health.kind === "ready" ? formatDate(health.value.initializedAt) : "不可用"}</dd>
               </div>
             </dl>
             <div className="diagnostic-actions">
               <button type="button" disabled={refreshing !== null} onClick={() => onScan(false)}>
-                {refreshing === "incremental" ? "Scanning…" : "Scan changes"}
+                {refreshing === "incremental" ? "正在扫描…" : "扫描变化"}
               </button>
               <button className="secondary" type="button" disabled={refreshing !== null} onClick={() => onScan(true)}>
-                {refreshing === "full" ? "Rebuilding…" : "Full rebuild"}
+                {refreshing === "full" ? "正在重建…" : "全量重建"}
               </button>
             </div>
             {refreshMessage && <p className="refresh-message" role="status">{refreshMessage}</p>}
@@ -713,19 +720,19 @@ function Diagnostics({
 
           <Notice
             tone="neutral"
-            title="Your conversations stay private"
-            body="Dora stores token metadata and checkpoints only. Prompt text, replies, tool arguments and raw transcript lines are never copied into SQLite."
+            title="你的对话始终保持私密"
+            body="Dora 只保存 token 元数据与扫描 checkpoint，不会把 prompt、回复、工具参数或原始会话内容写入 SQLite。"
           />
         </>
       )}
 
       <section className="panel quota-settings">
         <div className="quota-settings-copy">
-          <p className="panel-label">Codex subscription quota</p>
-          <h2>Allow Dora to read quota</h2>
+          <p className="panel-label">Codex 订阅配额</p>
+          <h2>允许 Dora 读取配额</h2>
           <p>
-            When enabled, Dora reads the local Codex OAuth session and contacts only ChatGPT's
-            quota endpoint. Access tokens are never stored in SQLite, settings or logs.
+            开启后，Dora 会读取本地 Codex OAuth 会话，并且只访问 ChatGPT 配额接口。
+            Access token 不会写入 SQLite、设置或日志。
           </p>
         </div>
         <label className="consent-toggle">
@@ -736,27 +743,27 @@ function Diagnostics({
             onChange={(event) => onQuotaConsent(event.target.checked)}
           />
           <span aria-hidden="true" />
-          <b>{quotaConsent ? "Enabled" : "Disabled"}</b>
+          <b>{quotaConsent ? "已启用" : "未启用"}</b>
         </label>
 
         {settings.kind === "error" && (
-          <Notice tone="error" title="Settings unavailable" body={settings.message} />
+          <Notice tone="error" title="设置暂时不可用" body={settings.message} />
         )}
         {quota.kind === "error" && (
-          <Notice tone="error" title="Quota status unavailable" body={quota.message} />
+          <Notice tone="error" title="配额状态暂时不可用" body={quota.message} />
         )}
         {quotaData && quotaData.enabled && (
           <div className="quota-setting-status">
             <div>
-              <span>Status</span>
+              <span>状态</span>
               <strong>{humanQuotaStatus(quotaData.status)}</strong>
             </div>
             <div>
-              <span>Last success</span>
+              <span>最近成功</span>
               <strong>{formatDate(quotaData.lastSuccessAt)}</strong>
             </div>
             <button type="button" disabled={quotaBusy} onClick={onQuotaRefresh}>
-              {quotaBusy ? "Refreshing…" : "Refresh now"}
+              {quotaBusy ? "正在刷新…" : "立即刷新"}
             </button>
           </div>
         )}
@@ -789,7 +796,7 @@ function Notice({ tone, title, body }: { tone: "error" | "warning" | "neutral"; 
 
 function DashboardSkeleton() {
   return (
-    <div className="skeleton-grid" aria-label="Loading usage">
+    <div className="skeleton-grid" aria-label="正在加载用量">
       <div className="skeleton tall" />
       <div className="skeleton tall" />
       <div className="skeleton wide" />
@@ -803,30 +810,30 @@ function RefreshIcon({ spinning }: { spinning: boolean }) {
 
 function humanStatus(status: string) {
   const labels: Record<string, string> = {
-    ready: "Ready",
-    degraded: "Ready with warnings",
-    error: "Needs attention",
-    not_scanned: "Not scanned",
+    ready: "正常",
+    degraded: "正常，有提示",
+    error: "需要处理",
+    not_scanned: "尚未扫描",
   };
   return labels[status] ?? status;
 }
 
 function humanQuotaStatus(status: string) {
   const labels: Record<string, string> = {
-    ready: "Ready",
-    error: "Last refresh failed",
-    unsupported: "Unsupported auth",
-    not_configured: "Login required",
+    ready: "正常",
+    error: "最近刷新失败",
+    unsupported: "不支持当前登录",
+    not_configured: "需要登录",
   };
   return labels[status] ?? status;
 }
 
 function formatNumber(value: number) {
-  return new Intl.NumberFormat().format(value);
+  return new Intl.NumberFormat("zh-CN").format(value);
 }
 
 function formatCompact(value: number) {
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat("zh-CN", {
     notation: value >= 10_000 ? "compact" : "standard",
     maximumFractionDigits: 1,
   }).format(value);
@@ -846,13 +853,26 @@ function formatPercentValue(value: number) {
 }
 
 function formatDate(value: string | null) {
-  if (!value) return "Not yet";
+  if (!value) return "尚未";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unknown error";
+  return error instanceof Error ? error.message : "未知错误";
+}
+
+function humanScanMode(mode: string) {
+  const labels: Record<string, string> = {
+    full: "全量",
+    incremental: "增量",
+    planning: "规划中",
+  };
+  return mode ? labels[mode] ?? mode : "尚未扫描";
+}
+
+function quotaWindowLabel(windowKey: QuotaItem["windowKey"]) {
+  return windowKey === "five_hour" ? "5 小时" : "7 天";
 }
 
 export default App;

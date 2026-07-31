@@ -24,7 +24,12 @@ import (
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
 
-const usageScanInterval = 5 * time.Minute
+const (
+	usageScanInterval    = 5 * time.Minute
+	defaultServerAddress = "127.0.0.1:8080"
+	frontendOrigin       = "http://127.0.0.1:5173"
+	loopbackHost         = "127.0.0.1"
+)
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -57,7 +62,7 @@ func run(args []string) error {
 
 func serve(args []string, defaultDBPath string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
-	addr := flags.String("addr", "127.0.0.1:8080", "HTTP 监听地址")
+	addr := flags.String("addr", defaultServerAddress, "HTTP 监听地址")
 	dbPath := flags.String("db", defaultDBPath, "SQLite 数据库路径")
 	var codexHomes stringListFlag
 	flags.Var(&codexHomes, "codex-home", "Codex 数据目录，可重复指定")
@@ -95,7 +100,7 @@ func serve(args []string, defaultDBPath string) error {
 		Handler: httpapi.NewHandler(store, httpapi.Options{
 			Scanner:        usageScanner,
 			ControlToken:   controlToken,
-			AllowedOrigins: []string{"http://" + *addr, "http://127.0.0.1:5173"},
+			AllowedOrigins: []string{"http://" + *addr, frontendOrigin},
 			QuotaService:   quotaService,
 			Settings:       settingsStore,
 		}),
@@ -288,8 +293,8 @@ func validateLoopbackAddress(addr string) error {
 	if err != nil {
 		return fmt.Errorf("解析 HTTP 监听地址 %q: %w", addr, err)
 	}
-	if host != "127.0.0.1" {
-		return fmt.Errorf("HTTP 只能监听 127.0.0.1，当前地址为 %q", addr)
+	if host != loopbackHost {
+		return fmt.Errorf("HTTP 只能监听 %s，当前地址为 %q", loopbackHost, addr)
 	}
 	return nil
 }

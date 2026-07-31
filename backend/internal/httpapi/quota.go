@@ -59,7 +59,7 @@ func (s *server) quotas(w http.ResponseWriter, r *http.Request) {
 		writeNoStoreJSON(w, quotaResponse{
 			Status:  "not_configured",
 			Items:   []quotaItem{},
-			Message: "Codex subscription quota is not configured",
+			Message: "Codex 订阅配额服务尚未配置",
 		})
 		return
 	}
@@ -155,7 +155,7 @@ func (s *server) loadQuotaDiagnostics(r *http.Request) (quotaDiagnostics, error)
 	if s.quotaService == nil {
 		return quotaDiagnostics{
 			Status:  "not_configured",
-			Message: "Codex subscription quota is not configured",
+			Message: "Codex 订阅配额服务尚未配置",
 		}, nil
 	}
 	view, err := s.quotaService.Snapshot(r.Context())

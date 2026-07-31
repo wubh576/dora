@@ -95,7 +95,14 @@ type dashboardResponse struct {
 	Timeline    []analytics.TimelinePoint `json:"timeline"`
 	Models      []analytics.BreakdownItem `json:"models"`
 	Projects    []analytics.BreakdownItem `json:"projects"`
+	Activity    activityResponse          `json:"activity"`
 	Diagnostics usageDiagnostics          `json:"diagnostics"`
+}
+
+type activityResponse struct {
+	StartDate string                    `json:"startDate"`
+	EndDate   string                    `json:"endDate"`
+	Days      []analytics.TimelinePoint `json:"days"`
 }
 
 type snapshotResponse struct {
@@ -309,10 +316,28 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if !requireGet(w, r) {
 		return
 	}
-	window, events, ok := s.usageWindow(w, r)
-	if !ok {
+	now := s.now()
+	window, err := analytics.NewTimeWindow(now, s.location, r.URL.Query().Get("range"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "解析时间范围", "range 只支持 1D、7D、30D 或 ALL")
 		return
 	}
+	activityWindow, err := analytics.NewTimeWindow(now, s.location, "ALL")
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重试")
+		return
+	}
+	activityEvents, err := s.store.UsageEventsInWindow(
+		r.Context(),
+		domain.CodexSource,
+		activityWindow.StartUTC,
+		activityWindow.EndUTC,
+	)
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "读取 token", "请检查本地数据库")
+		return
+	}
+	events := eventsInWindow(activityEvents, window)
 	summary, err := analytics.Summarize(events)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重新扫描 Codex 用量")
@@ -333,6 +358,11 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重新扫描 Codex 用量")
 		return
 	}
+	activity, err := analytics.DailyTimeline(activityEvents, activityWindow)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成热力图", "请重新扫描 Codex 用量")
+		return
+	}
 	diagnostics, err := s.loadUsageDiagnostics(r)
 	if err != nil {
 		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "生成仪表盘", "请检查本地数据库")
@@ -347,6 +377,9 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if projects == nil {
 		projects = []analytics.BreakdownItem{}
 	}
+	if activity == nil {
+		activity = []analytics.TimelinePoint{}
+	}
 	writeNoStoreJSON(w, dashboardResponse{
 		Summary: summaryResponse{
 			Range:       window.Range,
@@ -354,9 +387,14 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 			EndUTC:      window.EndUTC.Format(time.RFC3339Nano),
 			TokenTotals: summary,
 		},
-		Timeline:    timeline,
-		Models:      models,
-		Projects:    projects,
+		Timeline: timeline,
+		Models:   models,
+		Projects: projects,
+		Activity: activityResponse{
+			StartDate: activityWindow.StartUTC.In(activityWindow.Location).Format(time.DateOnly),
+			EndDate:   activityWindow.EndUTC.In(activityWindow.Location).Format(time.DateOnly),
+			Days:      activity,
+		},
 		Diagnostics: diagnostics,
 	})
 }
@@ -366,7 +404,7 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now()
-	allWindow, err := analytics.NewTimeWindow(now, s.location, "All")
+	allWindow, err := analytics.NewTimeWindow(now, s.location, "ALL")
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请重试")
 		return
@@ -376,7 +414,7 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请检查本地数据库")
 		return
 	}
-	todayWindow, err := analytics.NewTimeWindow(now, s.location, "Today")
+	todayWindow, err := analytics.NewTimeWindow(now, s.location, "1D")
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成快照", "请重试")
 		return
@@ -453,7 +491,7 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 func (s *server) usageWindow(w http.ResponseWriter, r *http.Request) (analytics.TimeWindow, []domain.UsageEvent, bool) {
 	window, err := analytics.NewTimeWindow(s.now(), s.location, r.URL.Query().Get("range"))
 	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "解析时间范围", "range 只支持 Today、7D、30D 或 All")
+		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "解析时间范围", "range 只支持 1D、7D、30D 或 ALL")
 		return analytics.TimeWindow{}, nil, false
 	}
 	events, err := s.store.UsageEventsInWindow(r.Context(), domain.CodexSource, window.StartUTC, window.EndUTC)

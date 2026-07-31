@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wubh576/dora/backend/internal/analytics"
 	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
 	"github.com/wubh576/dora/backend/internal/quota"
@@ -233,6 +234,19 @@ func TestUsageAnalyticsEndpointsShareTokenWindow(t *testing.T) {
 		t.Fatalf("summary 错误: %+v", summary)
 	}
 
+	oneDayRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(oneDayRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/summary?range=1D", nil))
+	if oneDayRecorder.Code != http.StatusOK {
+		t.Fatalf("1D summary 状态码 = %d；响应: %s", oneDayRecorder.Code, oneDayRecorder.Body.String())
+	}
+	var oneDay summaryResponse
+	if err := json.NewDecoder(oneDayRecorder.Body).Decode(&oneDay); err != nil {
+		t.Fatalf("解析 1D summary 失败: %v", err)
+	}
+	if oneDay.Range != "1D" || oneDay.TotalTokens != 120 || oneDay.EventCount != 1 {
+		t.Fatalf("1D summary 错误: %+v", oneDay)
+	}
+
 	timelineRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(timelineRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/timeline?range=7D&granularity=day", nil))
 	var timeline timelineResponse
@@ -253,7 +267,7 @@ func TestUsageAnalyticsEndpointsShareTokenWindow(t *testing.T) {
 	if err := json.NewDecoder(breakdownRecorder.Body).Decode(&breakdown); err != nil {
 		t.Fatalf("解析 breakdown 失败: %v", err)
 	}
-	if len(breakdown.Items) != 2 || breakdown.Items[0].Name != "gpt-a" || breakdown.Items[0].TotalTokens != 130 {
+	if len(breakdown.Items) != 2 || breakdown.Items[0].Name != "gpt-a" || breakdown.Items[0].TotalTokens != 120 {
 		t.Fatalf("breakdown 错误: %+v", breakdown)
 	}
 }
@@ -302,6 +316,18 @@ func TestDashboardUsesOneConsistentSnapshot(t *testing.T) {
 		dashboard.Diagnostics.StoredEvents != 3 {
 		t.Fatalf("dashboard 数据不完整: %+v", dashboard)
 	}
+	if dashboard.Activity.StartDate != analytics.TrackingStartDate ||
+		dashboard.Activity.EndDate != "2026-07-31" ||
+		len(dashboard.Activity.Days) != 2 {
+		t.Fatalf("dashboard 热力图错误: %+v", dashboard.Activity)
+	}
+	var activityTotal int64
+	for _, point := range dashboard.Activity.Days {
+		activityTotal += point.TotalTokens
+	}
+	if activityTotal != 162 {
+		t.Fatalf("dashboard 热力图总量 = %d，期望 162", activityTotal)
+	}
 }
 
 func TestSnapshotAndDiagnosticsUsePersistedUsage(t *testing.T) {
@@ -323,7 +349,7 @@ func TestSnapshotAndDiagnosticsUsePersistedUsage(t *testing.T) {
 	}
 	if snapshot.Usage.TodayTokens != 120 ||
 		snapshot.Usage.SevenDayTokens != 162 ||
-		snapshot.Usage.AllTimeTokens != 172 ||
+		snapshot.Usage.AllTimeTokens != 162 ||
 		snapshot.Usage.TopModel != "gpt-a" ||
 		snapshot.Usage.Stale ||
 		snapshot.Usage.LastScanAt == nil {
