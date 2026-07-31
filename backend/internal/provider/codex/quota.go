@@ -76,6 +76,7 @@ type upstreamWindow struct {
 
 func NewQuotaClient(homes []string) *QuotaClient {
 	transport := &http.Transport{
+		Proxy:                 quotaProxy,
 		DialContext:           (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,

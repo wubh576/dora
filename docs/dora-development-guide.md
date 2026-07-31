@@ -754,6 +754,8 @@ Codex quota 是第一期唯一允许的 provider 网络访问：
 - access token 只保存在函数局部内存。
 - 不写 SQLite、不写 settings、不写日志。
 - URL hard-code 到允许的官方域名，不能被环境变量改写。
+- 配额请求优先遵循标准 `HTTPS_PROXY`/`NO_PROXY` 环境变量；未配置时读取 macOS 当前固定 HTTPS 或 SOCKS 系统代理，代理只改变传输路径，不改变固定配额地址。
+- Clash Verge、ClashX、Shadowrocket 等工具通过同一套 macOS 系统代理或 TUN/VPN 网络能力接入；实现不得识别代理应用名称、进程或写死本地端口。
 - account ID 非空时，对固定配额地址同时发送 `ChatGPT-Account-ID`、`X-Account-ID` 和 `ChatClaude-Account-ID`，三者使用同一个值。
 - 连接与总请求均设置超时。
 - 不发送 prompt、usage event 或本地文件信息。

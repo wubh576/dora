@@ -13,7 +13,8 @@
 | 5. 第一期整体收尾 | 已完成 | `09d822e` |
 | 6. 中文桌面界面与 Token 热力图 | 已完成 | `b5a4875` |
 | 7. Token 数量级与默认配额 | 已完成 | `4afa3a0` |
-| 8. 单进程生产运行 | 已完成 | 本次提交 |
+| 8. 单进程生产运行 | 已完成 | `98ac8b2` |
+| 9. macOS 系统代理适配 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -184,3 +185,20 @@
 - 冒烟进程没有启动子进程，收到 SIGTERM 后正常退出；临时数据库只写入测试目录。
 - 故意制造 Go 构建失败后，嵌入资源暂存目录和旧 `bin/dora` 均已清理。
 - Code Review：独立 Reviewer 发现缺少 `index.html` 的内存文件系统测试缺口；补充回归测试并复审后，无剩余 P0/P1/P2/P3 问题。
+
+## 里程碑 9：macOS 系统代理适配
+
+已完成：
+
+- Codex 配额请求优先遵循标准 `HTTPS_PROXY`/`NO_PROXY`，未配置时动态读取 macOS 当前固定 HTTPS 或 SOCKS 系统代理。
+- Clash Verge、ClashX 和 Shadowrocket 通过统一的 macOS 系统代理或 TUN/VPN 路由适配，不识别应用进程、不依赖安装路径，也不写死代理端口。
+- 配额地址、OAuth header、超时、重定向限制和失败保留旧快照等安全边界保持不变。
+- 开发规则要求测试结束后正常关闭 Go、Vite 和生产服务，并确认测试端口已释放。
+
+验证记录：
+
+- 当前 Mac 直连 ChatGPT 配额地址超时，经 Clash Verge 暴露的系统代理可立即连通；修复后使用真实 Codex OAuth 和临时 SQLite 成功读取配额窗口。
+- 单元测试覆盖 Clash Verge HTTPS、ClashX HTTPS、Shadowrocket SOCKS、环境变量优先、`NO_PROXY`、系统代理 fallback、无代理直连和非法配置。
+- `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check` 通过；provider 重复测试和 Linux amd64 交叉构建通过。
+- 生产服务使用临时 SQLite 和临时 Codex home 通过真实系统代理进入 quota `ready` 状态；验收后服务正常退出，测试端口均已释放。
+- Code Review：独立 Reviewer 复核代理语义、`scutil` 超时与进程回收、OAuth 安全边界和测试隔离，无 P0/P1/P2/P3 可行动问题。

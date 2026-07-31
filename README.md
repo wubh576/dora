@@ -130,6 +130,8 @@ Dora 只保存 token 统计元数据、脱敏项目名和扫描 checkpoint，不
 - 只接受 `auth.json` 中的 ChatGPT OAuth subscription；仅有 API key 时显示不支持。
 - access token 只在单次请求的函数局部内存中使用，不写入 SQLite、`settings.json`、日志或 API。
 - 只向代码中固定的 `chatgpt.com` 配额地址发送 OAuth header，不发送 prompt、token usage 或本地文件信息。
+- 配额请求优先使用标准 `HTTPS_PROXY`/`NO_PROXY` 环境变量；未配置时自动继承 macOS 当前固定 HTTPS 或 SOCKS 系统代理。
+- Clash Verge、ClashX、Shadowrocket 等工具只要启用了 macOS 系统代理或 TUN/VPN 路由即可生效；Dora 不识别应用名称，也不写死代理端口。
 - 网络或登录失败保留最后一次成功配额，超过 10 分钟标记 stale；本地 token 统计不受影响。
 
 默认开启时也可以从命令行手动刷新；如果已经在“诊断”中关闭，CLI 会遵循同一设置，不会绕过用户选择：
