@@ -12,6 +12,7 @@
 | 4. Codex 订阅配额 | 已完成 | `accba4e` |
 | 5. 第一期整体收尾 | 已完成 | `09d822e` |
 | 6. 中文桌面界面与 Token 热力图 | 已完成 | `b5a4875` |
+| 7. Token 数量级与默认配额 | 已完成 | `4afa3a0` |
 
 ## 里程碑 1：基础运行链路
 
@@ -142,4 +143,22 @@
 - macOS 桌面浏览器端到端：`1D` 为 180 tokens，`7D`、`30D`、`ALL` 均为 540 tokens；热力图固定读取 `2026-07-29` 至今的 540 tokens，页面无横向溢出和 JavaScript 控制台错误。
 - Code Review：独立 Reviewer 发现热力图初始定位、键盘详情和重复视觉色值 3 个 P2；全部修复后复审通过，无剩余 P0/P1/P2。
 - Commit：`b5a4875 feat(dashboard): add Chinese token heatmap`
+- 推送分支：`main`
+
+## 里程碑 7：Token 数量级与默认配额
+
+已完成：
+
+- Token 紧凑值统一使用英文 `K`、`M`、`B`、`T` 数量级，并集中到一个格式化入口。
+- 总量、分类、趋势、热力图和模型/项目排行均保留带千位分隔符的精确值或精确值提示。
+- Codex 订阅配额在设置文件或字段不存在时默认开启；用户显式关闭后继续持久化并阻止自动刷新、API 与 CLI 绕过。
+- README 和开发指南已同步默认行为、CLI 约束与 Token 显示口径。
+
+验证记录：
+
+- 格式化实测：`1200 → 1.2K`、`1250000 → 1.3M`、`2300000000 → 2.3B`、`4500000000000 → 4.5T`。
+- `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check`：通过。
+- 设置、配额、HTTP API 和 CLI 连续测试 50 次通过；前端 TypeScript 检查和 Vite 生产构建通过。
+- Code Review：独立 Reviewer 发现精确值提示和 README 旧授权措辞 2 个 P2；全部修复后复审通过，无剩余 P0/P1/P2。
+- Commit：`4afa3a0 feat(app): improve token and quota defaults`
 - 推送分支：`main`
