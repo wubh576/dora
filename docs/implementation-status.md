@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 1. 基础运行链路 | 已完成 | `68db287` |
 | 2. Codex 本地用量采集 | 已完成 | `738d1a9` |
-| 3. Token 统计 API 与 Web 仪表盘 | 进行中 | - |
+| 3. Token 统计 API 与 Web 仪表盘 | 已完成 | `7718e42` |
 | 4. Codex 订阅配额 | 未开始 | - |
 | 5. 第一期整体收尾 | 未开始 | - |
 
@@ -61,7 +61,24 @@
 
 ## 里程碑 3：Token 统计 API 与 Web 仪表盘
 
-当前状态：进行中。
+已完成：
+
+- 提供 `summary`、`timeline`、`breakdown`、`dashboard` 和 `snapshot` API。
+- `Today`、`7D`、`30D` 和 `All` 按本地日历生成半开区间，汇总、每日趋势和分布复用同一份 SQLite 快照。
+- 展示总 token、input、cache read、cache creation、output、reasoning、reported total 与 cache 命中率。
+- Web Dashboard 展示真实每日堆叠趋势、模型分布、项目分布、空态和扫描错误态。
+- Diagnostics 展示扫描状态、文件数、存储事件数、parser 版本，支持增量扫描与全量重建。
+- 趋势图提供屏幕阅读器可访问的数据表，页面按钮和异步状态具有明确的无障碍语义。
+
+验证记录：
+
+- 当前机器真实数据：Dashboard 能展示 SQLite 中的真实 Codex token，`Today` 与 `7D` 切换后总量、趋势和分布同步更新。
+- 浏览器端到端：Dashboard、Diagnostics、增量扫描、全量重建和扫描后状态刷新均通过；控制台无 JavaScript 错误。
+- `make verify`、`go test -race ./...`、`go vet ./...`、`git diff --check`：通过。
+- Analytics 测试覆盖本地午夜、半开区间、春季跳时、秋季回拨、summary 与 timeline 一致、cache rate、模型/项目分布和 SQLite 最新 generation 可见性。
+- Code Review：独立 Reviewer 发现跨请求快照、snapshot 多次读取、DST 事件覆盖、错误态刷新和趋势无障碍问题；全部修复后复审通过。
+- Commit：`7718e42 feat(dashboard): visualize Codex token usage`
+- 推送分支：`main`
 
 ## 里程碑 4：Codex 订阅配额
 
