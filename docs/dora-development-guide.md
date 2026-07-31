@@ -1010,7 +1010,7 @@ dora doctor
 - Web 只通过 loopback 访问。
 - Diagnostics 能解释每个失败 provider。
 
-# 第二期：macOS 菜单栏与 Claude Code
+# 第二期：macOS 菜单栏与 Claude Code 本地用量
 
 ## 19. 第二期架构
 
@@ -1128,7 +1128,7 @@ subagent transcript：
 ~/.claude/projects/<project>/<session>/subagents/agent-*.jsonl
 ```
 
-缺失目录不是错误。第二期不适配 CAC、Relay、Seed 等 Claude-compatible 变体。
+缺失目录不是错误。`message.model` 始终保留 transcript 原始值，因此 Claude Code 使用 Anthropic-compatible endpoint 的其他模型时仍可统计；Dora 不识别或读取第三方 endpoint 凭证。
 
 ## 22. Claude Code parser
 
@@ -1164,8 +1164,8 @@ Claude 与 Codex 的归一化不能共用同一套减法：
 Dedup key 顺序：
 
 1. `message.id`
-2. 本地 record `uuid`
-3. 内容指纹
+
+缺少 message ID 时跳过该 usage 并报告 degraded。record UUID 可能随 streaming flush 变化，不能作为 logical message identity；同时禁止使用 prompt、response 或 thinking 正文生成内容指纹。
 
 命名空间：
 
@@ -1197,8 +1197,13 @@ Claude fork 复制历史消息时，`message.id` 通常保持不变。Dedup key 
 - subagent usage 使用自己的 stable message ID 去重。
 - 第二期不把 subagent 作为独立可管理 session。
 - project 继承父目录。
+- session ID、父子关系和完整项目路径只在扫描期间临时使用，不写入 SQLite、日志或 API。
 
-## 23. Claude Code 配额
+SQLite 只保存 provider-scoped usage generation、文件 checkpoint 和聚合后的配置发现状态、主 session 数、parser 版本。Codex 与 Claude Code 分别原子提交；单个 provider 失败保留它自己的上一次成功数据，不回滚另一个 provider。
+
+## 23. Claude Code 配额（后续范围）
+
+当前不实现 Claude Code 配额。Web 和菜单栏中的 5 小时/7 日配额仍明确属于 Codex；以下仅保留为后续设计草案。
 
 ### 23.1 首选 statusline hook
 

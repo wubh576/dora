@@ -21,6 +21,7 @@
 | 13. 构建来源与启动环境信息 | 已完成 | `0fae6ff` |
 | 14. 后台失败日志真实原因 | 已完成 | `94a911c` |
 | 15. LaunchAgent 日志自动轮转 | 已完成 | 本次提交 |
+| 16. Claude Code 只读用量采集核心 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -315,3 +316,17 @@
 - 真实 macOS production 冒烟使用临时 HOME、稳定安装路径、SQLite、Codex 目录和日志，以 2 KiB 阈值验证启动检查和运行期检查；stdout/stderr 活动 inode 始终不变，`.1` 内容被正确覆盖，活动 stderr 继续收到当前进程的轮转成功日志，目录始终只有两个活动文件和两个备份。
 - 冒烟期间菜单栏进程保持运行，独立 loopback health 返回 HTTP 200；结束后进程正常退出、端口释放，临时二进制、数据库和日志全部清理，未触碰真实用户数据或设置。
 - Code Review：独立 Reviewer 发现手动伪加 `--launchagent` 可误启轮转，以及随机临时文件在强制退出后可能累积；增加 service、安装路径和日志 inode 三重门禁并改用可恢复的固定 `.1.tmp` 后，复审确认无剩余 P0/P1/P2/P3。
+
+## 里程碑 16：Claude Code 只读用量采集核心
+
+已完成：
+
+- 新增 `provider.claude-code` discovery/parser/dedup，默认只读发现主 transcript 与 `subagents/agent-*.jsonl`，支持 `CLAUDE_CONFIG_DIR` 和重复 `--claude-home`。
+- 只解析 assistant `message.usage`，保留 transcript 实际 model、五类 token、streaming largest-wins、fork replay 去重、subagent 新 usage 和 config home 隔离。
+- SQLite migration 4 只增加 provider 聚合 diagnostics；usage generation 与 checkpoint 按 provider 原子隔离。不建立 session 表，不保存 session ID、父子关系或完整项目路径。
+- 自动与手动扫描同时覆盖 Codex/Claude；任一 provider 失败保留各自上一次成功数据，另一个 provider 仍完成提交。
+
+验证记录：
+
+- 脱敏 fixtures 覆盖 streaming zero/partial/final、fork、subagent、cache、原生 reasoning、Anthropic thinking carve、非 Anthropic 不 carve、模型切换、半行、append/replace、缺失目录、非法和溢出 token。
+- v3 SQLite 自动升级到 migration 4 后既有 Codex usage 和 quota 保持不变；新库明确不存在 `agent_sessions` 表。

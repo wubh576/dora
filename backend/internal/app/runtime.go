@@ -41,14 +41,16 @@ type LogRotator interface {
 }
 
 type Config struct {
-	Address      string
-	DBPath       string
-	CodexHomes   []string
-	StaticFS     fs.FS
-	ScanInterval time.Duration
-	Logger       Logger
-	BuildInfo    buildinfo.Info
-	LogRotator   LogRotator
+	Address       string
+	DBPath        string
+	CodexHomes    []string
+	ClaudeHomes   []string
+	ClaudeEnabled bool
+	StaticFS      fs.FS
+	ScanInterval  time.Duration
+	Logger        Logger
+	BuildInfo     buildinfo.Info
+	LogRotator    LogRotator
 }
 
 // Runtime 统一持有 HTTP、SQLite、扫描器和配额服务，serve 与 menubar 共用它。
@@ -97,6 +99,9 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 	}
 
 	scanner := scan.New(store, config.CodexHomes)
+	if config.ClaudeEnabled {
+		scanner = scan.NewWithClaude(store, config.CodexHomes, config.ClaudeHomes)
+	}
 	settingsStore := settings.New(filepath.Join(filepath.Dir(config.DBPath), "settings.json"))
 	quotaService := quota.NewService(codex.NewQuotaClient(config.CodexHomes), store, settingsStore)
 	controlToken, err := newControlToken()
@@ -233,6 +238,30 @@ func (r *Runtime) logRotationLoop(ctx context.Context, rotator LogRotator) {
 }
 
 func logUsageScanResult(ctx context.Context, logger Logger, report scan.Report, err error) {
+	if len(report.Providers) > 1 {
+		if err != nil && backgroundStopped(ctx, err) {
+			return
+		}
+		for _, provider := range report.Providers {
+			label := provider.Source
+			switch provider.Source {
+			case "provider.codex":
+				label = "Codex"
+			case "provider.claude-code":
+				label = "Claude Code"
+			}
+			if provider.Error != "" {
+				logger.Printf("%s 用量自动扫描失败: %s；已保留该 provider 上次成功数据", label, singleLineError(errors.New(provider.Error)))
+				continue
+			}
+			logger.Printf(
+				"%s 用量扫描完成: mode=%s files=%d sessions=%d events=%d stored=%d",
+				label, provider.Mode, provider.FilesSeen, provider.SessionCount,
+				provider.EventsSeen, provider.EventsStored,
+			)
+		}
+		return
+	}
 	if err != nil {
 		if backgroundStopped(ctx, err) {
 			return

@@ -309,12 +309,15 @@ func assertAddressReleased(t *testing.T, address string) {
 }
 
 func TestRunManualScanWithConfiguredHome(t *testing.T) {
-	if err := run([]string{"scan", "--db", filepath.Join(t.TempDir(), "dora.db"), "--codex-home", t.TempDir()}); err != nil {
+	if err := run([]string{
+		"scan", "--db", filepath.Join(t.TempDir(), "dora.db"),
+		"--codex-home", t.TempDir(), "--claude-home", t.TempDir(),
+	}); err != nil {
 		t.Fatalf("run(scan) 失败: %v", err)
 	}
 }
 
-func TestRunManualScanReportsInvalidFilePath(t *testing.T) {
+func TestRunManualScanRedactsInvalidFilePath(t *testing.T) {
 	home := t.TempDir()
 	sessionPath := filepath.Join(home, "sessions", "broken.jsonl")
 	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
@@ -324,9 +327,12 @@ func TestRunManualScanReportsInvalidFilePath(t *testing.T) {
 	if err := os.WriteFile(sessionPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("写入无效 session 失败: %v", err)
 	}
-	err := run([]string{"scan", "--db", filepath.Join(t.TempDir(), "dora.db"), "--codex-home", home})
-	if err == nil || !strings.Contains(err.Error(), sessionPath) {
-		t.Fatalf("scan 错误未包含目标文件路径: %v", err)
+	err := run([]string{
+		"scan", "--db", filepath.Join(t.TempDir(), "dora.db"),
+		"--codex-home", home, "--claude-home", t.TempDir(),
+	})
+	if err == nil || strings.Contains(err.Error(), sessionPath) || !strings.Contains(err.Error(), "不能为负数") {
+		t.Fatalf("scan 错误未脱敏或缺少原因: %v", err)
 	}
 }
 

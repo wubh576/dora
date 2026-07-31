@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -23,16 +24,32 @@ type Report struct {
 	RunID        string
 	Mode         string
 	FilesSeen    int
+	SessionCount int
 	EventsSeen   int
 	EventsStored int
 	Warnings     []string
 	FinishedAt   time.Time
+	Providers    []ProviderReport
+}
+
+type ProviderReport struct {
+	Source       string
+	RunID        string
+	Mode         string
+	FilesSeen    int
+	SessionCount int
+	EventsSeen   int
+	EventsStored int
+	Warnings     []string
+	FinishedAt   time.Time
+	Error        string
 }
 
 type Scanner struct {
 	store  *dorasqlite.Store
 	homes  []string
 	parser codex.Parser
+	claude *claudeScanner
 	now    func() time.Time
 	// beforeRun 仅用于让并发测试稳定地控制扫描起点。
 	beforeRun func()
@@ -63,6 +80,12 @@ func New(store *dorasqlite.Store, homes []string) *Scanner {
 		parser: codex.NewParser(),
 		now:    time.Now,
 	}
+}
+
+func NewWithClaude(store *dorasqlite.Store, codexHomes, claudeHomes []string) *Scanner {
+	scanner := New(store, codexHomes)
+	scanner.claude = newClaudeScanner(store, claudeHomes)
+	return scanner
 }
 
 func (s *Scanner) Scan(ctx context.Context, forceFull bool) (Report, error) {
@@ -96,6 +119,83 @@ func (s *Scanner) Scan(ctx context.Context, forceFull bool) (Report, error) {
 }
 
 func (s *Scanner) scan(ctx context.Context, forceFull bool) (report Report, returnErr error) {
+	codexReport, codexErr := s.scanCodex(ctx, forceFull)
+	if s.claude == nil {
+		codexReport.Providers = []ProviderReport{providerReport(domain.CodexSource, codexReport, codexErr)}
+		return codexReport, codexErr
+	}
+	claudeReport, claudeErr := s.claude.scan(ctx, forceFull)
+	report = Report{
+		RunID:        codexReport.RunID,
+		Mode:         combinedMode(forceFull, codexReport.Mode, claudeReport.Mode),
+		FilesSeen:    codexReport.FilesSeen + claudeReport.FilesSeen,
+		SessionCount: codexReport.SessionCount + claudeReport.SessionCount,
+		EventsSeen:   codexReport.EventsSeen + claudeReport.EventsSeen,
+		EventsStored: codexReport.EventsStored + claudeReport.EventsStored,
+		FinishedAt:   latestTime(codexReport.FinishedAt, claudeReport.FinishedAt),
+		Providers: []ProviderReport{
+			providerReport(domain.CodexSource, codexReport, codexErr),
+			providerReport(domain.ClaudeCodeSource, claudeReport, claudeErr),
+		},
+	}
+	for _, warning := range codexReport.Warnings {
+		report.Warnings = append(report.Warnings, "Codex: "+warning)
+	}
+	for _, warning := range claudeReport.Warnings {
+		report.Warnings = append(report.Warnings, "Claude Code: "+warning)
+	}
+	if codexErr != nil {
+		return report, errors.Join(fmt.Errorf("%s 扫描失败: %w", domain.CodexSource, codexErr), providerError(domain.ClaudeCodeSource, claudeErr))
+	}
+	return report, providerError(domain.ClaudeCodeSource, claudeErr)
+}
+
+func providerError(source string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s 扫描失败: %w", source, err)
+}
+
+func providerReport(source string, report Report, err error) ProviderReport {
+	result := ProviderReport{
+		Source: source, RunID: report.RunID, Mode: report.Mode,
+		FilesSeen: report.FilesSeen, SessionCount: report.SessionCount,
+		EventsSeen: report.EventsSeen, EventsStored: report.EventsStored,
+		Warnings: append([]string(nil), report.Warnings...), FinishedAt: report.FinishedAt,
+	}
+	if err != nil {
+		result.Error = err.Error()
+	}
+	return result
+}
+
+func combinedMode(forceFull bool, modes ...string) string {
+	if forceFull {
+		return "full"
+	}
+	if len(modes) == 0 {
+		return "incremental"
+	}
+	for _, mode := range modes[1:] {
+		if mode != modes[0] {
+			return "mixed"
+		}
+	}
+	return modes[0]
+}
+
+func latestTime(values ...time.Time) time.Time {
+	var result time.Time
+	for _, value := range values {
+		if value.After(result) {
+			result = value
+		}
+	}
+	return result
+}
+
+func (s *Scanner) scanCodex(ctx context.Context, forceFull bool) (report Report, returnErr error) {
 	startedAt := s.now().UTC()
 	runID, err := newRunID()
 	if err != nil {
@@ -127,13 +227,15 @@ func (s *Scanner) scan(ctx context.Context, forceFull bool) (report Report, retu
 
 	homes, err := codex.ResolveHomes(s.homes)
 	if err != nil {
-		return report, err
+		return report, safeCodexError("解析数据目录", err)
 	}
 	files, err := codex.Discover(homes)
 	if err != nil {
-		return report, err
+		return report, safeCodexError("发现 transcript", err)
 	}
 	report.FilesSeen = len(files)
+	report.SessionCount = len(files)
+	configFound := directoryFound(homes)
 
 	previousFiles, err := s.store.LoadSourceFiles(ctx, domain.CodexSource)
 	if err != nil {
@@ -174,14 +276,14 @@ func (s *Scanner) scan(ctx context.Context, forceFull bool) (report Report, retu
 			task.state,
 		)
 		if err != nil {
-			return report, fmt.Errorf("解析 Codex 文件 %q: %w", task.file.Path, err)
+			return report, safeCodexError("解析 transcript", err)
 		}
 		valid, err := codex.MatchesSnapshot(task.file, task.metadata)
 		if err != nil {
-			return report, fmt.Errorf("校验 Codex 文件快照 %q: %w", task.file.Path, err)
+			return report, safeCodexError("校验 transcript 快照", err)
 		}
 		if !valid {
-			return report, fmt.Errorf("Codex 文件 %q 在扫描期间发生非追加变化", task.file.Path)
+			return report, errors.New("Codex transcript 在扫描期间发生非追加变化")
 		}
 		report.EventsSeen += len(result.Events)
 		events = append(events, result.Events...)
@@ -222,7 +324,13 @@ func (s *Scanner) scan(ctx context.Context, forceFull bool) (report Report, retu
 	for _, file := range files {
 		orderedStates = append(orderedStates, states[file.Path])
 	}
-	if err := s.store.CompleteProviderUsageScan(
+	status := "ready"
+	if !configFound {
+		status = "not_found"
+	} else if len(report.Warnings) > 0 {
+		status = "degraded"
+	}
+	if err := s.store.CompleteProviderUsageScanWithMetrics(
 		ctx,
 		domain.CodexSource,
 		runID,
@@ -232,10 +340,38 @@ func (s *Scanner) scan(ctx context.Context, forceFull bool) (report Report, retu
 		report.FilesSeen,
 		report.EventsSeen,
 		strings.Join(report.Warnings, "；"),
+		domain.UsageScanMetrics{
+			Status:        status,
+			ConfigFound:   configFound,
+			SessionCount:  len(files),
+			ParserVersion: codex.ParserVersion,
+		},
 	); err != nil {
 		return report, err
 	}
 	return report, nil
+}
+
+func directoryFound(paths []string) bool {
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func safeCodexError(operation string, err error) error {
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		return fmt.Errorf("Codex %s失败: 权限不足", operation)
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("Codex %s失败: 文件在扫描期间被移动", operation)
+	case strings.Contains(err.Error(), string(os.PathSeparator)):
+		return fmt.Errorf("Codex %s失败: 本地文件错误（路径已隐藏）", operation)
+	default:
+		return fmt.Errorf("Codex %s失败: %w", operation, err)
+	}
 }
 
 func (s *Scanner) plan(
@@ -268,7 +404,7 @@ func (s *Scanner) plan(
 		}
 		value, err := codex.Inspect(file)
 		if err != nil {
-			return "", nil, nil, nil, err
+			return "", nil, nil, nil, safeCodexError("读取 transcript 状态", err)
 		}
 		metadata[file.Path] = value
 	}
@@ -318,7 +454,7 @@ func (s *Scanner) plan(
 			TailHash: old.TailHash,
 		})
 		if err != nil {
-			return "", nil, nil, nil, err
+			return "", nil, nil, nil, safeCodexError("校验 transcript 追加", err)
 		}
 		if !appendSafe {
 			return s.fullPlan(files, metadata)

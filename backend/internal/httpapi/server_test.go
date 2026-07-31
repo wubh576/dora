@@ -209,8 +209,8 @@ func TestDiagnosticsDoesNotExposeRawScanError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取原始扫描状态失败: %v", err)
 	}
-	if !strings.Contains(state.LastError, session) {
-		t.Fatalf("原始扫描状态缺少目标文件路径: %q", state.LastError)
+	if strings.Contains(state.LastError, session) || !strings.Contains(state.LastError, "不能为负数") {
+		t.Fatalf("原始扫描状态未脱敏或缺少原因: %q", state.LastError)
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics", nil)

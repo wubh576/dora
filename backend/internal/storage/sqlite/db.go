@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const migrationVersion = 3
+const migrationVersion = 4
 
 type Store struct {
 	db     *sql.DB
@@ -108,6 +108,7 @@ func (s *Store) initialize(ctx context.Context) error {
 		migrateDoraState,
 		migrateUsage,
 		migrateQuota,
+		migrateUsageProviderDiagnostics,
 	}
 	for index, migration := range migrations {
 		version := index + 1
@@ -280,6 +281,19 @@ func migrateQuota(ctx context.Context, tx *sql.Tx, _ int64) error {
 			ON quota_snapshots (provider, fetched_at_ms DESC)`,
 	}
 	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateUsageProviderDiagnostics(ctx context.Context, tx *sql.Tx, _ int64) error {
+	for _, statement := range []string{
+		"ALTER TABLE provider_state ADD COLUMN config_found INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE provider_state ADD COLUMN session_count INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE provider_state ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 0",
+	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
 		}

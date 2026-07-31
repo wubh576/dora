@@ -107,6 +107,16 @@ func TestBackgroundSuccessLogsSurviveLateCancellation(t *testing.T) {
 			want: "Codex 用量扫描完成",
 		},
 		{
+			name: "multi-provider usage scan",
+			log: func(logger Logger) {
+				logUsageScanResult(ctx, logger, scan.Report{Providers: []scan.ProviderReport{
+					{Source: "provider.codex", Mode: "incremental"},
+					{Source: "provider.claude-code", Mode: "incremental"},
+				}}, nil)
+			},
+			want: "Claude Code 用量扫描完成",
+		},
+		{
 			name: "quota refresh",
 			log: func(logger Logger) {
 				logQuotaRefreshResult(ctx, logger, quota.View{Enabled: true, Status: "ready"}, nil)

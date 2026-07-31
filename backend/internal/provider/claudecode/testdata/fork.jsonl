@@ -1,0 +1,2 @@
+{"type":"assistant","uuid":"fork-local","timestamp":"2026-07-31T09:00:00Z","message":{"id":"msg-stream","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"replayed"}],"usage":{"input_tokens":8,"output_tokens":4,"cache_read_input_tokens":3,"cache_creation_input_tokens":1}}}
+{"type":"assistant","uuid":"fork-new","timestamp":"2026-07-31T09:01:00Z","message":{"id":"msg-fork-new","role":"assistant","model":"gateway-model-x","content":[{"type":"text","text":"new"}],"usage":{"input_tokens":2,"output_tokens":3}}}

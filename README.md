@@ -1,6 +1,6 @@
 # Dora
 
-Dora 是一个运行在 macOS 本地的 AI 编程用量管理工具。当前使用 React 前端、Go 后端和 SQLite，并可采集本机真实 Codex token 用量。
+Dora 是一个运行在 macOS 本地的 AI 编程用量管理工具。当前使用 React 前端、Go 后端和 SQLite，并可只读采集本机真实 Codex 与 Claude Code token 用量。
 
 ## 构建环境
 
@@ -85,13 +85,14 @@ open http://127.0.0.1:8080
 ./bin/dora serve
 ```
 
-生产程序仍只监听 `127.0.0.1`，并支持手动指定本地地址、数据库和 Codex 数据目录：
+生产程序仍只监听 `127.0.0.1`，并支持手动指定本地地址、数据库、Codex 数据目录和 Claude Code 配置目录：
 
 ```bash
 ./bin/dora menubar \
   --addr 127.0.0.1:8080 \
   --db "$HOME/Library/Application Support/Dora/dora.db" \
-  --codex-home "$HOME/.codex"
+  --codex-home "$HOME/.codex" \
+  --claude-home "$HOME/.claude"
 ```
 
 `--addr` 必须是明确的 `127.0.0.1:<port>`。端口被占用时 Dora 会直接报告冲突，不会终止旧进程或偷偷换端口。菜单中的“打开仪表盘”始终使用进程实际监听的地址。
@@ -187,6 +188,30 @@ GET http://127.0.0.1:8080/api/v1/diagnostics
 页面使用的手动扫描接口为 `POST /api/v1/scan`。该写接口同时校验本次后端启动生成的 control token 和本地页面 `Origin`。
 
 Dora 只保存 token 统计元数据、脱敏项目名和扫描 checkpoint，不保存 prompt、回复正文、工具参数或 JSONL 原始行。Codex 原始文件和 Dora SQLite 数据库都不会提交到 Git。
+
+## Claude Code 本地用量扫描
+
+Dora 后端的自动扫描、`dora scan` 和菜单栏刷新都会同时只读检查：
+
+```text
+~/.claude/projects/<project>/<session>.jsonl
+~/.claude/projects/<project>/<session>/subagents/agent-*.jsonl
+```
+
+配置目录优先使用显式 `--claude-home`，其次使用 `CLAUDE_CONFIG_DIR`，最后使用 `~/.claude`。目录不存在是正常的“暂无数据”，不会影响 Codex。Claude Code 可以连接 Anthropic-compatible endpoint 并使用其他模型；Dora 始终保存 transcript 中 `message.model` 的原始值，不把 Claude Code 等同于 Anthropic 模型，也不会为未匹配定价目录的模型编造价格。
+
+只统计 assistant `message.usage` 中的 input、output、cache read、cache creation 和原生 reasoning。稳定 `message.id` 用于跨 streaming flush、fork 和 subagent 去重；缺少 message ID 时跳过该 usage 并把 diagnostics 标记为 degraded，避免不稳定 record UUID 导致重复统计。主 session 与 subagent 只在扫描期间临时关联，Dora 不建立 session 表，不保存 session ID、父子关系、完整项目路径或 transcript 内容。
+
+手动指定隔离目录扫描：
+
+```bash
+cd backend
+go run ./cmd/dora scan \
+  --codex-home /path/to/codex-home \
+  --claude-home /path/to/claude-config
+```
+
+每个 provider 独立提交 SQLite generation。Claude Code 文件损坏或权限不足时保留上一次成功的 Claude 统计，同时 Codex 扫描仍可成功；反向同理。Claude Code 配额不在当前范围内，页面和菜单栏中的订阅配额仍只属于 Codex。
 
 ## Codex 订阅配额
 

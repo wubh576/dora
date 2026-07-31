@@ -253,6 +253,7 @@ func runMenubarApplication(ctx context.Context, stop context.CancelFunc, applica
 type applicationOptions struct {
 	address, dbPath     string
 	codexHomes          []string
+	claudeHomes         []string
 	launchAgent         bool
 	logRotationBytes    int64
 	logRotationInterval time.Duration
@@ -264,6 +265,8 @@ func parseApplicationOptions(command string, args []string, defaultDBPath string
 	dbPath := flags.String("db", defaultDBPath, "SQLite 数据库路径")
 	var codexHomes stringListFlag
 	flags.Var(&codexHomes, "codex-home", "Codex 数据目录，可重复指定")
+	var claudeHomes stringListFlag
+	flags.Var(&claudeHomes, "claude-home", "Claude Code 配置目录，可重复指定")
 	var launchAgent bool
 	logRotationBytes := launchagent.DefaultLogMaxBytes
 	logRotationInterval := launchagent.DefaultLogCheckInterval
@@ -290,7 +293,11 @@ func parseApplicationOptions(command string, args []string, defaultDBPath string
 	if rotationOverride && !launchAgent {
 		return applicationOptions{}, errors.New("日志轮转参数只能与 menubar --launchagent 一起使用")
 	}
-	options := applicationOptions{address: *address, dbPath: *dbPath, codexHomes: append([]string(nil), codexHomes...)}
+	options := applicationOptions{
+		address: *address, dbPath: *dbPath,
+		codexHomes:  append([]string(nil), codexHomes...),
+		claudeHomes: append([]string(nil), claudeHomes...),
+	}
 	if launchAgent {
 		if logRotationBytes <= 0 || logRotationInterval <= 0 {
 			return applicationOptions{}, errors.New("LaunchAgent 日志轮转阈值和检查周期必须大于 0")
@@ -324,7 +331,11 @@ func startApplication(ctx context.Context, options applicationOptions) (*app.Run
 			return nil, err
 		}
 	}
-	return app.Start(ctx, app.Config{Address: options.address, DBPath: options.dbPath, CodexHomes: options.codexHomes, StaticFS: webassets.Files(), BuildInfo: buildinfo.Current(), LogRotator: logRotator})
+	return app.Start(ctx, app.Config{
+		Address: options.address, DBPath: options.dbPath,
+		CodexHomes: options.codexHomes, ClaudeHomes: options.claudeHomes, ClaudeEnabled: true,
+		StaticFS: webassets.Files(), BuildInfo: buildinfo.Current(), LogRotator: logRotator,
+	})
 }
 
 type launchAgentProcess struct {
@@ -417,6 +428,8 @@ func scanUsage(args []string, defaultDBPath string) error {
 	full := flags.Bool("full", false, "强制执行全量扫描")
 	var codexHomes stringListFlag
 	flags.Var(&codexHomes, "codex-home", "Codex 数据目录，可重复指定")
+	var claudeHomes stringListFlag
+	flags.Var(&claudeHomes, "claude-home", "Claude Code 配置目录，可重复指定")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -429,17 +442,24 @@ func scanUsage(args []string, defaultDBPath string) error {
 	}
 	defer store.Close()
 
-	report, err := scan.New(store, codexHomes).Scan(ctx, *full)
+	report, err := scan.NewWithClaude(store, codexHomes, claudeHomes).Scan(ctx, *full)
 	if err != nil {
-		return fmt.Errorf("扫描 Codex 本地用量: %w", err)
+		return fmt.Errorf("扫描本地用量: %w", err)
 	}
 	fmt.Printf(
-		"Codex 扫描完成：模式 %s，文件 %d，新增解析事件 %d，去重后事件 %d\n",
+		"本地用量扫描完成：模式 %s，文件 %d，session %d，新增解析事件 %d，去重后事件 %d\n",
 		report.Mode,
 		report.FilesSeen,
+		report.SessionCount,
 		report.EventsSeen,
 		report.EventsStored,
 	)
+	for _, provider := range report.Providers {
+		fmt.Printf(
+			"%s：模式 %s，文件 %d，session %d，事件 %d\n",
+			provider.Source, provider.Mode, provider.FilesSeen, provider.SessionCount, provider.EventsStored,
+		)
+	}
 	for _, warning := range report.Warnings {
 		fmt.Printf("扫描警告：%s\n", warning)
 	}
@@ -454,7 +474,7 @@ func (values *stringListFlag) String() string {
 
 func (values *stringListFlag) Set(value string) error {
 	if value == "" {
-		return errors.New("Codex home 不能为空")
+		return errors.New("数据目录不能为空")
 	}
 	*values = append(*values, value)
 	return nil

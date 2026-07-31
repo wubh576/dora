@@ -110,8 +110,36 @@ func (s *Store) CompleteProviderUsageScan(
 	eventsSeen int,
 	warning string,
 ) error {
+	status := "ready"
+	if warning != "" {
+		status = "degraded"
+	}
+	return s.CompleteProviderUsageScanWithMetrics(
+		ctx, source, runID, finishedAt, events, files, filesSeen, eventsSeen, warning,
+		domain.UsageScanMetrics{Status: status},
+	)
+}
+
+func (s *Store) CompleteProviderUsageScanWithMetrics(
+	ctx context.Context,
+	source string,
+	runID string,
+	finishedAt time.Time,
+	events []domain.UsageEvent,
+	files []domain.SourceFileState,
+	filesSeen int,
+	eventsSeen int,
+	warning string,
+	metrics domain.UsageScanMetrics,
+) error {
 	if !domain.IsUsageSource(source) {
 		return fmt.Errorf("不支持的 usage provider %q", source)
+	}
+	if metrics.Status != "ready" && metrics.Status != "not_found" && metrics.Status != "degraded" {
+		return fmt.Errorf("无效的 %s usage 状态 %q", source, metrics.Status)
+	}
+	if metrics.SessionCount < 0 || metrics.ParserVersion < 0 {
+		return fmt.Errorf("%s usage 聚合指标无效", source)
 	}
 	for _, file := range files {
 		if err := validateSourceFile(source, file); err != nil {
@@ -181,9 +209,55 @@ func (s *Store) CompleteProviderUsageScan(
 			}
 		}
 
-		status := "ready"
-		if warning != "" {
-			status = "degraded"
+		if _, err := conn.ExecContext(ctx, `
+			UPDATE scan_runs
+			SET finished_at_ms = ?, status = 'succeeded', files_seen = ?, events_seen = ?, error_message = ?
+			WHERE run_id = ? AND source = ? AND status = 'running'
+		`, finishedAt.UTC().UnixMilli(), filesSeen, eventsSeen, warning, runID, source); err != nil {
+			return fmt.Errorf("完成 %s 扫描记录: %w", source, err)
+		}
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO provider_state (
+				provider, usage_status, last_usage_at_ms, last_usage_error,
+				config_found, session_count, parser_version
+			) VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(provider) DO UPDATE SET
+				usage_status = excluded.usage_status,
+				last_usage_at_ms = excluded.last_usage_at_ms,
+				last_usage_error = excluded.last_usage_error,
+				config_found = excluded.config_found,
+				session_count = excluded.session_count,
+				parser_version = excluded.parser_version
+		`, source, metrics.Status, finishedAt.UTC().UnixMilli(), warning, boolToInteger(metrics.ConfigFound), metrics.SessionCount, metrics.ParserVersion); err != nil {
+			return fmt.Errorf("更新 %s provider 状态: %w", source, err)
+		}
+		if _, err := conn.ExecContext(ctx, "DELETE FROM usage_events_staging WHERE run_id = ? AND source = ?", runID, source); err != nil {
+			return fmt.Errorf("完成 usage staging 清理: %w", err)
+		}
+		return nil
+	})
+}
+
+// CompleteProviderUsageScanWithoutReplacement 只更新扫描状态，保留上次成功 generation。
+func (s *Store) CompleteProviderUsageScanWithoutReplacement(
+	ctx context.Context,
+	source string,
+	runID string,
+	finishedAt time.Time,
+	filesSeen int,
+	eventsSeen int,
+	warning string,
+	metrics domain.UsageScanMetrics,
+) error {
+	if !domain.IsUsageSource(source) {
+		return fmt.Errorf("不支持的 usage provider %q", source)
+	}
+	if metrics.Status != "ready" && metrics.Status != "not_found" && metrics.Status != "degraded" {
+		return fmt.Errorf("无效的 %s usage 状态 %q", source, metrics.Status)
+	}
+	return s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
+		if err := requireRunningScan(ctx, conn, source, runID); err != nil {
+			return err
 		}
 		if _, err := conn.ExecContext(ctx, `
 			UPDATE scan_runs
@@ -194,17 +268,18 @@ func (s *Store) CompleteProviderUsageScan(
 		}
 		if _, err := conn.ExecContext(ctx, `
 			INSERT INTO provider_state (
-				provider, usage_status, last_usage_at_ms, last_usage_error
-			) VALUES (?, ?, ?, ?)
+				provider, usage_status, last_usage_at_ms, last_usage_error,
+				config_found, session_count, parser_version
+			) VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(provider) DO UPDATE SET
 				usage_status = excluded.usage_status,
 				last_usage_at_ms = excluded.last_usage_at_ms,
-				last_usage_error = excluded.last_usage_error
-		`, source, status, finishedAt.UTC().UnixMilli(), warning); err != nil {
+				last_usage_error = excluded.last_usage_error,
+				config_found = excluded.config_found,
+				session_count = excluded.session_count,
+				parser_version = excluded.parser_version
+		`, source, metrics.Status, finishedAt.UTC().UnixMilli(), warning, boolToInteger(metrics.ConfigFound), metrics.SessionCount, metrics.ParserVersion); err != nil {
 			return fmt.Errorf("更新 %s provider 状态: %w", source, err)
-		}
-		if _, err := conn.ExecContext(ctx, "DELETE FROM usage_events_staging WHERE run_id = ? AND source = ?", runID, source); err != nil {
-			return fmt.Errorf("完成 usage staging 清理: %w", err)
 		}
 		return nil
 	})
@@ -430,7 +505,8 @@ func (s *Store) UsageProviderState(ctx context.Context, source string) (domain.U
 			p.last_usage_error,
 			COALESCE(r.run_id, ''), COALESCE(r.mode, ''),
 			COALESCE(r.files_seen, 0), COALESCE(r.events_seen, 0),
-			(SELECT COUNT(*) FROM usage_events WHERE source = p.provider)
+			(SELECT COUNT(*) FROM usage_events WHERE source = p.provider),
+			p.config_found, p.session_count, p.parser_version
 		FROM provider_state p
 		LEFT JOIN scan_runs r ON r.run_id = (
 			SELECT run_id
@@ -449,6 +525,9 @@ func (s *Store) UsageProviderState(ctx context.Context, source string) (domain.U
 		&result.FilesSeen,
 		&result.EventsSeen,
 		&result.StoredEvents,
+		&result.ConfigFound,
+		&result.SessionCount,
+		&result.ParserVersion,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.UsageProviderState{Status: "not_scanned"}, nil

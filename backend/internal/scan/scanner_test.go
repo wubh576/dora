@@ -169,6 +169,8 @@ func TestScannerFailurePreservesPreviousGeneration(t *testing.T) {
 	appendFile(t, sessionPath, []byte(`{"timestamp":"2026-01-02T03:04:09Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":-1}}}}`+"\n"))
 	if _, err := scanner.Scan(ctx, false); err == nil {
 		t.Fatal("无效 token 扫描未失败")
+	} else if strings.Contains(err.Error(), sessionPath) {
+		t.Fatalf("扫描错误泄漏 transcript 路径: %q", err)
 	}
 
 	events, err := store.LoadUsageEvents(ctx, domain.CodexSource)
@@ -185,8 +187,8 @@ func TestScannerFailurePreservesPreviousGeneration(t *testing.T) {
 	if state.Status != "error" || state.LastError == "" {
 		t.Fatalf("失败状态不明确: %+v", state)
 	}
-	if !strings.Contains(state.LastError, sessionPath) {
-		t.Fatalf("失败状态缺少目标文件路径: %q", state.LastError)
+	if strings.Contains(state.LastError, sessionPath) || !strings.Contains(state.LastError, "不能为负数") {
+		t.Fatalf("失败状态未脱敏或缺少原因: %q", state.LastError)
 	}
 }
 
@@ -225,7 +227,7 @@ func TestScannerTruncateDuringParsePreservesPreviousGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取 provider 状态失败: %v", err)
 	}
-	if state.Status != "error" || !strings.Contains(state.LastError, sessionPath) {
+	if state.Status != "error" || strings.Contains(state.LastError, sessionPath) {
 		t.Fatalf("并发截断状态不明确: %+v", state)
 	}
 }

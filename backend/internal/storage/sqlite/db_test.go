@@ -37,6 +37,16 @@ func TestOpenInitializesAndPersistsState(t *testing.T) {
 	if migrationCount != 1 {
 		t.Fatalf("migration 记录数 = %d，期望 1", migrationCount)
 	}
+	var sessionTableCount int
+	if err := firstStore.db.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_sessions'",
+	).Scan(&sessionTableCount); err != nil {
+		t.Fatalf("检查 session 表失败: %v", err)
+	}
+	if sessionTableCount != 0 {
+		t.Fatal("Dora 不应持久化 agent session")
+	}
 	if err := firstStore.Close(); err != nil {
 		t.Fatalf("Close() 第一次关闭失败: %v", err)
 	}
@@ -488,6 +498,82 @@ func TestOpenMigratesVersionOneDatabaseWithoutResettingState(t *testing.T) {
 	var migrationCount int
 	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatalf("读取升级 migration 失败: %v", err)
+	}
+	if migrationCount != migrationVersion {
+		t.Fatalf("migration 数 = %d，期望 %d", migrationCount, migrationVersion)
+	}
+}
+
+func TestOpenMigratesVersionThreeWithoutLosingUsageOrQuota(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dora.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			applied_at_ms INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	for index, migration := range []func(context.Context, *sql.Tx, int64) error{
+		migrateDoraState, migrateUsage, migrateQuota,
+	} {
+		tx, err := legacy.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := migration(ctx, tx, 1); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations VALUES (?, 1)", index+1); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := legacy.ExecContext(ctx, `
+		INSERT INTO usage_events (
+			source, dedup_key, occurred_at_ms, model, project,
+			input_tokens, total_tokens, updated_at_ms
+		) VALUES (?, 'legacy-usage', 1, 'gpt', 'dora', 7, 7, 1)
+	`, domain.CodexSource); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.ExecContext(ctx, `
+		INSERT INTO quota_snapshots (
+			provider, window_key, label, used_percent, remaining_percent,
+			fetched_at_ms, source, source_state
+		) VALUES (?, 'five_hour', '5 小时', 25, 75, 1, 'fixture', 'ready')
+	`, domain.CodexSource); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("升级 v3 数据库失败: %v", err)
+	}
+	defer store.Close()
+	events, err := store.LoadUsageEvents(ctx, domain.CodexSource)
+	if err != nil || len(events) != 1 || events[0].DedupKey != "legacy-usage" {
+		t.Fatalf("v3 usage 丢失: events=%+v err=%v", events, err)
+	}
+	quotas, err := store.LatestQuotaSnapshots(ctx, domain.CodexSource)
+	if err != nil || len(quotas) != 1 || quotas[0].RemainingPercent != 75 {
+		t.Fatalf("v3 quota 丢失: quotas=%+v err=%v", quotas, err)
+	}
+	var migrationCount int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
+		t.Fatal(err)
 	}
 	if migrationCount != migrationVersion {
 		t.Fatalf("migration 数 = %d，期望 %d", migrationCount, migrationVersion)
