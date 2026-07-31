@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ type Options struct {
 	Now            func() time.Time
 	QuotaService   *quota.Service
 	Settings       *settings.Store
+	StaticFS       fs.FS
 }
 
 type scanResponse struct {
@@ -155,7 +157,10 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 	mux.HandleFunc("/api/v1/quotas", s.quotas)
 	mux.HandleFunc("/api/v1/quota/refresh", s.refreshQuota)
 	mux.HandleFunc("/api/v1/settings", s.localSettings)
-	return mux
+	if len(options) == 0 || options[0].StaticFS == nil {
+		return mux
+	}
+	return newApplicationHandler(mux, options[0].StaticFS)
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {

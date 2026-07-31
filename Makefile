@@ -1,28 +1,39 @@
 .PHONY: install dev backend frontend scan quota test build verify
 
+FRONTEND_DIST := frontend/dist
+WEB_ASSET_STAGE := backend/internal/webassets/dist
+BINARY := bin/dora
+
 install:
-	cd backend && go mod download
-	cd frontend && npm ci
+	go -C backend mod download
+	npm --prefix frontend ci
 
 dev:
 	$(MAKE) -j2 backend frontend
 
 backend:
-	cd backend && go run ./cmd/dora serve
+	go -C backend run ./cmd/dora serve
 
 frontend:
-	cd frontend && npm run dev
+	npm --prefix frontend run dev
 
 scan:
-	cd backend && go run ./cmd/dora scan
+	go -C backend run ./cmd/dora scan
 
 quota:
-	cd backend && go run ./cmd/dora quota refresh
+	go -C backend run ./cmd/dora quota refresh
 
 test:
-	cd backend && go test ./...
+	go -C backend test ./...
 
 build:
-	cd frontend && npm run build
+	rm -rf $(FRONTEND_DIST) $(WEB_ASSET_STAGE)
+	rm -f $(BINARY)
+	npm --prefix frontend run build
+	@set -e; \
+		trap 'rm -rf "$(CURDIR)/$(WEB_ASSET_STAGE)"' EXIT; \
+		mkdir -p $(WEB_ASSET_STAGE) bin; \
+		cp -R $(FRONTEND_DIST)/. $(WEB_ASSET_STAGE)/; \
+		go -C backend build -tags production -o ../$(BINARY) ./cmd/dora
 
 verify: test build

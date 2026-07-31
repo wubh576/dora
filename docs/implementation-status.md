@@ -13,6 +13,7 @@
 | 5. 第一期整体收尾 | 已完成 | `09d822e` |
 | 6. 中文桌面界面与 Token 热力图 | 已完成 | `b5a4875` |
 | 7. Token 数量级与默认配额 | 已完成 | `4afa3a0` |
+| 8. 单进程生产运行 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -162,3 +163,24 @@
 - Code Review：独立 Reviewer 发现精确值提示和 README 旧授权措辞 2 个 P2；全部修复后复审通过，无剩余 P0/P1/P2。
 - Commit：`4afa3a0 feat(app): improve token and quota defaults`
 - 推送分支：`main`
+
+## 里程碑 8：单进程生产运行
+
+已完成：
+
+- `make build` 会清理旧前端产物、执行 Vite 生产构建，并通过 production build tag 把页面资源嵌入当前 Mac 可运行的 `bin/dora`。
+- `./bin/dora serve` 由一个 Go 进程同时提供 React 页面、`/api/v1/*` 和 SQLite，运行时不依赖 Node.js、npm、Vite、仓库源码或 `frontend/dist`。
+- HTTP 层通过可选 `fs.FS` 注入前端资源；开发构建保持纯 API 模式，`make dev` 继续使用 Vite 同源代理。
+- API 路由优先于 SPA fallback；前端路由可回退到 `index.html`，带扩展名的缺失资源、未知 API 和路径穿越均返回 404。
+- 嵌入资源的暂存目录、前端构建目录和 `bin/` 均由 `.gitignore` 排除，构建失败也会清理暂存资源和旧二进制。
+- README 区分开发模式、生产模式、构建依赖和运行依赖，并说明当前手动启动与后续菜单栏、LaunchAgent 的边界。
+- macOS 菜单栏、LaunchAgent 常驻和登录后自动启动仍待后续里程碑实现，本次没有提前引入相关代码。
+
+验证记录：
+
+- 在没有 `frontend/dist` 和嵌入暂存目录的干净状态下，`go test ./...` 与 `go vet ./...` 通过。
+- `make verify`、`go test -race ./...` 和 `git diff --check` 通过；前端 TypeScript 检查、Vite 生产构建和 production tag Go 构建均成功。
+- 生产冒烟测试从仓库外目录启动 `bin/dora`，使用临时 SQLite、空 Codex home、未占用 loopback 端口和不含 Node/npm/Vite 的 `PATH`；根页面、真实静态资源、health API、SPA fallback、未知 API 与缺失 JS 均符合预期。
+- 冒烟进程没有启动子进程，收到 SIGTERM 后正常退出；临时数据库只写入测试目录。
+- 故意制造 Go 构建失败后，嵌入资源暂存目录和旧 `bin/dora` 均已清理。
+- Code Review：独立 Reviewer 发现缺少 `index.html` 的内存文件系统测试缺口；补充回归测试并复审后，无剩余 P0/P1/P2/P3 问题。

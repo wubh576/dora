@@ -12,10 +12,12 @@ logs/
 # Go build and test output
 backend/bin/
 backend/coverage.out
+/bin/
 
 # Frontend dependencies and builds
 frontend/node_modules/
 frontend/dist/
+backend/internal/webassets/dist/
 
 # Credentials and local environment
 .env

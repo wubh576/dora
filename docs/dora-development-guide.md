@@ -931,12 +931,14 @@ dora doctor
 1. 初始化目录和 SQLite。
 2. 运行 migration。
 3. 启动 loopback server。
-4. 异步启动一次 usage scan。
-5. quota 已授权时异步刷新。
-6. 默认打开浏览器。
+4. 生产构建由同一进程提供嵌入式 Web 静态资源，开发模式继续由 Vite 提供页面。
+5. 异步启动一次 usage scan。
+6. quota 已授权时异步刷新。
 7. 每 5 分钟检查增量 usage 和 quota。
 
 不要在 HTTP server ready 之前执行耗时全量扫描。
+
+第一期由用户手动打开 loopback 页面，不自动打开浏览器；后续由菜单栏和 LaunchAgent 接管启动入口。
 
 ## 18. 第一期测试与验收
 

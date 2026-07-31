@@ -2,10 +2,10 @@
 
 Dora 是一个运行在 macOS 本地的 AI 编程用量管理工具。当前使用 React 前端、Go 后端和 SQLite，并可采集本机真实 Codex token 用量。
 
-## 环境要求
+## 构建环境
 
 - Go 1.26.5
-- Node.js 20.19+ 或 22.12+
+- Node.js 22.12+
 - npm
 - Make
 
@@ -17,7 +17,7 @@ Dora 是一个运行在 macOS 本地的 AI 编程用量管理工具。当前使�
 make install
 ```
 
-## 本地启动
+## 开发模式
 
 ```bash
 make dev
@@ -30,8 +30,8 @@ make dev
 
 浏览器访问：
 
-```text
-http://127.0.0.1:5173
+```bash
+open http://127.0.0.1:5173
 ```
 
 页面会通过 Vite 的同源代理调用真实后端 API。“概览”展示本机真实 Codex token 总量、五类非重叠 token、Cache 命中率、每日趋势、模型分布、项目分布和 53 周 Token 热力图；“诊断”展示扫描状态、文件数、存储事件数、parser 版本和初始化时间。
@@ -51,6 +51,34 @@ SQLite 默认保存在：
 ```
 
 首次启动时后端会创建目录、数据库、migration 和 Dora 初始化记录。后续启动会读取同一条初始化记录，不会重置初始化时间。
+
+## 生产模式
+
+构建当前 Mac 可直接运行的单进程程序：
+
+```bash
+make build
+./bin/dora serve
+```
+
+浏览器访问：
+
+```bash
+open http://127.0.0.1:8080
+```
+
+`make build` 会先清理旧前端产物，执行 Vite 生产构建，再把生成的页面资源嵌入 `bin/dora`。运行时只需要这个可执行文件，不需要 Node.js、npm、Vite、仓库源码或 `frontend/dist`；把 `bin/dora` 复制到其他目录后也可以启动。
+
+生产程序仍只监听 `127.0.0.1`，并支持手动指定本地地址、数据库和 Codex 数据目录：
+
+```bash
+./bin/dora serve \
+  --addr 127.0.0.1:8080 \
+  --db "$HOME/Library/Application Support/Dora/dora.db" \
+  --codex-home "$HOME/.codex"
+```
+
+当前阶段由用户手动启动程序并打开浏览器。后续 macOS 菜单栏和 LaunchAgent 会接管常驻启动；本次不实现自动启动或自动打开浏览器。
 
 ## Codex 本地用量扫描
 
@@ -140,6 +168,6 @@ GET /api/v1/snapshot
 make verify
 ```
 
-提交前运行该命令，它会执行后端测试并构建前端。
+提交前运行该命令，它会执行后端测试、清理并构建前端生产资源，以及验证带嵌入资源的 Go 生产程序可以构建。
 
 推送到 `main` 或创建 Pull Request 后，GitHub Actions 会在 macOS 上使用 Go 1.26.5 和 Node.js 22 重新安装依赖、检查 Go module 是否干净，并执行相同验证与 `go vet`。

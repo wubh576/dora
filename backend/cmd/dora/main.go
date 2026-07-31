@@ -22,6 +22,7 @@ import (
 	"github.com/wubh576/dora/backend/internal/scan"
 	"github.com/wubh576/dora/backend/internal/settings"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
+	"github.com/wubh576/dora/backend/internal/webassets"
 )
 
 const (
@@ -103,6 +104,7 @@ func serve(args []string, defaultDBPath string) error {
 			AllowedOrigins: []string{"http://" + *addr, frontendOrigin},
 			QuotaService:   quotaService,
 			Settings:       settingsStore,
+			StaticFS:       webassets.Files(),
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -113,7 +115,7 @@ func serve(args []string, defaultDBPath string) error {
 	}
 	serverErr := make(chan error, 1)
 	go func() {
-		log.Printf("Dora 后端已启动: http://%s（初始化时间 %s）", *addr, initializedAt.Format(time.RFC3339))
+		log.Printf("Dora 已启动：http://%s（初始化时间 %s）", listener.Addr(), initializedAt.Format(time.RFC3339))
 		serverErr <- server.Serve(listener)
 	}()
 	go runUsageScanLoop(ctx, usageScanner, usageScanInterval)
