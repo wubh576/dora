@@ -23,7 +23,8 @@
 | 15. LaunchAgent 日志自动轮转 | 已完成 | `10c9463` |
 | 16. Provider 隔离与 Claude Code 只读采集 | 已完成 | `7a88a17`、`e2c905f` |
 | 17. 多 Provider 统一展示 | 已完成 | `ed41bf8`、`a950d69` |
-| 18. 统一统计起始日 | 已完成 | 本次提交 |
+| 18. 统一统计起始日 | 已完成 | `5a26c1e` |
+| 19. 多厂商模型定价与 Claude 缓存明细 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -361,3 +362,19 @@
 - 将 Dashboard、API、热力图和菜单栏“全部”用量的统一起点调整为 `2026-07-01`。
 - 今日、7 日和 30 日仍按 macOS 本地日历边界计算，只在范围早于统一起点时截断。
 - 菜单栏 token 继续合并 Codex 与 Claude Code；5 小时和 7 日配额继续只表示 Codex。
+
+## 里程碑 19：多厂商模型定价与 Claude 缓存明细
+
+已完成：
+
+- 定价完全按 transcript 原始模型 ID 匹配，不依赖 `provider.codex` 或 `provider.claude-code`；跨 Agent 调用同一模型使用同一价格，未知第三方模型保持未定价。
+- 定价目录加入 Anthropic 官方 Opus 4.5–4.8、Sonnet 4.5–4.6 和 Haiku 4.5 标准 API 价格，并在费用面板按实际已定价模型展示 OpenAI、Anthropic 官方来源。
+- Claude parser 分开读取 5 分钟与 1 小时 cache creation，SQLite migration 5 只增加 token 明细列；parser version 升级后只读重扫 Claude transcript，不建立或保存 session。
+- 缺少缓存时长明细的 Claude cache creation 保持未定价；去重时优先保留带时长明细的同一 logical message，避免静默套用较低价格。
+
+验证记录：
+
+- 当前 Mac 的 SQLite 在线备份成功升级到 migration 5，并只读全量重扫 9 个 Claude transcript、8 个主 session 和 68 条去重事件；Opus 4.7/4.8 cache creation 全部归为 1 小时，Haiku 4.5 全部归为 5 分钟，未知时长为 0。
+- 脱敏多 Agent fixture 页面展示 Codex 180 token、Claude Code 40 token，费用覆盖 208/220 token，同时显示 OpenAI 与 Anthropic 官方来源；自定义模型保持未定价。
+- `make verify`、`go vet ./...`、`go test -race ./...`、前端 TypeScript/Vite production build 和 `git diff --check` 通过；临时服务、18081 端口和 SQLite 副本均已清理。
+- Code Review：独立 Reviewer 发现 Claude 4.6+ 不存在日期 snapshot 的 P1；移除所有宽泛 Claude prefix，改为官方精确 ID/完整 alias，并补齐第三方 `custom`/`preview` 后缀负例后复审通过，无剩余 P0/P1/P2/P3。

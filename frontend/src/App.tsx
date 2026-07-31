@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { ActivityHeatmap } from "./ActivityHeatmap";
 import { formatNumber, formatTokenCompact, formatUSD } from "./format";
 import {
@@ -509,8 +509,12 @@ function CostPanel({ estimate }: { estimate: CostEstimate }) {
             {partial && ` · ${formatTokenCompact(estimate.unpricedTokens)} token 未定价`}
           </span>
           <span>
-            核对于 {estimate.checkedAt} ·{" "}
-            <a href={estimate.sourceUrl} target="_blank" rel="noreferrer">OpenAI 官方定价</a>
+            核对于 {estimate.checkedAt}
+            {estimate.sources.map((source) => (
+              <Fragment key={source.url}>
+                {" · "}<a href={source.url} target="_blank" rel="noreferrer">{source.label}</a>
+              </Fragment>
+            ))}
           </span>
         </div>
         {estimate.unpricedModels.length > 0 && (

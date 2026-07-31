@@ -51,7 +51,10 @@ export type CostEstimate = {
     reasoningUsd: number;
   };
   checkedAt: string;
-  sourceUrl: string;
+  sources: Array<{
+    label: string;
+    url: string;
+  }>;
   basis: string;
   unpricedModels: string[];
 };

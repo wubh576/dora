@@ -34,5 +34,10 @@ func prefer(candidate, existing domain.UsageEvent) bool {
 	if candidate.TotalTokens != existing.TotalTokens {
 		return candidate.TotalTokens > existing.TotalTokens
 	}
+	candidateCacheDetail := candidate.CacheCreation5mTokens + candidate.CacheCreation1hTokens
+	existingCacheDetail := existing.CacheCreation5mTokens + existing.CacheCreation1hTokens
+	if candidateCacheDetail != existingCacheDetail {
+		return candidateCacheDetail > existingCacheDetail
+	}
 	return existing.Model == "unknown" && candidate.Model != "unknown"
 }

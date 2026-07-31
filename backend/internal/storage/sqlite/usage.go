@@ -160,14 +160,16 @@ func (s *Store) CompleteProviderUsageScanWithMetrics(
 			INSERT INTO usage_events (
 				source, dedup_key, occurred_at_ms, model, project,
 				input_tokens, output_tokens, cached_input_tokens,
-				cache_creation_input_tokens, reasoning_output_tokens,
+				cache_creation_input_tokens, cache_creation_5m_tokens,
+				cache_creation_1h_tokens, reasoning_output_tokens,
 				reported_total_tokens, total_tokens, rollout_key,
 				parent_rollout_key, replay_fingerprint, inherited_replay, updated_at_ms
 			)
 			SELECT
 				source, dedup_key, occurred_at_ms, model, project,
 				input_tokens, output_tokens, cached_input_tokens,
-				cache_creation_input_tokens, reasoning_output_tokens,
+				cache_creation_input_tokens, cache_creation_5m_tokens,
+				cache_creation_1h_tokens, reasoning_output_tokens,
 				reported_total_tokens, total_tokens, rollout_key,
 				parent_rollout_key, replay_fingerprint, inherited_replay, ?
 			FROM usage_events_staging
@@ -321,10 +323,11 @@ func (s *Store) stageUsageEvents(ctx context.Context, source, runID string, even
 		INSERT INTO usage_events_staging (
 			run_id, source, dedup_key, occurred_at_ms, model, project,
 			input_tokens, output_tokens, cached_input_tokens,
-			cache_creation_input_tokens, reasoning_output_tokens,
+			cache_creation_input_tokens, cache_creation_5m_tokens,
+			cache_creation_1h_tokens, reasoning_output_tokens,
 			reported_total_tokens, total_tokens, rollout_key,
 			parent_rollout_key, replay_fingerprint, inherited_replay
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return fmt.Errorf("准备 usage staging: %w", err)
@@ -346,6 +349,8 @@ func (s *Store) stageUsageEvents(ctx context.Context, source, runID string, even
 			event.OutputTokens,
 			event.CachedInputTokens,
 			event.CacheCreationInputTokens,
+			event.CacheCreation5mTokens,
+			event.CacheCreation1hTokens,
 			event.ReasoningOutputTokens,
 			event.ReportedTotalTokens,
 			event.TotalTokens,
@@ -412,7 +417,8 @@ func (s *Store) LoadUsageEvents(ctx context.Context, source string) ([]domain.Us
 		SELECT
 			source, dedup_key, occurred_at_ms, model, project,
 			input_tokens, output_tokens, cached_input_tokens,
-			cache_creation_input_tokens, reasoning_output_tokens,
+			cache_creation_input_tokens, cache_creation_5m_tokens,
+			cache_creation_1h_tokens, reasoning_output_tokens,
 			reported_total_tokens, total_tokens, rollout_key,
 			parent_rollout_key, replay_fingerprint, inherited_replay
 		FROM usage_events
@@ -426,7 +432,8 @@ func (s *Store) UsageEventsInWindow(ctx context.Context, source string, start, e
 		SELECT
 			source, dedup_key, occurred_at_ms, model, project,
 			input_tokens, output_tokens, cached_input_tokens,
-			cache_creation_input_tokens, reasoning_output_tokens,
+			cache_creation_input_tokens, cache_creation_5m_tokens,
+			cache_creation_1h_tokens, reasoning_output_tokens,
 			reported_total_tokens, total_tokens, rollout_key,
 			parent_rollout_key, replay_fingerprint, inherited_replay
 		FROM usage_events
@@ -440,7 +447,8 @@ func (s *Store) AllUsageEventsInWindow(ctx context.Context, start, end time.Time
 		SELECT
 			source, dedup_key, occurred_at_ms, model, project,
 			input_tokens, output_tokens, cached_input_tokens,
-			cache_creation_input_tokens, reasoning_output_tokens,
+			cache_creation_input_tokens, cache_creation_5m_tokens,
+			cache_creation_1h_tokens, reasoning_output_tokens,
 			reported_total_tokens, total_tokens, rollout_key,
 			parent_rollout_key, replay_fingerprint, inherited_replay
 		FROM usage_events
@@ -471,6 +479,8 @@ func (s *Store) queryUsageEvents(ctx context.Context, query string, arguments ..
 			&event.OutputTokens,
 			&event.CachedInputTokens,
 			&event.CacheCreationInputTokens,
+			&event.CacheCreation5mTokens,
+			&event.CacheCreation1hTokens,
 			&event.ReasoningOutputTokens,
 			&event.ReportedTotalTokens,
 			&event.TotalTokens,
@@ -597,21 +607,33 @@ func validateUsageEvent(source string, event domain.UsageEvent) error {
 		event.OutputTokens,
 		event.CachedInputTokens,
 		event.CacheCreationInputTokens,
+		event.CacheCreation5mTokens,
+		event.CacheCreation1hTokens,
 		event.ReasoningOutputTokens,
 		event.ReportedTotalTokens,
 		event.TotalTokens,
 	}
-	var detail int64
-	for index, value := range values {
+	for _, value := range values {
 		if value < 0 {
 			return errors.New("usage event token 不能为负数")
 		}
-		if index < 5 {
-			if value > math.MaxInt64-detail {
-				return errors.New("usage event token 超出 int64")
-			}
-			detail += value
+	}
+	if event.CacheCreation5mTokens > math.MaxInt64-event.CacheCreation1hTokens ||
+		event.CacheCreation5mTokens+event.CacheCreation1hTokens > event.CacheCreationInputTokens {
+		return errors.New("usage event cache creation 时长明细无效")
+	}
+	var detail int64
+	for _, value := range []int64{
+		event.InputTokens,
+		event.OutputTokens,
+		event.CachedInputTokens,
+		event.CacheCreationInputTokens,
+		event.ReasoningOutputTokens,
+	} {
+		if value > math.MaxInt64-detail {
+			return errors.New("usage event token 超出 int64")
 		}
+		detail += value
 	}
 	if event.TotalTokens < detail || event.TotalTokens < event.ReportedTotalTokens {
 		return errors.New("usage event total 小于 token 明细")

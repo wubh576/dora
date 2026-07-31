@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const migrationVersion = 4
+const migrationVersion = 5
 
 type Store struct {
 	db     *sql.DB
@@ -109,6 +109,7 @@ func (s *Store) initialize(ctx context.Context) error {
 		migrateUsage,
 		migrateQuota,
 		migrateUsageProviderDiagnostics,
+		migrateCacheCreationDurations,
 	}
 	for index, migration := range migrations {
 		version := index + 1
@@ -293,6 +294,20 @@ func migrateUsageProviderDiagnostics(ctx context.Context, tx *sql.Tx, _ int64) e
 		"ALTER TABLE provider_state ADD COLUMN config_found INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE provider_state ADD COLUMN session_count INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE provider_state ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 0",
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateCacheCreationDurations(ctx context.Context, tx *sql.Tx, _ int64) error {
+	for _, statement := range []string{
+		"ALTER TABLE usage_events ADD COLUMN cache_creation_5m_tokens INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE usage_events ADD COLUMN cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE usage_events_staging ADD COLUMN cache_creation_5m_tokens INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE usage_events_staging ADD COLUMN cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0",
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err

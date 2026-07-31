@@ -200,7 +200,7 @@ Dora 后端的自动扫描、`dora scan` 和菜单栏刷新都会同时只读检
 
 配置目录优先使用显式 `--claude-home`，其次使用 `CLAUDE_CONFIG_DIR`，最后使用 `~/.claude`。目录不存在是正常的“暂无数据”，不会影响 Codex。Claude Code 可以连接 Anthropic-compatible endpoint 并使用其他模型；Dora 始终保存 transcript 中 `message.model` 的原始值，不把 Claude Code 等同于 Anthropic 模型，也不会为未匹配定价目录的模型编造价格。
 
-只统计 assistant `message.usage` 中的 input、output、cache read、cache creation 和原生 reasoning。稳定 `message.id` 用于跨 streaming flush、fork 和 subagent 去重；缺少 message ID 时跳过该 usage 并把 diagnostics 标记为 degraded，避免不稳定 record UUID 导致重复统计。主 session 与 subagent 只在扫描期间临时关联，Dora 不建立 session 表，不保存 session ID、父子关系、完整项目路径或 transcript 内容。
+只统计 assistant `message.usage` 中的 input、output、cache read、cache creation 和原生 reasoning；Anthropic usage 中的 5 分钟与 1 小时 cache creation 会分开保存并按不同价格计算。稳定 `message.id` 用于跨 streaming flush、fork 和 subagent 去重；缺少 message ID 时跳过该 usage 并把 diagnostics 标记为 degraded，避免不稳定 record UUID 导致重复统计。主 session 与 subagent 只在扫描期间临时关联，Dora 不建立 session 表，不保存 session ID、父子关系、完整项目路径或 transcript 内容。
 
 手动指定隔离目录扫描：
 
@@ -245,9 +245,13 @@ PUT /api/v1/settings
 
 页面中的 token 总量使用英文紧凑数量级：`K`、`M`、`B`、`T`；需要核对时仍同时保留带千位分隔符的精确值。
 
-费用使用 `backend/internal/pricing/catalog.json` 中的版本化定价目录计算。目录记录 OpenAI 官方来源和核对日期，当前核对于 `2026-07-31`；更新目录后只需重新构建 Dora，不需要重扫 Codex 会话或改写 SQLite。
+费用使用 `backend/internal/pricing/catalog.json` 中的版本化定价目录计算。目录记录逐模型价格、对应厂商官方来源和核对日期，当前核对于 `2026-08-01`；单纯更新价格后只需重新构建 Dora，不需要重扫 transcript 或改写 SQLite。
 
-费用是按照公开的标准 API 文本 token 价格得出的等价估算，不是 Codex 订阅的实际账单。Reasoning 按 output 价格计算；未匹配的模型和只有总量、缺少 token 分类的记录保持未定价，页面同时展示覆盖率。当前聚合数据无法可靠还原单次请求是否触发长上下文、区域处理、优先处理或工具调用附加费，因此这些费用不计入估算。
+价格只按 transcript 中的真实模型 ID 匹配，不与 Codex、Claude Code 等 Agent 框架绑定。Claude Code 调用 GPT 时按 GPT 价格，Codex 调用 Claude 时按 Claude 价格；Kimi 等第三方模型只有存在自己的显式官方定价条目时才计算，否则保持未定价，绝不会套用当前 Agent 的默认价格。
+
+模型 ID 匹配保持保守：Claude 4.6 及以后只接受官方无日期固定 ID，4.5 及更早只接受目录中明确登记的官方 alias 或完整日期 ID；带 `custom`、`preview` 等第三方后缀的兼容模型不会自动套用 Anthropic 价格。
+
+费用是按照公开的标准 API 文本 token 价格得出的等价估算，不是 Codex 或 Claude 订阅的实际账单。Reasoning 按对应模型的 output 价格计算；Anthropic 5 分钟和 1 小时 cache write 使用各自价格，缺少时长明细的 Claude cache write 保持未定价。未匹配模型、只有总量的记录和无法分类的 token 同样保持未定价，页面同时展示覆盖率。当前聚合数据无法可靠还原单次请求是否触发长上下文、区域处理、优先处理、Fast mode 或工具调用附加费，因此这些费用不计入估算。
 
 ```text
 GET /api/v1/summary?range=7D
@@ -264,11 +268,11 @@ GET /api/v1/snapshot
 
 定价更新流程：
 
-1. 在 OpenAI 官方模型页核对 input、cached input、cache write 和 output 价格。
-2. 更新 `backend/internal/pricing/catalog.json` 的模型条目、来源和 `checkedAt`。
+1. 在模型对应厂商的官方页面核对 input、cached input、cache write 和 output 价格。
+2. 更新 `backend/internal/pricing/catalog.json` 的精确模型条目、HTTPS 厂商官方来源和 `checkedAt`；不要按 Agent 框架或过宽模型家族设置默认价格。未公布的 cache 价格可以留空，相应 token 会保持未定价。
 3. 运行 `make verify`；定价单元测试会验证目录、模型匹配和费用口径。
 
-Dora 不在运行时抓取官网 HTML。若以后需要自动更新，应使用带版本和签名的定价清单，下载后完整校验再原子替换本地目录；在 OpenAI 提供稳定的机器可读定价接口前，不把网页结构当作运行时 API。
+Dora 不在运行时抓取厂商官网 HTML。若以后需要自动更新，应使用带版本和签名的定价清单，下载后完整校验再原子替换本地目录；在厂商提供稳定的机器可读定价接口前，不把网页结构当作运行时 API。
 
 ## 验证
 

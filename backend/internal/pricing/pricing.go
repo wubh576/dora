@@ -24,20 +24,27 @@ type Catalog struct {
 	Currency   string
 	UnitTokens int64
 	CheckedAt  string
-	SourceURL  string
 	Basis      string
 	Models     []ModelPrice
 }
 
 type ModelPrice struct {
-	ID                    string   `json:"id"`
-	Aliases               []string `json:"aliases"`
-	SnapshotPrefixes      []string `json:"snapshotPrefixes"`
-	InputUSDPerMTok       float64  `json:"inputUsdPerMTok"`
-	CachedInputUSDPerMTok float64  `json:"cachedInputUsdPerMTok"`
-	CacheWriteUSDPerMTok  float64  `json:"cacheWriteUsdPerMTok"`
-	OutputUSDPerMTok      float64  `json:"outputUsdPerMTok"`
-	SourceURL             string   `json:"sourceUrl"`
+	ID                     string   `json:"id"`
+	Aliases                []string `json:"aliases"`
+	SnapshotPrefixes       []string `json:"snapshotPrefixes"`
+	InputUSDPerMTok        float64  `json:"inputUsdPerMTok"`
+	CachedInputUSDPerMTok  float64  `json:"cachedInputUsdPerMTok"`
+	CacheWriteUSDPerMTok   float64  `json:"cacheWriteUsdPerMTok"`
+	CacheWrite5mUSDPerMTok float64  `json:"cacheWrite5mUsdPerMTok"`
+	CacheWrite1hUSDPerMTok float64  `json:"cacheWrite1hUsdPerMTok"`
+	OutputUSDPerMTok       float64  `json:"outputUsdPerMTok"`
+	SourceLabel            string   `json:"sourceLabel"`
+	SourceURL              string   `json:"sourceUrl"`
+}
+
+type PriceSource struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
 }
 
 type Estimate struct {
@@ -48,7 +55,7 @@ type Estimate struct {
 	Coverage       float64       `json:"coverage"`
 	Breakdown      CostBreakdown `json:"breakdown"`
 	CheckedAt      string        `json:"checkedAt"`
-	SourceURL      string        `json:"sourceUrl"`
+	Sources        []PriceSource `json:"sources"`
 	Basis          string        `json:"basis"`
 	UnpricedModels []string      `json:"unpricedModels"`
 }
@@ -66,7 +73,6 @@ type catalogFile struct {
 	Currency   string       `json:"currency"`
 	UnitTokens int64        `json:"unitTokens"`
 	CheckedAt  string       `json:"checkedAt"`
-	SourceURL  string       `json:"sourceUrl"`
 	Basis      string       `json:"basis"`
 	Models     []ModelPrice `json:"models"`
 }
@@ -75,11 +81,12 @@ func (c Catalog) Estimate(events []domain.UsageEvent) (Estimate, error) {
 	result := Estimate{
 		Currency:       c.Currency,
 		CheckedAt:      c.CheckedAt,
-		SourceURL:      c.SourceURL,
 		Basis:          c.Basis,
+		Sources:        []PriceSource{},
 		UnpricedModels: []string{},
 	}
 	unpricedModels := make(map[string]struct{})
+	priceSources := make(map[string]PriceSource)
 	for _, event := range events {
 		detailTokens, err := eventDetailTotal(event)
 		if err != nil {
@@ -100,9 +107,6 @@ func (c Catalog) Estimate(events []domain.UsageEvent) (Estimate, error) {
 			continue
 		}
 
-		if err := addTokens(&result.PricedTokens, detailTokens); err != nil {
-			return Estimate{}, err
-		}
 		gap := event.TotalTokens - detailTokens
 		if err := addTokens(&result.UnpricedTokens, gap); err != nil {
 			return Estimate{}, err
@@ -111,12 +115,41 @@ func (c Catalog) Estimate(events []domain.UsageEvent) (Estimate, error) {
 			unpricedModels[modelName(event.Model)] = struct{}{}
 		}
 
-		result.Breakdown.InputUSD += tokenCost(event.InputTokens, price.InputUSDPerMTok, c.UnitTokens)
-		result.Breakdown.CacheReadUSD += tokenCost(event.CachedInputTokens, price.CachedInputUSDPerMTok, c.UnitTokens)
-		result.Breakdown.CacheCreationUSD += tokenCost(event.CacheCreationInputTokens, price.CacheWriteUSDPerMTok, c.UnitTokens)
-		result.Breakdown.OutputUSD += tokenCost(event.OutputTokens, price.OutputUSDPerMTok, c.UnitTokens)
-		// OpenAI 将 reasoning token 按 output token 计费。
-		result.Breakdown.ReasoningUSD += tokenCost(event.ReasoningOutputTokens, price.OutputUSDPerMTok, c.UnitTokens)
+		pricedBefore := result.PricedTokens
+		unpricedBefore := result.UnpricedTokens
+		genericCacheWrite := event.CacheCreationInputTokens - event.CacheCreation5mTokens - event.CacheCreation1hTokens
+		cacheWrite5mRate := price.CacheWrite5mUSDPerMTok
+		if cacheWrite5mRate == 0 {
+			cacheWrite5mRate = price.CacheWriteUSDPerMTok
+		}
+		cacheWrite1hRate := price.CacheWrite1hUSDPerMTok
+		if cacheWrite1hRate == 0 {
+			cacheWrite1hRate = price.CacheWriteUSDPerMTok
+		}
+		classes := []struct {
+			tokens int64
+			rate   float64
+			cost   *float64
+		}{
+			{event.InputTokens, price.InputUSDPerMTok, &result.Breakdown.InputUSD},
+			{event.CachedInputTokens, price.CachedInputUSDPerMTok, &result.Breakdown.CacheReadUSD},
+			{genericCacheWrite, price.CacheWriteUSDPerMTok, &result.Breakdown.CacheCreationUSD},
+			{event.CacheCreation5mTokens, cacheWrite5mRate, &result.Breakdown.CacheCreationUSD},
+			{event.CacheCreation1hTokens, cacheWrite1hRate, &result.Breakdown.CacheCreationUSD},
+			{event.OutputTokens, price.OutputUSDPerMTok, &result.Breakdown.OutputUSD},
+			{event.ReasoningOutputTokens, price.OutputUSDPerMTok, &result.Breakdown.ReasoningUSD},
+		}
+		for _, class := range classes {
+			if err := priceTokenClass(&result, class.cost, class.tokens, class.rate, c.UnitTokens); err != nil {
+				return Estimate{}, err
+			}
+		}
+		if result.PricedTokens > pricedBefore {
+			priceSources[price.SourceURL] = PriceSource{Label: price.SourceLabel, URL: price.SourceURL}
+		}
+		if result.UnpricedTokens > unpricedBefore {
+			unpricedModels[modelName(event.Model)] = struct{}{}
+		}
 	}
 
 	result.Breakdown.InputUSD = roundUSD(result.Breakdown.InputUSD)
@@ -142,7 +175,30 @@ func (c Catalog) Estimate(events []domain.UsageEvent) (Estimate, error) {
 		result.UnpricedModels = append(result.UnpricedModels, model)
 	}
 	sort.Strings(result.UnpricedModels)
+	for _, source := range priceSources {
+		result.Sources = append(result.Sources, source)
+	}
+	sort.Slice(result.Sources, func(i, j int) bool {
+		if result.Sources[i].Label == result.Sources[j].Label {
+			return result.Sources[i].URL < result.Sources[j].URL
+		}
+		return result.Sources[i].Label < result.Sources[j].Label
+	})
 	return result, nil
+}
+
+func priceTokenClass(result *Estimate, cost *float64, tokens int64, rate float64, unit int64) error {
+	if tokens == 0 {
+		return nil
+	}
+	if rate == 0 {
+		return addTokens(&result.UnpricedTokens, tokens)
+	}
+	if err := addTokens(&result.PricedTokens, tokens); err != nil {
+		return err
+	}
+	*cost += tokenCost(tokens, rate, unit)
+	return nil
 }
 
 func (c Catalog) match(model string) (ModelPrice, bool) {
@@ -181,7 +237,6 @@ func parseCatalog(data []byte) (Catalog, error) {
 		Currency:   strings.TrimSpace(file.Currency),
 		UnitTokens: file.UnitTokens,
 		CheckedAt:  file.CheckedAt,
-		SourceURL:  file.SourceURL,
 		Basis:      strings.TrimSpace(file.Basis),
 		Models:     file.Models,
 	}
@@ -206,24 +261,32 @@ func validateCatalog(catalog Catalog) error {
 	if _, err := time.Parse(time.DateOnly, catalog.CheckedAt); err != nil {
 		return errors.New("定价目录核对日期无效")
 	}
-	if catalog.Basis == "" || !officialURL(catalog.SourceURL) || len(catalog.Models) == 0 {
+	if catalog.Basis == "" || len(catalog.Models) == 0 {
 		return errors.New("定价目录元数据不完整")
 	}
 
 	names := make(map[string]struct{})
 	prefixes := make(map[string]struct{})
 	for _, price := range catalog.Models {
-		if strings.TrimSpace(price.ID) == "" || !officialURL(price.SourceURL) {
+		if strings.TrimSpace(price.ID) == "" || strings.TrimSpace(price.SourceLabel) == "" || !validSourceURL(price.SourceURL) {
 			return errors.New("模型定价标识或来源无效")
 		}
 		for _, value := range []float64{
 			price.InputUSDPerMTok,
-			price.CachedInputUSDPerMTok,
-			price.CacheWriteUSDPerMTok,
 			price.OutputUSDPerMTok,
 		} {
 			if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
 				return fmt.Errorf("模型 %s 的价格无效", price.ID)
+			}
+		}
+		for _, value := range []float64{
+			price.CachedInputUSDPerMTok,
+			price.CacheWriteUSDPerMTok,
+			price.CacheWrite5mUSDPerMTok,
+			price.CacheWrite1hUSDPerMTok,
+		} {
+			if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+				return fmt.Errorf("模型 %s 的 cache 价格无效", price.ID)
 			}
 		}
 		for _, name := range append([]string{price.ID}, price.Aliases...) {
@@ -250,12 +313,12 @@ func validateCatalog(catalog Catalog) error {
 	return nil
 }
 
-func officialURL(value string) bool {
+func validSourceURL(value string) bool {
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "https" {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
 		return false
 	}
-	return parsed.Host == "developers.openai.com" || parsed.Host == "openai.com"
+	return true
 }
 
 func eventDetailTotal(event domain.UsageEvent) (int64, error) {
@@ -263,6 +326,8 @@ func eventDetailTotal(event domain.UsageEvent) (int64, error) {
 		event.InputTokens,
 		event.CachedInputTokens,
 		event.CacheCreationInputTokens,
+		event.CacheCreation5mTokens,
+		event.CacheCreation1hTokens,
 		event.OutputTokens,
 		event.ReasoningOutputTokens,
 		event.TotalTokens,
@@ -270,6 +335,10 @@ func eventDetailTotal(event domain.UsageEvent) (int64, error) {
 		if value < 0 {
 			return 0, errors.New("token 不能为负数")
 		}
+	}
+	if event.CacheCreation5mTokens > math.MaxInt64-event.CacheCreation1hTokens ||
+		event.CacheCreation5mTokens+event.CacheCreation1hTokens > event.CacheCreationInputTokens {
+		return 0, errors.New("cache creation 时长明细无效")
 	}
 	return sumTokens(
 		event.InputTokens,

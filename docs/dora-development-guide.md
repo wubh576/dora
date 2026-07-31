@@ -215,6 +215,8 @@ type UsageEvent struct {
     OutputTokens              int64
     CachedInputTokens         int64
     CacheCreationInputTokens  int64
+    CacheCreation5mTokens     int64
+    CacheCreation1hTokens     int64
     ReasoningOutputTokens     int64
 
     ReportedTotalTokens       int64
@@ -231,7 +233,7 @@ type UsageEvent struct {
 
 - `InputTokens` 是归一化后的普通输入，不包含 cache read 和 cache creation。
 - `OutputTokens` 是 provider 归一化后的普通输出。
-- cache read、cache creation、reasoning 永远分列。
+- cache read、cache creation、reasoning 永远分列；5 分钟与 1 小时 cache creation 是总 cache creation 的定价明细，不重复计入总 token。
 - `ReportedTotalTokens` 保存上游报告值，用于明细不完整时保真。
 - `TotalTokens` 是 UI 和统计使用的最终口径。
 - `DedupKey` 只用于本地去重，不暴露给 UI。
@@ -358,6 +360,8 @@ CREATE TABLE usage_events (
     output_tokens               INTEGER NOT NULL DEFAULT 0,
     cached_input_tokens         INTEGER NOT NULL DEFAULT 0,
     cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_5m_tokens    INTEGER NOT NULL DEFAULT 0,
+    cache_creation_1h_tokens    INTEGER NOT NULL DEFAULT 0,
     reasoning_output_tokens     INTEGER NOT NULL DEFAULT 0,
     reported_total_tokens       INTEGER NOT NULL DEFAULT 0,
     total_tokens                INTEGER NOT NULL DEFAULT 0,
@@ -392,6 +396,8 @@ CREATE TABLE usage_events_staging (
     output_tokens               INTEGER NOT NULL DEFAULT 0,
     cached_input_tokens         INTEGER NOT NULL DEFAULT 0,
     cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_5m_tokens    INTEGER NOT NULL DEFAULT 0,
+    cache_creation_1h_tokens    INTEGER NOT NULL DEFAULT 0,
     reasoning_output_tokens     INTEGER NOT NULL DEFAULT 0,
     reported_total_tokens       INTEGER NOT NULL DEFAULT 0,
     total_tokens                INTEGER NOT NULL DEFAULT 0,
@@ -799,26 +805,33 @@ resetsAt := time.Unix(resetAt, 0).UTC()
 input / 1M × input price
 + output / 1M × output price
 + cache read / 1M × cache read price
-+ cache creation / 1M × cache creation price
++ generic cache creation / 1M × generic cache creation price
++ 5m cache creation / 1M × 5m cache creation price
++ 1h cache creation / 1M × 1h cache creation price
 + reasoning / 1M × reasoning price
 ```
 
 要求：
 
 - `backend/internal/pricing/catalog.json` 是第一期唯一的定价来源，随程序嵌入并纳入版本控制。
-- 定价目录带版本、货币、官方来源和核对日期；更新目录后重新构建即可，不需要 migration。
+- 定价目录带版本、货币、逐模型官方来源和核对日期；更新目录后重新构建即可，不需要 migration。
+- 定价只按原始模型 ID、显式 alias 和精确 snapshot prefix 匹配，不能读取或依赖 `UsageEvent.Source`；Agent/provider 只表示 token 来源，不决定模型价格。
+- Claude Code 调用 GPT、Kimi 等其他模型时必须按对应模型自己的目录条目计费；Codex 调用 Claude 或其他模型时同理。
+- 新厂商只需增加精确模型条目和经过人工核对的 HTTPS 官方来源，不得要求修改 Agent scanner 或定价匹配代码；厂商未公布的 cache 类别允许缺省，相应 token 单独保持未定价。
 - 先匹配精确模型 ID 和显式 alias，再按最长、最具体的 snapshot prefix 匹配。
+- Claude 4.6 及以后只匹配官方无日期固定 ID，不接受额外后缀；4.5 及更早只登记官方明确公布的 alias 和完整日期 ID，不使用家族或年份前缀，避免兼容网关自定义 ID 误匹配。
 - 未匹配模型显示“未定价”。
 - 不使用一个任意默认价格静默估算未知模型。
 - 只有总 token、缺少分类明细的记录不能猜测输入输出比例，保持未定价。
 - reasoning token 使用对应模型的 output token 价格。
 - GPT-5.6 cache write 使用官方公布的 uncached input `1.25x`；更早模型按目录中明确记录的标准 uncached input 价格计算。
+- Anthropic 5 分钟和 1 小时 cache write 分别按官方价格计算；无法从 usage 确认时长的 Claude cache creation 保持未定价，不能默认套用较低价格。
 - API 返回已定价 token、未定价 token、覆盖率、分类费用、官方来源和核对日期。
 - 页面必须明确说明它是标准 API 等价估算，不是 Codex 订阅实际账单。
 - 聚合事件无法可靠还原单次请求的上下文长度，不计算长上下文、区域处理、优先处理和工具调用附加费。
-- 更新定价不需要重扫 transcript。
+- 单纯更新定价不需要重扫 transcript；只有 parser 新增了费用所需的 token 明细时才通过 parser version 升级只读重扫。
 
-运行时不抓取 OpenAI 网页。官方模型页是面向人的文档，网页结构变化不应影响 Dora 启动和本地统计。未来如需自动更新，只接受带版本和签名的机器可读清单，经过 schema、来源、价格范围和签名验证后原子替换；在此之前由代码更新同步维护内置目录。
+运行时不抓取模型厂商网页。官方模型页是面向人的文档，网页结构变化不应影响 Dora 启动和本地统计。未来如需自动更新，只接受带版本和签名的机器可读清单，经过 schema、来源、价格范围和签名验证后原子替换；在此之前由代码更新同步维护内置目录。
 
 ## 15. 本地 API
 
@@ -1146,13 +1159,15 @@ subagent transcript：
 - `output_tokens`
 - `cache_read_input_tokens`
 - `cache_creation_input_tokens`
+- `cache_creation.ephemeral_5m_input_tokens`
+- `cache_creation.ephemeral_1h_input_tokens`
 - `reasoning_output_tokens`
 
 模型来自 `message.model`，缺失时为 `unknown`。
 
 Claude 与 Codex 的归一化不能共用同一套减法：
 
-- Claude 的 cache read/cache creation 是独立字段。
+- Claude 的 cache read/cache creation 是独立字段；cache creation 下的 5 分钟与 1 小时明细分别保存，用于精确定价，二者之和不得大于上游 cache creation 总量。
 - 原生 `reasoning_output_tokens` 存在时按上游独立字段保留。
 - 原生 reasoning 缺失时，对 Anthropic 模型按 thinking/other 字符比例从 output 中估算 reasoning。
 

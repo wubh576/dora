@@ -174,7 +174,8 @@ func TestProviderUsageGenerationsRemainIsolated(t *testing.T) {
 		},
 		{
 			Source: domain.ClaudeCodeSource, DedupKey: "claude-message", OccurredAt: now,
-			Model: "claude", Project: "dora", OutputTokens: 5, TotalTokens: 5,
+			Model: "claude", Project: "dora", OutputTokens: 5,
+			CacheCreationInputTokens: 7, CacheCreation5mTokens: 3, CacheCreation1hTokens: 4, TotalTokens: 12,
 		},
 	}
 	for index, source := range []string{domain.CodexSource, domain.ClaudeCodeSource} {
@@ -235,6 +236,10 @@ func TestProviderUsageGenerationsRemainIsolated(t *testing.T) {
 		}
 		if len(stored) != 1 || stored[0].DedupKey != events[index].DedupKey {
 			t.Fatalf("provider generation 串扰: source=%s events=%+v", source, stored)
+		}
+		if source == domain.ClaudeCodeSource &&
+			(stored[0].CacheCreation5mTokens != 3 || stored[0].CacheCreation1hTokens != 4) {
+			t.Fatalf("Claude cache creation 时长明细未持久化: %+v", stored[0])
 		}
 	}
 }
@@ -566,6 +571,9 @@ func TestOpenMigratesVersionThreeWithoutLosingUsageOrQuota(t *testing.T) {
 	events, err := store.LoadUsageEvents(ctx, domain.CodexSource)
 	if err != nil || len(events) != 1 || events[0].DedupKey != "legacy-usage" {
 		t.Fatalf("v3 usage 丢失: events=%+v err=%v", events, err)
+	}
+	if events[0].CacheCreation5mTokens != 0 || events[0].CacheCreation1hTokens != 0 {
+		t.Fatalf("v3 usage migration 未使用安全默认值: %+v", events[0])
 	}
 	quotas, err := store.LatestQuotaSnapshots(ctx, domain.CodexSource)
 	if err != nil || len(quotas) != 1 || quotas[0].RemainingPercent != 75 {

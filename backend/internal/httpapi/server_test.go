@@ -448,7 +448,9 @@ func TestDashboardUsesOneConsistentSnapshot(t *testing.T) {
 	}
 	if dashboard.Summary.Cost.UnpricedTokens != dashboard.Summary.TotalTokens ||
 		dashboard.Summary.Cost.PricedTokens != 0 ||
-		dashboard.Summary.Cost.SourceURL == "" {
+		dashboard.Summary.Cost.CheckedAt == "" ||
+		dashboard.Summary.Cost.Basis == "" ||
+		len(dashboard.Summary.Cost.Sources) != 0 {
 		t.Fatalf("dashboard 费用估算元数据不完整: %+v", dashboard.Summary.Cost)
 	}
 	if len(dashboard.Models) != 2 ||

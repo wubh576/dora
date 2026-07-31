@@ -1,10 +1,9 @@
 {
-  "version": 1,
+  "version": 2,
   "currency": "USD",
   "unitTokens": 1000000,
-  "checkedAt": "2026-07-31",
-  "sourceUrl": "https://developers.openai.com/api/docs/models/compare",
-  "basis": "按 OpenAI 标准 API 文本 token 价格估算，不等于 Codex 订阅账单；不含长上下文、区域处理、优先处理和工具调用附加费。",
+  "checkedAt": "2026-08-01",
+  "basis": "按模型对应厂商的标准 API 文本 token 价格估算，不等于 Codex 或 Claude 订阅账单；模型价格不与 Agent 框架绑定，不含长上下文、区域处理、优先处理、Fast mode 和工具调用附加费。",
   "models": [
     {
       "id": "gpt-5.6-sol",
@@ -14,7 +13,8 @@
       "cachedInputUsdPerMTok": 0.5,
       "cacheWriteUsdPerMTok": 6.25,
       "outputUsdPerMTok": 30,
-      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      "sourceLabel": "OpenAI 官方定价",
+      "sourceUrl": "https://developers.openai.com/api/docs/models/compare"
     },
     {
       "id": "gpt-5.6-terra",
@@ -24,7 +24,8 @@
       "cachedInputUsdPerMTok": 0.2,
       "cacheWriteUsdPerMTok": 2.5,
       "outputUsdPerMTok": 12,
-      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
+      "sourceLabel": "OpenAI 官方定价",
+      "sourceUrl": "https://developers.openai.com/api/docs/models/compare"
     },
     {
       "id": "gpt-5.6-luna",
@@ -34,7 +35,8 @@
       "cachedInputUsdPerMTok": 0.02,
       "cacheWriteUsdPerMTok": 0.25,
       "outputUsdPerMTok": 1.2,
-      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+      "sourceLabel": "OpenAI 官方定价",
+      "sourceUrl": "https://developers.openai.com/api/docs/models/compare"
     },
     {
       "id": "gpt-5.5",
@@ -44,7 +46,8 @@
       "cachedInputUsdPerMTok": 0.5,
       "cacheWriteUsdPerMTok": 5,
       "outputUsdPerMTok": 30,
-      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.5"
+      "sourceLabel": "OpenAI 官方定价",
+      "sourceUrl": "https://developers.openai.com/api/docs/models/compare"
     },
     {
       "id": "gpt-5.4",
@@ -54,7 +57,8 @@
       "cachedInputUsdPerMTok": 0.25,
       "cacheWriteUsdPerMTok": 2.5,
       "outputUsdPerMTok": 15,
-      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.4"
+      "sourceLabel": "OpenAI 官方定价",
+      "sourceUrl": "https://developers.openai.com/api/docs/models/compare"
     },
     {
       "id": "gpt-5.3-codex",
@@ -64,7 +68,92 @@
       "cachedInputUsdPerMTok": 0.175,
       "cacheWriteUsdPerMTok": 1.75,
       "outputUsdPerMTok": 14,
-      "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.3-codex"
+      "sourceLabel": "OpenAI 官方定价",
+      "sourceUrl": "https://developers.openai.com/api/docs/models/compare"
+    },
+    {
+      "id": "claude-opus-4-8",
+      "aliases": [],
+      "snapshotPrefixes": [],
+      "inputUsdPerMTok": 5,
+      "cachedInputUsdPerMTok": 0.5,
+      "cacheWrite5mUsdPerMTok": 6.25,
+      "cacheWrite1hUsdPerMTok": 10,
+      "outputUsdPerMTok": 25,
+      "sourceLabel": "Anthropic 官方定价",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "id": "claude-opus-4-7",
+      "aliases": [],
+      "snapshotPrefixes": [],
+      "inputUsdPerMTok": 5,
+      "cachedInputUsdPerMTok": 0.5,
+      "cacheWrite5mUsdPerMTok": 6.25,
+      "cacheWrite1hUsdPerMTok": 10,
+      "outputUsdPerMTok": 25,
+      "sourceLabel": "Anthropic 官方定价",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "id": "claude-opus-4-6",
+      "aliases": [],
+      "snapshotPrefixes": [],
+      "inputUsdPerMTok": 5,
+      "cachedInputUsdPerMTok": 0.5,
+      "cacheWrite5mUsdPerMTok": 6.25,
+      "cacheWrite1hUsdPerMTok": 10,
+      "outputUsdPerMTok": 25,
+      "sourceLabel": "Anthropic 官方定价",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "id": "claude-opus-4-5",
+      "aliases": [],
+      "snapshotPrefixes": [],
+      "inputUsdPerMTok": 5,
+      "cachedInputUsdPerMTok": 0.5,
+      "cacheWrite5mUsdPerMTok": 6.25,
+      "cacheWrite1hUsdPerMTok": 10,
+      "outputUsdPerMTok": 25,
+      "sourceLabel": "Anthropic 官方定价",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "aliases": [],
+      "snapshotPrefixes": [],
+      "inputUsdPerMTok": 3,
+      "cachedInputUsdPerMTok": 0.3,
+      "cacheWrite5mUsdPerMTok": 3.75,
+      "cacheWrite1hUsdPerMTok": 6,
+      "outputUsdPerMTok": 15,
+      "sourceLabel": "Anthropic 官方定价",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "aliases": ["claude-sonnet-4-5-20250929"],
+      "snapshotPrefixes": [],
+      "inputUsdPerMTok": 3,
+      "cachedInputUsdPerMTok": 0.3,
+      "cacheWrite5mUsdPerMTok": 3.75,
+      "cacheWrite1hUsdPerMTok": 6,
+      "outputUsdPerMTok": 15,
+      "sourceLabel": "Anthropic 官方定价",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "aliases": ["claude-haiku-4-5-20251001"],
+      "snapshotPrefixes": [],
+      "inputUsdPerMTok": 1,
+      "cachedInputUsdPerMTok": 0.1,
+      "cacheWrite5mUsdPerMTok": 1.25,
+      "cacheWrite1hUsdPerMTok": 2,
+      "outputUsdPerMTok": 5,
+      "sourceLabel": "Anthropic 官方定价",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing"
     }
   ]
 }

@@ -21,6 +21,8 @@ type UsageEvent struct {
 	OutputTokens             int64
 	CachedInputTokens        int64
 	CacheCreationInputTokens int64
+	CacheCreation5mTokens    int64
+	CacheCreation1hTokens    int64
 	ReasoningOutputTokens    int64
 	ReportedTotalTokens      int64
 	TotalTokens              int64

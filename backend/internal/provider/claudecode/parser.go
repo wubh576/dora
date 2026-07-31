@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	ParserVersion       = 1
+	ParserVersion       = 2
 	defaultMaxLineBytes = 8 * 1024 * 1024
 )
 
@@ -42,6 +42,8 @@ type normalizedUsage struct {
 	Output          int64 `json:"output"`
 	CacheRead       int64 `json:"cacheRead"`
 	CacheCreation   int64 `json:"cacheCreation"`
+	CacheCreation5m int64 `json:"cacheCreation5m"`
+	CacheCreation1h int64 `json:"cacheCreation1h"`
 	Reasoning       int64 `json:"reasoning"`
 	ReportedTotal   int64 `json:"reportedTotal"`
 	Total           int64 `json:"total"`
@@ -161,8 +163,12 @@ type rawUsage struct {
 	Output        *int64 `json:"output_tokens"`
 	CacheRead     *int64 `json:"cache_read_input_tokens"`
 	CacheCreation *int64 `json:"cache_creation_input_tokens"`
-	Reasoning     *int64 `json:"reasoning_output_tokens"`
-	Total         *int64 `json:"total_tokens"`
+	CacheDetail   *struct {
+		Ephemeral5m *int64 `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1h *int64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+	Reasoning *int64 `json:"reasoning_output_tokens"`
+	Total     *int64 `json:"total_tokens"`
 }
 
 func parseRecord(line []byte, file File) (messageAccumulator, bool, []string, error) {
@@ -225,14 +231,33 @@ func normalizeUsage(raw json.RawMessage) (normalizedUsage, error) {
 		return normalizedUsage{}, err
 	}
 	values := []*int64{usage.Input, usage.Output, usage.CacheRead, usage.CacheCreation, usage.Reasoning, usage.Total}
+	if usage.CacheDetail != nil {
+		values = append(values, usage.CacheDetail.Ephemeral5m, usage.CacheDetail.Ephemeral1h)
+	}
 	for _, value := range values {
 		if value != nil && *value < 0 {
 			return normalizedUsage{}, errors.New("assistant usage token 不能为负数")
 		}
 	}
+	var cacheCreation5m, cacheCreation1h int64
+	if usage.CacheDetail != nil {
+		cacheCreation5m = valueOrZero(usage.CacheDetail.Ephemeral5m)
+		cacheCreation1h = valueOrZero(usage.CacheDetail.Ephemeral1h)
+	}
+	cacheDetail, err := checkedSum(cacheCreation5m, cacheCreation1h)
+	if err != nil {
+		return normalizedUsage{}, err
+	}
+	cacheCreation := valueOrZero(usage.CacheCreation)
+	if usage.CacheCreation == nil {
+		cacheCreation = cacheDetail
+	} else if cacheDetail > cacheCreation {
+		return normalizedUsage{}, errors.New("assistant usage cache creation 明细大于总量")
+	}
 	result := normalizedUsage{
 		Input: valueOrZero(usage.Input), Output: valueOrZero(usage.Output),
-		CacheRead: valueOrZero(usage.CacheRead), CacheCreation: valueOrZero(usage.CacheCreation),
+		CacheRead: valueOrZero(usage.CacheRead), CacheCreation: cacheCreation,
+		CacheCreation5m: cacheCreation5m, CacheCreation1h: cacheCreation1h,
 		Reasoning: valueOrZero(usage.Reasoning), ReportedTotal: valueOrZero(usage.Total),
 		NativeReasoning: usage.Reasoning != nil && valueOrZero(usage.Reasoning) > 0,
 	}
@@ -287,6 +312,7 @@ func (a messageAccumulator) event() (domain.UsageEvent, bool) {
 		Model: a.Model, Project: a.Project,
 		InputTokens: usage.Input, OutputTokens: usage.Output,
 		CachedInputTokens: usage.CacheRead, CacheCreationInputTokens: usage.CacheCreation,
+		CacheCreation5mTokens: usage.CacheCreation5m, CacheCreation1hTokens: usage.CacheCreation1h,
 		ReasoningOutputTokens: usage.Reasoning, ReportedTotalTokens: usage.ReportedTotal,
 		TotalTokens: usage.Total,
 	}, true

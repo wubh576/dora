@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wubh576/dora/backend/internal/domain"
 )
 
 func TestParserReadsUsageModelsCachesAndReasoning(t *testing.T) {
@@ -17,7 +19,8 @@ func TestParserReadsUsageModelsCachesAndReasoning(t *testing.T) {
 	first := result.Events[0]
 	if first.Model != "claude-opus-4-8" || first.Project != "dora" ||
 		first.InputTokens != 10 || first.OutputTokens != 2 || first.CachedInputTokens != 4 ||
-		first.CacheCreationInputTokens != 2 || first.ReasoningOutputTokens != 4 || first.TotalTokens != 22 {
+		first.CacheCreationInputTokens != 2 || first.CacheCreation5mTokens != 1 || first.CacheCreation1hTokens != 1 ||
+		first.ReasoningOutputTokens != 4 || first.TotalTokens != 22 {
 		t.Fatalf("Anthropic thinking carve 错误: %+v", first)
 	}
 	second := result.Events[1]
@@ -46,7 +49,8 @@ func TestParserLargestWinsAcrossStreamingForkAndSubagent(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("stream/fork 重复计数: %+v", events)
 	}
-	if events[0].TotalTokens != 16 || events[0].InputTokens != 8 || events[0].CacheCreationInputTokens != 1 {
+	if events[0].TotalTokens != 16 || events[0].InputTokens != 8 || events[0].CacheCreationInputTokens != 1 ||
+		events[0].CacheCreation5mTokens != 1 || events[0].CacheCreation1hTokens != 0 {
 		t.Fatalf("streaming 未采用 final usage: %+v", events[0])
 	}
 	if events[1].Model != "gateway-model-x" || events[1].TotalTokens != 5 {
@@ -97,6 +101,8 @@ func TestParserRejectsNegativeAndOverflowUsage(t *testing.T) {
 	for _, usage := range []string{
 		`{"input_tokens":-1}`,
 		`{"input_tokens":9223372036854775807,"output_tokens":1}`,
+		`{"cache_creation_input_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":2,"ephemeral_1h_input_tokens":0}}`,
+		`{"cache_creation":{"ephemeral_5m_input_tokens":-1,"ephemeral_1h_input_tokens":0}}`,
 	} {
 		content := `{"type":"assistant","uuid":"bad","timestamp":"2026-07-31T10:00:00Z","message":{"id":"bad","role":"assistant","model":"model","usage":` + usage + `}}` + "\n"
 		path := filepath.Join(t.TempDir(), "bad.jsonl")
@@ -106,6 +112,34 @@ func TestParserRejectsNegativeAndOverflowUsage(t *testing.T) {
 		file := File{Path: path, HomeKey: "home", Project: "fixture"}
 		if _, err := NewParser().ParseFileSnapshot(context.Background(), file, 0, int64(len(content)), ParserState{}); err == nil {
 			t.Fatalf("非法 usage 未报错: %s", usage)
+		}
+	}
+}
+
+func TestParserUsesCacheDurationDetailWhenAggregateIsMissing(t *testing.T) {
+	content := `{"type":"assistant","timestamp":"2026-07-31T10:00:00Z","message":{"id":"cache-detail","role":"assistant","model":"claude-sonnet-4-6","usage":{"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":5}}}}` + "\n"
+	result := parseContent(t, content)
+	if len(result.Events) != 1 {
+		t.Fatalf("cache detail event 数错误: %+v", result.Events)
+	}
+	event := result.Events[0]
+	if event.CacheCreationInputTokens != 8 || event.CacheCreation5mTokens != 3 || event.CacheCreation1hTokens != 5 || event.TotalTokens != 8 {
+		t.Fatalf("cache detail 归一化错误: %+v", event)
+	}
+}
+
+func TestReconcilePrefersCacheDurationDetail(t *testing.T) {
+	withoutDetail := domain.UsageEvent{
+		DedupKey: "same-message", Model: "claude-opus-4-8",
+		CacheCreationInputTokens: 8, TotalTokens: 8,
+	}
+	withDetail := withoutDetail
+	withDetail.CacheCreation5mTokens = 3
+	withDetail.CacheCreation1hTokens = 5
+	for _, events := range [][]domain.UsageEvent{{withoutDetail, withDetail}, {withDetail, withoutDetail}} {
+		reconciled := Reconcile(events)
+		if len(reconciled) != 1 || reconciled[0].CacheCreation5mTokens != 3 || reconciled[0].CacheCreation1hTokens != 5 {
+			t.Fatalf("Reconcile() 丢失 cache duration 明细: %+v", reconciled)
 		}
 	}
 }
