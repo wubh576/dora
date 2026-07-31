@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,8 +17,11 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/httpapi"
+	"github.com/wubh576/dora/backend/internal/scan"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
+
+const usageScanInterval = 5 * time.Minute
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -26,8 +31,8 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) == 0 || args[0] != "serve" {
-		return errors.New("用法: dora serve [--addr 127.0.0.1:8080] [--db 数据库路径]")
+	if len(args) == 0 {
+		return errors.New("用法: dora <serve|scan> [选项]")
 	}
 
 	defaultDBPath, err := databasePath()
@@ -35,10 +40,23 @@ func run(args []string) error {
 		return err
 	}
 
+	switch args[0] {
+	case "serve":
+		return serve(args[1:], defaultDBPath)
+	case "scan":
+		return scanUsage(args[1:], defaultDBPath)
+	default:
+		return fmt.Errorf("未知命令 %q；用法: dora <serve|scan> [选项]", args[0])
+	}
+}
+
+func serve(args []string, defaultDBPath string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := flags.String("addr", "127.0.0.1:8080", "HTTP 监听地址")
 	dbPath := flags.String("db", defaultDBPath, "SQLite 数据库路径")
-	if err := flags.Parse(args[1:]); err != nil {
+	var codexHomes stringListFlag
+	flags.Var(&codexHomes, "codex-home", "Codex 数据目录，可重复指定")
+	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if err := validateLoopbackAddress(*addr); err != nil {
@@ -54,16 +72,28 @@ func run(args []string) error {
 	}
 	defer store.Close()
 
+	usageScanner := scan.New(store, codexHomes)
+	controlToken, err := newControlToken()
+	if err != nil {
+		return err
+	}
+
 	initializedAt, err := store.InitializedAt(ctx)
 	if err != nil {
 		return fmt.Errorf("读取 Dora 初始化状态: %w", err)
 	}
 
 	server := &http.Server{
-		Addr:              *addr,
-		Handler:           httpapi.NewHandler(store),
+		Addr: *addr,
+		Handler: httpapi.NewHandler(store, httpapi.Options{
+			Scanner:        usageScanner,
+			ControlToken:   controlToken,
+			AllowedOrigins: []string{"http://" + *addr, "http://127.0.0.1:5173"},
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	go runUsageScanLoop(ctx, usageScanner, usageScanInterval)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -85,6 +115,94 @@ func run(args []string) error {
 		}
 		return nil
 	}
+}
+
+func scanUsage(args []string, defaultDBPath string) error {
+	flags := flag.NewFlagSet("scan", flag.ContinueOnError)
+	dbPath := flags.String("db", defaultDBPath, "SQLite 数据库路径")
+	full := flags.Bool("full", false, "强制执行全量扫描")
+	var codexHomes stringListFlag
+	flags.Var(&codexHomes, "codex-home", "Codex 数据目录，可重复指定")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	store, err := dorasqlite.Open(ctx, *dbPath)
+	if err != nil {
+		return fmt.Errorf("初始化 SQLite: %w", err)
+	}
+	defer store.Close()
+
+	report, err := scan.New(store, codexHomes).Scan(ctx, *full)
+	if err != nil {
+		return fmt.Errorf("扫描 Codex 本地用量: %w", err)
+	}
+	fmt.Printf(
+		"Codex 扫描完成：模式 %s，文件 %d，新增解析事件 %d，去重后事件 %d\n",
+		report.Mode,
+		report.FilesSeen,
+		report.EventsSeen,
+		report.EventsStored,
+	)
+	for _, warning := range report.Warnings {
+		fmt.Printf("扫描警告：%s\n", warning)
+	}
+	return nil
+}
+
+type usageScanRunner interface {
+	Scan(context.Context, bool) (scan.Report, error)
+}
+
+func runUsageScanLoop(ctx context.Context, scanner usageScanRunner, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		report, err := scanner.Scan(ctx, false)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("Codex 用量自动扫描失败，请运行 dora scan 查看详情")
+			}
+		} else {
+			log.Printf(
+				"Codex 用量扫描完成: mode=%s files=%d events=%d stored=%d",
+				report.Mode,
+				report.FilesSeen,
+				report.EventsSeen,
+				report.EventsStored,
+			)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+type stringListFlag []string
+
+func (values *stringListFlag) String() string {
+	return fmt.Sprint([]string(*values))
+}
+
+func (values *stringListFlag) Set(value string) error {
+	if value == "" {
+		return errors.New("Codex home 不能为空")
+	}
+	*values = append(*values, value)
+	return nil
+}
+
+func newControlToken() (string, error) {
+	var value [32]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("生成 control token: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
 }
 
 func databasePath() (string, error) {

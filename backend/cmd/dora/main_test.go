@@ -1,6 +1,14 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/wubh576/dora/backend/internal/scan"
+)
 
 func TestValidateLoopbackAddress(t *testing.T) {
 	tests := []struct {
@@ -24,4 +32,54 @@ func TestValidateLoopbackAddress(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunManualScanWithConfiguredHome(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dora.db")
+	if err := run([]string{
+		"scan",
+		"--db", path,
+		"--codex-home", t.TempDir(),
+	}); err != nil {
+		t.Fatalf("run(scan) 失败: %v", err)
+	}
+}
+
+func TestUsageScanLoopRunsImmediatelyAndOnInterval(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := &fakeUsageScanner{called: make(chan struct{}, 3)}
+	done := make(chan struct{})
+	go func() {
+		runUsageScanLoop(ctx, runner, 5*time.Millisecond)
+		close(done)
+	}()
+
+	for index := 0; index < 2; index++ {
+		select {
+		case <-runner.called:
+		case <-time.After(time.Second):
+			t.Fatal("等待自动扫描超时")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("自动扫描循环未停止")
+	}
+}
+
+type fakeUsageScanner struct {
+	mu     sync.Mutex
+	count  int
+	called chan struct{}
+}
+
+func (f *fakeUsageScanner) Scan(context.Context, bool) (scan.Report, error) {
+	f.mu.Lock()
+	f.count++
+	f.mu.Unlock()
+	f.called <- struct{}{}
+	return scan.Report{Mode: "incremental"}, nil
 }

@@ -1,4 +1,4 @@
-.PHONY: install dev backend frontend test build verify
+.PHONY: install dev backend frontend scan test build verify
 
 install:
 	cd backend && go mod download
@@ -12,6 +12,9 @@ backend:
 
 frontend:
 	cd frontend && npm run dev
+
+scan:
+	cd backend && go run ./cmd/dora scan
 
 test:
 	cd backend && go test ./...

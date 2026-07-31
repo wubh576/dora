@@ -2,9 +2,14 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/wubh576/dora/backend/internal/domain"
 )
 
 func TestOpenInitializesAndPersistsState(t *testing.T) {
@@ -88,5 +93,138 @@ func TestOpenPreservesExistingDirectoryPermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
 		t.Fatalf("既有目录权限被修改为 %o，期望保持 755", got)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar, err := os.Stat(filepath.Join(dir, "dora.db") + suffix)
+		if err != nil {
+			t.Fatalf("读取 SQLite sidecar %s 失败: %v", suffix, err)
+		}
+		if got := sidecar.Mode().Perm(); got != 0o600 {
+			t.Fatalf("SQLite sidecar %s 权限 = %o，期望 600", suffix, got)
+		}
+	}
+}
+
+func TestRepositoryRejectsInvalidUsageAndPreservesActiveGeneration(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("Open() 失败: %v", err)
+	}
+	defer store.Close()
+
+	valid := domain.UsageEvent{
+		Source:      domain.CodexSource,
+		DedupKey:    "valid",
+		OccurredAt:  time.Now().UTC(),
+		Model:       "gpt",
+		Project:     "dora",
+		InputTokens: 3,
+		TotalTokens: 3,
+	}
+	if err := store.BeginUsageScan(ctx, "valid-run", "full", time.Now()); err != nil {
+		t.Fatalf("BeginUsageScan() 失败: %v", err)
+	}
+	if err := store.CompleteUsageScan(ctx, "valid-run", time.Now(), []domain.UsageEvent{valid}, nil, 0, 1, ""); err != nil {
+		t.Fatalf("CompleteUsageScan() 有效事件失败: %v", err)
+	}
+
+	invalid := valid
+	invalid.DedupKey = "invalid"
+	invalid.InputTokens = -1
+	if err := store.BeginUsageScan(ctx, "invalid-run", "full", time.Now()); err != nil {
+		t.Fatalf("BeginUsageScan() 失败: %v", err)
+	}
+	if err := store.CompleteUsageScan(ctx, "invalid-run", time.Now(), []domain.UsageEvent{invalid}, nil, 0, 1, ""); err == nil {
+		t.Fatal("repository 接受了负 token")
+	}
+	events, err := store.LoadUsageEvents(ctx, domain.CodexSource)
+	if err != nil {
+		t.Fatalf("LoadUsageEvents() 失败: %v", err)
+	}
+	if len(events) != 1 || events[0].DedupKey != "valid" {
+		t.Fatalf("staging 失败替换了 active generation: %+v", events)
+	}
+}
+
+func TestWALAllowsReadDuringWriteTransaction(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("Open() 失败: %v", err)
+	}
+	defer store.Close()
+
+	writeStarted := make(chan struct{})
+	releaseWrite := make(chan struct{})
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- store.withImmediateTransaction(ctx, func(_ *sql.Conn) error {
+			close(writeStarted)
+			<-releaseWrite
+			return nil
+		})
+	}()
+	<-writeStarted
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := store.InitializedAt(ctx)
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("写事务期间读取失败: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("读取被写事务阻塞")
+	}
+	close(releaseWrite)
+	if err := <-writeDone; err != nil {
+		t.Fatalf("写事务失败: %v", err)
+	}
+}
+
+func TestOpenMigratesVersionOneDatabaseWithoutResettingState(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dora.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("创建 v1 数据库失败: %v", err)
+	}
+	expected := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, statement := range []string{
+		`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at_ms INTEGER NOT NULL)`,
+		`CREATE TABLE dora_state (id INTEGER PRIMARY KEY CHECK (id = 1), initialized_at_ms INTEGER NOT NULL)`,
+		`INSERT INTO schema_migrations (version, applied_at_ms) VALUES (1, 1)`,
+		`INSERT INTO dora_state (id, initialized_at_ms) VALUES (1, ` + fmt.Sprint(expected.UnixMilli()) + `)`,
+	} {
+		if _, err := legacy.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("准备 v1 数据库失败: %v", err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("关闭 v1 数据库失败: %v", err)
+	}
+
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("升级 v1 数据库失败: %v", err)
+	}
+	defer store.Close()
+	actual, err := store.InitializedAt(ctx)
+	if err != nil {
+		t.Fatalf("读取升级后的初始化时间失败: %v", err)
+	}
+	if !actual.Equal(expected) {
+		t.Fatalf("升级重置初始化时间: actual=%s expected=%s", actual, expected)
+	}
+	var migrationCount int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
+		t.Fatalf("读取升级 migration 失败: %v", err)
+	}
+	if migrationCount != 2 {
+		t.Fatalf("migration 数 = %d，期望 2", migrationCount)
 	}
 }

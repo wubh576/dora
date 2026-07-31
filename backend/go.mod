@@ -2,7 +2,10 @@ module github.com/wubh576/dora/backend
 
 go 1.20
 
-require modernc.org/sqlite v1.29.10
+require (
+	github.com/klauspost/compress v1.17.11
+	modernc.org/sqlite v1.29.10
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
