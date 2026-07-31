@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { TimelinePoint } from "./api";
+import { formatNumber, formatTokenCompact } from "./format";
 
 const DISPLAY_WEEKS = 53;
 const DAYS_PER_WEEK = 7;
@@ -46,7 +47,12 @@ export function ActivityHeatmap({ startDate, endDate, days }: ActivityHeatmapPro
         <div className="activity-stats" aria-label="热力图统计">
           <div>
             <span>累计 Token</span>
-            <strong>{formatCompact(totalTokens)}</strong>
+            <strong
+              title={`${formatNumber(totalTokens)} token`}
+              aria-label={`${formatNumber(totalTokens)} token`}
+            >
+              {formatTokenCompact(totalTokens)}
+            </strong>
           </div>
           <div>
             <span>活跃天数</span>
@@ -211,15 +217,4 @@ function dateKey(value: Date) {
 function formatChineseDate(value: string) {
   const date = parseDate(value);
   return `${date.getFullYear()} 年 ${date.getMonth() + 1} 月 ${date.getDate()} 日`;
-}
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat("zh-CN").format(value);
-}
-
-function formatCompact(value: number) {
-  return new Intl.NumberFormat("zh-CN", {
-    notation: value >= 10_000 ? "compact" : "standard",
-    maximumFractionDigits: 1,
-  }).format(value);
 }

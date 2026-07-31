@@ -11,6 +11,7 @@ import (
 
 	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
+	"github.com/wubh576/dora/backend/internal/settings"
 )
 
 func TestValidateLoopbackAddress(t *testing.T) {
@@ -69,8 +70,13 @@ func TestRunManualScanReportsInvalidFilePath(t *testing.T) {
 	}
 }
 
-func TestQuotaCommandRequiresConsent(t *testing.T) {
+func TestQuotaCommandHonorsDisabledConsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "dora.db")
+	if err := settings.New(filepath.Join(filepath.Dir(path), "settings.json")).Save(
+		settings.Values{CodexQuotaConsent: false},
+	); err != nil {
+		t.Fatalf("保存关闭 consent 失败: %v", err)
+	}
 	err := run([]string{
 		"quota",
 		"refresh",

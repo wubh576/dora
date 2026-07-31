@@ -14,6 +14,10 @@ type Values struct {
 	CodexQuotaConsent bool `json:"codexQuotaConsent"`
 }
 
+func defaultValues() Values {
+	return Values{CodexQuotaConsent: true}
+}
+
 type Store struct {
 	path string
 	mu   sync.Mutex
@@ -74,14 +78,14 @@ func (s *Store) Save(values Values) error {
 func (s *Store) load() (Values, error) {
 	file, err := os.Open(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Values{}, nil
+		return defaultValues(), nil
 	}
 	if err != nil {
 		return Values{}, fmt.Errorf("打开设置: %w", err)
 	}
 	defer file.Close()
 
-	var values Values
+	values := defaultValues()
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&values); err != nil {

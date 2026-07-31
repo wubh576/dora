@@ -453,8 +453,8 @@ func TestQuotaConsentRefreshAndReadFlow(t *testing.T) {
 	if err := json.NewDecoder(settingsRecorder.Body).Decode(&initialSettings); err != nil {
 		t.Fatalf("解析 settings 失败: %v", err)
 	}
-	if initialSettings.CodexQuotaConsent || provider.callCount() != 0 {
-		t.Fatalf("默认设置不安全: settings=%+v calls=%d", initialSettings, provider.callCount())
+	if !initialSettings.CodexQuotaConsent || provider.callCount() != 0 {
+		t.Fatalf("quota 默认设置错误: settings=%+v calls=%d", initialSettings, provider.callCount())
 	}
 
 	quotaRecorder := httptest.NewRecorder()
@@ -463,8 +463,8 @@ func TestQuotaConsentRefreshAndReadFlow(t *testing.T) {
 	if err := json.NewDecoder(quotaRecorder.Body).Decode(&initialQuota); err != nil {
 		t.Fatalf("解析初始 quota 失败: %v", err)
 	}
-	if initialQuota.Enabled || initialQuota.Items == nil || provider.callCount() != 0 {
-		t.Fatalf("GET quotas 绕过 consent: %+v calls=%d", initialQuota, provider.callCount())
+	if !initialQuota.Enabled || initialQuota.Items == nil || provider.callCount() != 0 {
+		t.Fatalf("GET quotas 未反映默认开启状态: %+v calls=%d", initialQuota, provider.callCount())
 	}
 
 	forbidden := httptest.NewRecorder()

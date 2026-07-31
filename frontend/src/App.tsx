@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ActivityHeatmap } from "./ActivityHeatmap";
+import { formatNumber, formatTokenCompact } from "./format";
 import {
   type BreakdownItem,
   type DashboardData,
@@ -362,7 +363,7 @@ function DashboardContent({
       <section className="summary-grid">
         <article className="hero-metric panel">
           <p className="panel-label">Token 总量 · {summary.range}</p>
-          <strong>{formatCompact(summary.totalTokens)}</strong>
+          <strong>{formatTokenCompact(summary.totalTokens)}</strong>
           <span>{formatNumber(summary.totalTokens)} 个精确 token</span>
           <div className="hero-meta">
             <div>
@@ -426,7 +427,7 @@ function Metric({ label, value, color }: { label: string; value: number; color: 
     <div>
       <span className={`legend-dot ${color}`} aria-hidden="true" />
       <p>{label}</p>
-      <strong>{formatCompact(value)}</strong>
+      <strong>{formatTokenCompact(value)}</strong>
       <small>{formatNumber(value)}</small>
     </div>
   );
@@ -441,7 +442,7 @@ function TimelineChart({ points }: { points: TimelinePoint[] }) {
           const height = Math.max(10, Math.round((point.totalTokens / max) * 190));
           return (
             <div className="chart-column" key={point.date} title={`${point.date}: ${formatNumber(point.totalTokens)}`}>
-              <div className="bar-value">{formatCompact(point.totalTokens)}</div>
+              <div className="bar-value">{formatTokenCompact(point.totalTokens)}</div>
               <div className="stacked-bar" style={{ height }}>
                 <BarSegment value={point.reasoningOutputTokens} total={point.totalTokens} color="reasoning" />
                 <BarSegment value={point.outputTokens} total={point.totalTokens} color="output" />
@@ -629,7 +630,12 @@ function BreakdownCard({ title, eyebrow, items }: { title: string; eyebrow: stri
           <div key={item.name}>
             <div className="ranking-label">
               <span title={item.name}>{item.name}</span>
-              <b>{formatCompact(item.totalTokens)}</b>
+              <b
+                title={`${formatNumber(item.totalTokens)} token`}
+                aria-label={`${formatNumber(item.totalTokens)} token`}
+              >
+                {formatTokenCompact(item.totalTokens)}
+              </b>
             </div>
             <div className="ranking-track">
               <span style={{ width: `${Math.max(3, (item.totalTokens / maximum) * 100)}%` }} />
@@ -826,17 +832,6 @@ function humanQuotaStatus(status: string) {
     not_configured: "需要登录",
   };
   return labels[status] ?? status;
-}
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat("zh-CN").format(value);
-}
-
-function formatCompact(value: number) {
-  return new Intl.NumberFormat("zh-CN", {
-    notation: value >= 10_000 ? "compact" : "standard",
-    maximumFractionDigits: 1,
-  }).format(value);
 }
 
 function formatPercent(value: number) {

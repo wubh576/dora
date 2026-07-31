@@ -66,9 +66,25 @@ func (f *fakeProvider) callCount() int {
 	return f.calls
 }
 
-func TestRefreshRequiresConsentAndCachesAutomaticCalls(t *testing.T) {
+func TestRefreshUsesEnabledDefault(t *testing.T) {
+	store, _, service, provider, _ := newQuotaService(t)
+	defer store.Close()
+
+	view, err := service.Refresh(context.Background(), false)
+	if err != nil {
+		t.Fatalf("默认 Refresh() 失败: %v", err)
+	}
+	if !view.Enabled || view.Status != "ready" || provider.callCount() != 1 {
+		t.Fatalf("quota 默认未开启: view=%+v calls=%d", view, provider.callCount())
+	}
+}
+
+func TestRefreshHonorsDisabledConsentAndCachesAutomaticCalls(t *testing.T) {
 	store, settingsStore, service, provider, now := newQuotaService(t)
 	defer store.Close()
+	if err := settingsStore.Save(settings.Values{CodexQuotaConsent: false}); err != nil {
+		t.Fatalf("保存关闭 consent 失败: %v", err)
+	}
 
 	view, err := service.Refresh(context.Background(), false)
 	if err != nil {

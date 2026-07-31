@@ -750,7 +750,7 @@ $CODEX_HOME/auth.json
 
 Codex quota 是第一期唯一允许的 provider 网络访问：
 
-- 设置页明确展示并要求用户开启“读取 Codex 订阅配额”。
+- “读取 Codex 订阅配额”默认开启，设置页必须明确展示当前状态，并允许用户随时关闭；用户关闭后必须持久化其选择。
 - access token 只保存在函数局部内存。
 - 不写 SQLite、不写 settings、不写日志。
 - URL hard-code 到允许的官方域名，不能被环境变量改写。
@@ -850,7 +850,7 @@ input / 1M × input price
 #### Dashboard
 
 - 1D / 7D / 30D / ALL。
-- 总 token。
+- 总 token；紧凑显示统一使用英文 `K`、`M`、`B`、`T` 数量级，并保留可核对的精确值。
 - 普通输入、cache read、cache creation、普通输出、reasoning。
 - cache 命中率：
 

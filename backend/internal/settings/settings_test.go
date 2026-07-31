@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestStoreDefaultsPersistsAndUsesPrivatePermissions(t *testing.T) {
+func TestStoreDefaultsAndPersistsWithPrivatePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Dora", "settings.json")
 	store := New(path)
 
@@ -14,18 +14,18 @@ func TestStoreDefaultsPersistsAndUsesPrivatePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() 默认设置失败: %v", err)
 	}
-	if initial.CodexQuotaConsent {
-		t.Fatal("quota consent 默认应关闭")
+	if !initial.CodexQuotaConsent {
+		t.Fatal("quota consent 默认应开启")
 	}
-	if err := store.Save(Values{CodexQuotaConsent: true}); err != nil {
+	if err := store.Save(Values{CodexQuotaConsent: false}); err != nil {
 		t.Fatalf("Save() 失败: %v", err)
 	}
 	saved, err := store.Load()
 	if err != nil {
 		t.Fatalf("Load() 已保存设置失败: %v", err)
 	}
-	if !saved.CodexQuotaConsent {
-		t.Fatal("quota consent 未持久化")
+	if saved.CodexQuotaConsent {
+		t.Fatal("用户关闭 quota consent 后未持久化")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -33,6 +33,20 @@ func TestStoreDefaultsPersistsAndUsesPrivatePermissions(t *testing.T) {
 	}
 	if permission := info.Mode().Perm(); permission != 0o600 {
 		t.Fatalf("设置权限 = %o，期望 600", permission)
+	}
+}
+
+func TestStoreUsesDefaultForMissingConsentField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("写入旧设置 fixture 失败: %v", err)
+	}
+	values, err := New(path).Load()
+	if err != nil {
+		t.Fatalf("加载旧设置失败: %v", err)
+	}
+	if !values.CodexQuotaConsent {
+		t.Fatal("缺少 consent 字段时应使用开启默认值")
 	}
 }
 
