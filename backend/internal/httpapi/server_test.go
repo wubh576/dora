@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -181,6 +182,13 @@ func TestDiagnosticsDoesNotExposeRawScanError(t *testing.T) {
 	if _, err := usageScanner.Scan(ctx, false); err == nil {
 		t.Fatal("无效 fixture 扫描未失败")
 	}
+	state, err := store.UsageProviderState(ctx, domain.CodexSource)
+	if err != nil {
+		t.Fatalf("读取原始扫描状态失败: %v", err)
+	}
+	if !strings.Contains(state.LastError, session) {
+		t.Fatalf("原始扫描状态缺少目标文件路径: %q", state.LastError)
+	}
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/diagnostics", nil)
 	response := httptest.NewRecorder()
@@ -337,6 +345,41 @@ func TestSnapshotAndDiagnosticsUsePersistedUsage(t *testing.T) {
 	}
 	if diagnostics.Usage.StoredEvents != 3 || diagnostics.Usage.ParserVersion != codex.ParserVersion {
 		t.Fatalf("diagnostics usage 错误: %+v", diagnostics)
+	}
+}
+
+func TestFailedScanKeepsOldSnapshotStale(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("初始化测试数据库失败: %v", err)
+	}
+	defer store.Close()
+
+	successAt := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	seedAnalyticsUsage(t, store, successAt.Add(time.Minute))
+	failureAt := successAt.Add(11 * time.Minute)
+	if err := store.BeginUsageScan(ctx, "failed-run", "incremental", failureAt.Add(-time.Second)); err != nil {
+		t.Fatalf("创建失败扫描记录失败: %v", err)
+	}
+	if err := store.FailUsageScan(ctx, "failed-run", failureAt, 2, 1, errors.New("fixture failure")); err != nil {
+		t.Fatalf("记录失败扫描失败: %v", err)
+	}
+
+	handler := NewHandler(store, Options{Location: time.UTC, Now: func() time.Time { return failureAt }})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/snapshot", nil))
+	var snapshot snapshotResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("解析失败后的 snapshot 失败: %v", err)
+	}
+	if !snapshot.Usage.Stale ||
+		snapshot.Usage.LastScanAt == nil ||
+		*snapshot.Usage.LastScanAt != successAt.Format(time.RFC3339Nano) {
+		t.Fatalf("失败扫描掩盖了旧数据新鲜度: %+v", snapshot.Usage)
+	}
+	if len(snapshot.Errors) == 0 {
+		t.Fatalf("失败后的 snapshot 未返回错误状态: %+v", snapshot)
 	}
 }
 

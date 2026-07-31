@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +45,27 @@ func TestRunManualScanWithConfiguredHome(t *testing.T) {
 		"--codex-home", t.TempDir(),
 	}); err != nil {
 		t.Fatalf("run(scan) 失败: %v", err)
+	}
+}
+
+func TestRunManualScanReportsInvalidFilePath(t *testing.T) {
+	home := t.TempDir()
+	sessionPath := filepath.Join(home, "sessions", "broken.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatalf("创建 session 目录失败: %v", err)
+	}
+	content := `{"timestamp":"2026-01-02T03:04:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":-1}}}}` + "\n"
+	if err := os.WriteFile(sessionPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("写入无效 session 失败: %v", err)
+	}
+
+	err := run([]string{
+		"scan",
+		"--db", filepath.Join(t.TempDir(), "dora.db"),
+		"--codex-home", home,
+	})
+	if err == nil || !strings.Contains(err.Error(), sessionPath) {
+		t.Fatalf("scan 错误未包含目标文件路径: %v", err)
 	}
 }
 

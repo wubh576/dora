@@ -151,18 +151,35 @@ func MatchesAppendPrefix(file File, previous FileMetadata) (bool, error) {
 	if file.Compressed || current.Identity != previous.Identity || current.Size <= previous.Size {
 		return false, nil
 	}
+	return MatchesSnapshot(file, previous)
+}
 
-	headLength := minInt64(fingerprintBytes, previous.Size)
+func MatchesSnapshot(file File, snapshot FileMetadata) (bool, error) {
+	current, err := Inspect(file)
+	if err != nil {
+		return false, err
+	}
+	if current.Identity != snapshot.Identity || current.Size < snapshot.Size {
+		return false, nil
+	}
+	if file.Compressed {
+		return current.Size == snapshot.Size &&
+			current.MtimeNS == snapshot.MtimeNS &&
+			current.HeadHash == snapshot.HeadHash &&
+			current.TailHash == snapshot.TailHash, nil
+	}
+
+	headLength := minInt64(fingerprintBytes, snapshot.Size)
 	headHash, err := hashRange(file.Path, 0, headLength)
 	if err != nil {
 		return false, err
 	}
-	tailLength := minInt64(fingerprintBytes, previous.Size)
-	tailHash, err := hashRange(file.Path, previous.Size-tailLength, tailLength)
+	tailLength := minInt64(fingerprintBytes, snapshot.Size)
+	tailHash, err := hashRange(file.Path, snapshot.Size-tailLength, tailLength)
 	if err != nil {
 		return false, err
 	}
-	return headHash == previous.HeadHash && tailHash == previous.TailHash, nil
+	return headHash == snapshot.HeadHash && tailHash == snapshot.TailHash, nil
 }
 
 func supportedFile(name string) (compressed bool, supported bool) {

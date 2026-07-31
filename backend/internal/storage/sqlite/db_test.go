@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -144,6 +145,146 @@ func TestRepositoryRejectsInvalidUsageAndPreservesActiveGeneration(t *testing.T)
 	}
 	if len(events) != 1 || events[0].DedupKey != "valid" {
 		t.Fatalf("staging 失败替换了 active generation: %+v", events)
+	}
+}
+
+func TestFailedGenerationSwapCleansStagingAndPreservesActiveData(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("Open() 失败: %v", err)
+	}
+	defer store.Close()
+
+	active := domain.UsageEvent{
+		Source:      domain.CodexSource,
+		DedupKey:    "active",
+		OccurredAt:  time.Now().UTC(),
+		Model:       "gpt",
+		Project:     "dora",
+		InputTokens: 3,
+		TotalTokens: 3,
+	}
+	if err := store.BeginUsageScan(ctx, "active-run", "full", time.Now()); err != nil {
+		t.Fatalf("BeginUsageScan(active) 失败: %v", err)
+	}
+	if err := store.CompleteUsageScan(ctx, "active-run", time.Now(), []domain.UsageEvent{active}, nil, 1, 1, ""); err != nil {
+		t.Fatalf("CompleteUsageScan(active) 失败: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_generation_swap
+		BEFORE DELETE ON usage_events
+		BEGIN
+			SELECT RAISE(ABORT, 'fixture swap failure');
+		END
+	`); err != nil {
+		t.Fatalf("创建 swap failure fixture 失败: %v", err)
+	}
+
+	replacement := active
+	replacement.DedupKey = "replacement"
+	replacement.InputTokens = 7
+	replacement.TotalTokens = 7
+	if err := store.BeginUsageScan(ctx, "failed-swap", "full", time.Now()); err != nil {
+		t.Fatalf("BeginUsageScan(failed) 失败: %v", err)
+	}
+	swapErr := store.CompleteUsageScan(
+		ctx,
+		"failed-swap",
+		time.Now(),
+		[]domain.UsageEvent{replacement},
+		nil,
+		1,
+		1,
+		"",
+	)
+	if swapErr == nil {
+		t.Fatal("generation swap fixture 未失败")
+	}
+	var stagedBeforeCleanup int
+	if err := store.db.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM usage_events_staging WHERE run_id = 'failed-swap'",
+	).Scan(&stagedBeforeCleanup); err != nil {
+		t.Fatalf("读取 staging 失败: %v", err)
+	}
+	if stagedBeforeCleanup != 1 {
+		t.Fatalf("swap 失败前 staging 数 = %d，期望 1", stagedBeforeCleanup)
+	}
+	if err := store.FailUsageScan(ctx, "failed-swap", time.Now(), 1, 1, swapErr); err != nil {
+		t.Fatalf("FailUsageScan() 失败: %v", err)
+	}
+	var stagedAfterCleanup int
+	if err := store.db.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM usage_events_staging WHERE run_id = 'failed-swap'",
+	).Scan(&stagedAfterCleanup); err != nil {
+		t.Fatalf("读取清理后 staging 失败: %v", err)
+	}
+	if stagedAfterCleanup != 0 {
+		t.Fatalf("失败 scan 遗留 staging: %d", stagedAfterCleanup)
+	}
+	events, err := store.LoadUsageEvents(ctx, domain.CodexSource)
+	if err != nil {
+		t.Fatalf("读取 active generation 失败: %v", err)
+	}
+	if len(events) != 1 || events[0].DedupKey != active.DedupKey {
+		t.Fatalf("swap 失败破坏 active generation: %+v", events)
+	}
+}
+
+func TestFailedUsageScanPreservesLastSuccessTime(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("Open() 失败: %v", err)
+	}
+	defer store.Close()
+
+	failureAt := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	if err := store.BeginUsageScan(ctx, "first-failure", "full", failureAt.Add(-time.Second)); err != nil {
+		t.Fatalf("BeginUsageScan() 首次失败记录失败: %v", err)
+	}
+	if err := store.FailUsageScan(ctx, "first-failure", failureAt, 1, 0, errors.New("fixture failure")); err != nil {
+		t.Fatalf("FailUsageScan() 首次失败记录失败: %v", err)
+	}
+	state, err := store.UsageProviderState(ctx, domain.CodexSource)
+	if err != nil {
+		t.Fatalf("UsageProviderState() 首次失败读取失败: %v", err)
+	}
+	if state.Status != "error" || state.LastScanAt != nil {
+		t.Fatalf("首次失败伪造了成功时间: %+v", state)
+	}
+
+	successAt := failureAt.Add(time.Minute)
+	if err := store.BeginUsageScan(ctx, "success", "full", successAt.Add(-time.Second)); err != nil {
+		t.Fatalf("BeginUsageScan() 成功记录失败: %v", err)
+	}
+	if err := store.CompleteUsageScan(ctx, "success", successAt, nil, nil, 1, 0, ""); err != nil {
+		t.Fatalf("CompleteUsageScan() 失败: %v", err)
+	}
+	laterFailureAt := successAt.Add(20 * time.Minute)
+	if err := store.BeginUsageScan(ctx, "later-failure", "incremental", laterFailureAt.Add(-time.Second)); err != nil {
+		t.Fatalf("BeginUsageScan() 后续失败记录失败: %v", err)
+	}
+	if err := store.FailUsageScan(ctx, "later-failure", laterFailureAt, 2, 1, errors.New("later fixture failure")); err != nil {
+		t.Fatalf("FailUsageScan() 后续失败记录失败: %v", err)
+	}
+	// 模拟旧版本已把失败时间写入 provider_state，读取仍应以成功 run 为准。
+	if _, err := store.db.ExecContext(
+		ctx,
+		"UPDATE provider_state SET last_usage_at_ms = ? WHERE provider = ?",
+		laterFailureAt.UnixMilli(),
+		domain.CodexSource,
+	); err != nil {
+		t.Fatalf("写入旧版本状态 fixture 失败: %v", err)
+	}
+	state, err = store.UsageProviderState(ctx, domain.CodexSource)
+	if err != nil {
+		t.Fatalf("UsageProviderState() 后续失败读取失败: %v", err)
+	}
+	if state.Status != "error" || state.LastScanAt == nil || !state.LastScanAt.Equal(successAt) {
+		t.Fatalf("后续失败覆盖了最后成功时间: %+v", state)
 	}
 }
 

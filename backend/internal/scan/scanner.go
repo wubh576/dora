@@ -36,6 +36,8 @@ type Scanner struct {
 	now    func() time.Time
 	// beforeRun 仅用于让并发测试稳定地控制扫描起点。
 	beforeRun func()
+	// beforeParse 仅用于测试扫描计划与文件读取之间的变化。
+	beforeParse func(codex.File)
 
 	mu      sync.Mutex
 	current *scanCall
@@ -160,9 +162,25 @@ func (s *Scanner) scan(ctx context.Context, forceFull bool) (report Report, retu
 
 	warnings := make([]string, 0)
 	for _, task := range tasks {
-		result, err := s.parser.ParseFile(ctx, task.file, task.offset, task.state)
+		if s.beforeParse != nil {
+			s.beforeParse(task.file)
+		}
+		result, err := s.parser.ParseFileSnapshot(
+			ctx,
+			task.file,
+			task.offset,
+			task.metadata.Size,
+			task.state,
+		)
 		if err != nil {
-			return report, err
+			return report, fmt.Errorf("解析 Codex 文件 %q: %w", task.file.Path, err)
+		}
+		valid, err := codex.MatchesSnapshot(task.file, task.metadata)
+		if err != nil {
+			return report, fmt.Errorf("校验 Codex 文件快照 %q: %w", task.file.Path, err)
+		}
+		if !valid {
+			return report, fmt.Errorf("Codex 文件 %q 在扫描期间发生非追加变化", task.file.Path)
 		}
 		report.EventsSeen += len(result.Events)
 		events = append(events, result.Events...)

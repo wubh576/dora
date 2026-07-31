@@ -3,6 +3,7 @@ package codex
 import (
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,168 @@ func TestParseFileFallsBackToTotalUsage(t *testing.T) {
 	event := result.Events[0]
 	if event.InputTokens != 10 || event.OutputTokens != 3 || event.CachedInputTokens != 2 || event.ReasoningOutputTokens != 1 || event.TotalTokens != 16 {
 		t.Fatalf("fallback 归一化错误: %+v", event)
+	}
+}
+
+func TestParseFileTotalOnlyUsesCumulativeDelta(t *testing.T) {
+	path := writeJSONL(t, `
+{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"total-only","cwd":"/tmp/project"}}
+{"timestamp":"2026-01-02T03:04:06Z","type":"turn_context","payload":{"model":"gpt-test"}}
+{"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}}
+{"timestamp":"2026-01-02T03:04:08Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16,"output_tokens":4,"total_tokens":20}}}}
+{"timestamp":"2026-01-02T03:04:09Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":24,"output_tokens":6,"total_tokens":30}}}}
+{"timestamp":"2026-01-02T03:04:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":24,"output_tokens":6,"total_tokens":30}}}}
+`)
+	result, err := NewParser().ParseFile(context.Background(), File{Path: path, HomeKey: "home"}, 0, ParserState{})
+	if err != nil {
+		t.Fatalf("ParseFile() 失败: %v", err)
+	}
+	if len(result.Events) != 3 {
+		t.Fatalf("累计快照事件数 = %d，期望 3", len(result.Events))
+	}
+	var total int64
+	for _, event := range result.Events {
+		total += event.TotalTokens
+		if event.TotalTokens != 10 {
+			t.Fatalf("累计快照增量错误: %+v", event)
+		}
+	}
+	if total != 30 {
+		t.Fatalf("累计快照被重复相加: total=%d，期望 30", total)
+	}
+}
+
+func TestParseFileTotalOnlyPersistsIncrementalBaseline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "incremental.jsonl")
+	firstContent := strings.TrimPrefix(`
+{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"total-incremental"}}
+{"timestamp":"2026-01-02T03:04:06Z","type":"turn_context","payload":{"model":"gpt-test"}}
+{"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}}
+`, "\n")
+	if err := os.WriteFile(path, []byte(firstContent), 0o600); err != nil {
+		t.Fatalf("写入初始累计 fixture 失败: %v", err)
+	}
+	parser := NewParser()
+	first, err := parser.ParseFile(context.Background(), File{Path: path, HomeKey: "home"}, 0, ParserState{})
+	if err != nil {
+		t.Fatalf("首次 ParseFile() 失败: %v", err)
+	}
+	stateJSON, err := json.Marshal(first.State)
+	if err != nil {
+		t.Fatalf("编码 parser state 失败: %v", err)
+	}
+	var persisted ParserState
+	if err := json.Unmarshal(stateJSON, &persisted); err != nil {
+		t.Fatalf("解码 parser state 失败: %v", err)
+	}
+	appendFileContent := `{"timestamp":"2026-01-02T03:04:08Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16,"output_tokens":4,"total_tokens":20}}}}` + "\n"
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("打开累计 fixture 失败: %v", err)
+	}
+	if _, err := file.WriteString(appendFileContent); err != nil {
+		file.Close()
+		t.Fatalf("追加累计 fixture 失败: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("关闭累计 fixture 失败: %v", err)
+	}
+
+	second, err := parser.ParseFile(
+		context.Background(),
+		File{Path: path, HomeKey: "home"},
+		first.CompleteLineEnd,
+		persisted,
+	)
+	if err != nil {
+		t.Fatalf("增量 ParseFile() 失败: %v", err)
+	}
+	if len(second.Events) != 1 || second.Events[0].TotalTokens != 10 {
+		t.Fatalf("增量累计基线未保留: %+v", second.Events)
+	}
+}
+
+func TestParseFileTotalOnlyPreservesResetAndIncomparableTotal(t *testing.T) {
+	path := writeJSONL(t, `
+{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"total-reset"}}
+{"timestamp":"2026-01-02T03:04:06Z","type":"turn_context","payload":{"model":"gpt-test"}}
+{"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}}
+{"timestamp":"2026-01-02T03:04:08Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16,"output_tokens":4,"total_tokens":20}}}}
+{"timestamp":"2026-01-02T03:04:09Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}}
+{"timestamp":"2026-01-02T03:04:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":7}}}}
+`)
+	result, err := NewParser().ParseFile(context.Background(), File{Path: path, HomeKey: "home"}, 0, ParserState{})
+	if err != nil {
+		t.Fatalf("ParseFile() 失败: %v", err)
+	}
+	var total int64
+	for _, event := range result.Events {
+		total += event.TotalTokens
+	}
+	if len(result.Events) != 4 || total != 27 {
+		t.Fatalf("reset/缺失字段丢失或重复 token: events=%+v total=%d", result.Events, total)
+	}
+	last := result.Events[len(result.Events)-1]
+	if last.DetailTotal() != 0 || last.ReportedTotalTokens != 2 || last.TotalTokens != 2 {
+		t.Fatalf("不可比较明细未仅保留 total 增量: %+v", last)
+	}
+	if len(result.Warnings) != 2 {
+		t.Fatalf("reset/缺失字段未给出诊断 warning: %v", result.Warnings)
+	}
+	reconciled := Reconcile(result.Events)
+	var reconciledTotal int64
+	for _, event := range reconciled {
+		reconciledTotal += event.TotalTokens
+	}
+	if len(reconciled) != 4 || reconciledTotal != 27 {
+		t.Fatalf("reset epoch 被 dedup key 合并: events=%+v total=%d", reconciled, reconciledTotal)
+	}
+}
+
+func TestParseFileLastUsageAdvancesTotalOnlyBaseline(t *testing.T) {
+	path := writeJSONL(t, `
+{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"mixed-total"}}
+{"timestamp":"2026-01-02T03:04:06Z","type":"turn_context","payload":{"model":"gpt-test"}}
+{"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}}
+{"timestamp":"2026-01-02T03:04:08Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":4,"output_tokens":1,"total_tokens":5},"total_token_usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}}}}
+{"timestamp":"2026-01-02T03:04:09Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16,"output_tokens":4,"total_tokens":20}}}}
+`)
+	result, err := NewParser().ParseFile(context.Background(), File{Path: path, HomeKey: "home"}, 0, ParserState{})
+	if err != nil {
+		t.Fatalf("ParseFile() 失败: %v", err)
+	}
+	var total int64
+	for _, event := range result.Events {
+		total += event.TotalTokens
+	}
+	if len(result.Events) != 3 || total != 20 || result.Events[2].TotalTokens != 5 {
+		t.Fatalf("last usage 未推进累计基线: %+v", result.Events)
+	}
+}
+
+func TestParseFileLastOnlyBeforeCumulativeAvoidsDoubleCount(t *testing.T) {
+	path := writeJSONL(t, `
+{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"last-before-total"}}
+{"timestamp":"2026-01-02T03:04:06Z","type":"turn_context","payload":{"model":"gpt-test"}}
+{"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":4,"output_tokens":1,"total_tokens":5}}}}
+{"timestamp":"2026-01-02T03:04:08Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}}
+`)
+	result, err := NewParser().ParseFile(context.Background(), File{Path: path, HomeKey: "home"}, 0, ParserState{})
+	if err != nil {
+		t.Fatalf("ParseFile() 失败: %v", err)
+	}
+	var total, input, output int64
+	for _, event := range result.Events {
+		total += event.TotalTokens
+		input += event.InputTokens
+		output += event.OutputTokens
+	}
+	if len(result.Events) != 2 ||
+		total != 10 ||
+		input != 8 ||
+		output != 2 ||
+		result.Events[1].TotalTokens != 5 {
+		t.Fatalf("last-only 后累计快照重复计数: %+v", result.Events)
 	}
 }
 
@@ -183,6 +346,78 @@ func TestParseFileIgnoresIncompleteTrailingLine(t *testing.T) {
 	}
 	if result.CompleteLineEnd >= int64(len(content)) {
 		t.Fatalf("完整行 offset = %d，不能包含末尾残行", result.CompleteLineEnd)
+	}
+}
+
+func TestParseFileSnapshotDefersConcurrentAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "growing.jsonl")
+	firstLine := `{"timestamp":"2026-01-02T03:04:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":3}}}}` + "\n"
+	secondLine := `{"timestamp":"2026-01-02T03:04:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":4}}}}` + "\n"
+	if err := os.WriteFile(path, []byte(firstLine), 0o600); err != nil {
+		t.Fatalf("写入初始 snapshot fixture 失败: %v", err)
+	}
+	snapshotEnd := int64(len(firstLine))
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("打开 snapshot fixture 失败: %v", err)
+	}
+	if _, err := file.WriteString(secondLine); err != nil {
+		file.Close()
+		t.Fatalf("追加 snapshot fixture 失败: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("关闭 snapshot fixture 失败: %v", err)
+	}
+
+	parser := NewParser()
+	first, err := parser.ParseFileSnapshot(
+		context.Background(),
+		File{Path: path, HomeKey: "home"},
+		0,
+		snapshotEnd,
+		ParserState{},
+	)
+	if err != nil {
+		t.Fatalf("ParseFileSnapshot() 失败: %v", err)
+	}
+	if len(first.Events) != 1 || first.CompleteLineEnd != snapshotEnd {
+		t.Fatalf("snapshot 读取了并发追加内容: %+v", first)
+	}
+	second, err := parser.ParseFileSnapshot(
+		context.Background(),
+		File{Path: path, HomeKey: "home"},
+		first.CompleteLineEnd,
+		int64(len(firstLine)+len(secondLine)),
+		first.State,
+	)
+	if err != nil {
+		t.Fatalf("增量 ParseFileSnapshot() 失败: %v", err)
+	}
+	if len(second.Events) != 1 || second.Events[0].TotalTokens != 4 {
+		t.Fatalf("下一次 snapshot 未读取延后的 append: %+v", second)
+	}
+}
+
+func TestParseFileSnapshotRejectsTruncatedSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "truncated.jsonl")
+	content := `{"timestamp":"2026-01-02T03:04:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":3}}}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("写入 snapshot fixture 失败: %v", err)
+	}
+	snapshotEnd := int64(len(content))
+	if err := os.Truncate(path, snapshotEnd/2); err != nil {
+		t.Fatalf("截断 snapshot fixture 失败: %v", err)
+	}
+
+	_, err := NewParser().ParseFileSnapshot(
+		context.Background(),
+		File{Path: path, HomeKey: "home"},
+		0,
+		snapshotEnd,
+		ParserState{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "扫描期间变短") {
+		t.Fatalf("截断 snapshot 错误 = %v，期望明确失败", err)
 	}
 }
 

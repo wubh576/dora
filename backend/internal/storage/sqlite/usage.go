@@ -37,25 +37,32 @@ func (s *Store) UpdateUsageScanMode(ctx context.Context, runID, mode string) err
 
 func (s *Store) FailUsageScan(ctx context.Context, runID string, finishedAt time.Time, filesSeen, eventsSeen int, scanErr error) error {
 	message := scanErr.Error()
+	var result error
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE scan_runs
 		SET finished_at_ms = ?, status = 'failed', files_seen = ?, events_seen = ?, error_message = ?
 		WHERE run_id = ?
 	`, finishedAt.UTC().UnixMilli(), filesSeen, eventsSeen, message, runID); err != nil {
-		return fmt.Errorf("记录 Codex 扫描失败: %w", err)
+		result = errors.Join(result, fmt.Errorf("记录 Codex 扫描失败: %w", err))
+	}
+	if _, err := s.db.ExecContext(
+		ctx,
+		"DELETE FROM usage_events_staging WHERE run_id = ?",
+		runID,
+	); err != nil {
+		result = errors.Join(result, fmt.Errorf("清理失败扫描 staging: %w", err))
 	}
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO provider_state (
-			provider, usage_status, last_usage_at_ms, last_usage_error
-		) VALUES (?, 'error', ?, ?)
+			provider, usage_status, last_usage_error
+		) VALUES (?, 'error', ?)
 		ON CONFLICT(provider) DO UPDATE SET
 			usage_status = excluded.usage_status,
-			last_usage_at_ms = excluded.last_usage_at_ms,
 			last_usage_error = excluded.last_usage_error
-	`, domain.CodexSource, finishedAt.UTC().UnixMilli(), message); err != nil {
-		return fmt.Errorf("更新 Codex provider 状态: %w", err)
+	`, domain.CodexSource, message); err != nil {
+		result = errors.Join(result, fmt.Errorf("更新 Codex provider 状态: %w", err))
 	}
-	return nil
+	return result
 }
 
 func (s *Store) CompleteUsageScan(
@@ -350,7 +357,13 @@ func (s *Store) UsageProviderState(ctx context.Context, source string) (domain.U
 	var lastUsage sql.NullInt64
 	err := s.readDB.QueryRowContext(ctx, `
 		SELECT
-			p.usage_status, p.last_usage_at_ms, p.last_usage_error,
+			p.usage_status,
+			(
+				SELECT MAX(finished_at_ms)
+				FROM scan_runs
+				WHERE source = p.provider AND status = 'succeeded'
+			),
+			p.last_usage_error,
 			COALESCE(r.run_id, ''), COALESCE(r.mode, ''),
 			COALESCE(r.files_seen, 0), COALESCE(r.events_seen, 0),
 			(SELECT COUNT(*) FROM usage_events WHERE source = p.provider)

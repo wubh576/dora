@@ -84,6 +84,63 @@ func TestScannerFullIncrementalAndDeduplicated(t *testing.T) {
 	}
 }
 
+func TestScannerLastOnlyThenCumulativeUsesPersistedBaseline(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	sessionPath := filepath.Join(home, "sessions", "total-only.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatalf("创建 session 目录失败: %v", err)
+	}
+	initial := strings.TrimPrefix(`
+{"timestamp":"2026-01-02T03:04:05Z","type":"session_meta","payload":{"id":"total-only"}}
+{"timestamp":"2026-01-02T03:04:06Z","type":"turn_context","payload":{"model":"gpt-test"}}
+{"timestamp":"2026-01-02T03:04:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":3,"cached_input_tokens":1,"cache_write_input_tokens":1,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":5}}}}
+`, "\n")
+	if err := os.WriteFile(sessionPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("写入 total-only fixture 失败: %v", err)
+	}
+
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	defer store.Close()
+	scanner := New(store, []string{home})
+	if _, err := scanner.Scan(ctx, false); err != nil {
+		t.Fatalf("首次 total-only 扫描失败: %v", err)
+	}
+	assertStoredTokenBreakdown(t, store, 5, 1)
+
+	for index, line := range []string{
+		`{"timestamp":"2026-01-02T03:04:08Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":6,"cached_input_tokens":2,"cache_write_input_tokens":2,"output_tokens":4,"reasoning_output_tokens":2,"total_tokens":10}}}}` + "\n",
+		`{"timestamp":"2026-01-02T03:04:09Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":12,"cached_input_tokens":4,"cache_write_input_tokens":4,"output_tokens":8,"reasoning_output_tokens":4,"total_tokens":20}}}}` + "\n",
+		`{"timestamp":"2026-01-02T03:04:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":18,"cached_input_tokens":6,"cache_write_input_tokens":6,"output_tokens":12,"reasoning_output_tokens":6,"total_tokens":30}}}}` + "\n",
+	} {
+		appendFile(t, sessionPath, []byte(line))
+		report, err := scanner.Scan(ctx, false)
+		if err != nil {
+			t.Fatalf("第 %d 次 total-only 增量扫描失败: %v", index+1, err)
+		}
+		if report.Mode != "incremental" || report.EventsSeen != 1 {
+			t.Fatalf("第 %d 次 total-only 增量结果错误: %+v", index+1, report)
+		}
+		assertStoredTokenBreakdown(
+			t,
+			store,
+			int64((index+1)*10),
+			int64((index+1)*2),
+		)
+	}
+	if _, err := scanner.Scan(ctx, false); err != nil {
+		t.Fatalf("未变化 total-only 扫描失败: %v", err)
+	}
+	assertStoredTokenBreakdown(t, store, 30, 6)
+	if _, err := scanner.Scan(ctx, true); err != nil {
+		t.Fatalf("total-only 全量校验失败: %v", err)
+	}
+	assertStoredTokenBreakdown(t, store, 30, 6)
+}
+
 func TestScannerFailurePreservesPreviousGeneration(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
@@ -127,6 +184,49 @@ func TestScannerFailurePreservesPreviousGeneration(t *testing.T) {
 	}
 	if state.Status != "error" || state.LastError == "" {
 		t.Fatalf("失败状态不明确: %+v", state)
+	}
+	if !strings.Contains(state.LastError, sessionPath) {
+		t.Fatalf("失败状态缺少目标文件路径: %q", state.LastError)
+	}
+}
+
+func TestScannerTruncateDuringParsePreservesPreviousGeneration(t *testing.T) {
+	ctx := context.Background()
+	home, sessionPath := writeBasicSession(t)
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	defer store.Close()
+	scanner := New(store, []string{home})
+	if _, err := scanner.Scan(ctx, false); err != nil {
+		t.Fatalf("首次扫描失败: %v", err)
+	}
+
+	var truncateErr error
+	scanner.beforeParse = func(file codex.File) {
+		truncateErr = os.Truncate(file.Path, 16)
+	}
+	if _, err := scanner.Scan(ctx, true); err == nil {
+		t.Fatal("扫描计划后的文件截断未使扫描失败")
+	}
+	if truncateErr != nil {
+		t.Fatalf("截断扫描 fixture 失败: %v", truncateErr)
+	}
+
+	events, err := store.LoadUsageEvents(ctx, domain.CodexSource)
+	if err != nil {
+		t.Fatalf("读取旧 generation 失败: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("并发截断破坏旧 generation，事件数 = %d", len(events))
+	}
+	state, err := store.UsageProviderState(ctx, domain.CodexSource)
+	if err != nil {
+		t.Fatalf("读取 provider 状态失败: %v", err)
+	}
+	if state.Status != "error" || !strings.Contains(state.LastError, sessionPath) {
+		t.Fatalf("并发截断状态不明确: %+v", state)
 	}
 }
 
@@ -455,5 +555,44 @@ func appendFile(t *testing.T, path string, content []byte) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatalf("关闭 append fixture 失败: %v", err)
+	}
+}
+
+func assertStoredTokenBreakdown(
+	t *testing.T,
+	store *dorasqlite.Store,
+	expectedTotal int64,
+	expectedEach int64,
+) {
+	t.Helper()
+	events, err := store.LoadUsageEvents(context.Background(), domain.CodexSource)
+	if err != nil {
+		t.Fatalf("读取 usage events 失败: %v", err)
+	}
+	var total, input, output, cacheRead, cacheCreation, reasoning int64
+	for _, event := range events {
+		total += event.TotalTokens
+		input += event.InputTokens
+		output += event.OutputTokens
+		cacheRead += event.CachedInputTokens
+		cacheCreation += event.CacheCreationInputTokens
+		reasoning += event.ReasoningOutputTokens
+	}
+	if total != expectedTotal ||
+		input != expectedEach ||
+		output != expectedEach ||
+		cacheRead != expectedEach ||
+		cacheCreation != expectedEach ||
+		reasoning != expectedEach {
+		t.Fatalf(
+			"存储 token 分类错误: total=%d input=%d output=%d cache=%d create=%d reasoning=%d；events=%+v",
+			total,
+			input,
+			output,
+			cacheRead,
+			cacheCreation,
+			reasoning,
+			events,
+		)
 	}
 }

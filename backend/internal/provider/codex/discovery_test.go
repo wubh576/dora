@@ -69,3 +69,59 @@ func TestDiscoverAllowsMissingDirectories(t *testing.T) {
 		t.Fatalf("发现文件数 = %d，期望 0", len(files))
 	}
 }
+
+func TestMatchesSnapshotAcceptsAppendAndRejectsEarlierChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	original := []byte("first line\nsecond line\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("写入 snapshot fixture 失败: %v", err)
+	}
+	file := File{Path: path}
+	snapshot, err := Inspect(file)
+	if err != nil {
+		t.Fatalf("Inspect() 失败: %v", err)
+	}
+
+	handle, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("打开 append fixture 失败: %v", err)
+	}
+	if _, err := handle.WriteString("third line\n"); err != nil {
+		handle.Close()
+		t.Fatalf("追加 fixture 失败: %v", err)
+	}
+	if err := handle.Close(); err != nil {
+		t.Fatalf("关闭 append fixture 失败: %v", err)
+	}
+	matches, err := MatchesSnapshot(file, snapshot)
+	if err != nil {
+		t.Fatalf("校验纯追加 snapshot 失败: %v", err)
+	}
+	if !matches {
+		t.Fatal("纯追加内容不应使既有 snapshot 失效")
+	}
+
+	replaced := append([]byte(nil), original...)
+	replaced[0] = 'F'
+	if err := os.WriteFile(path, replaced, 0o600); err != nil {
+		t.Fatalf("改写 snapshot fixture 失败: %v", err)
+	}
+	matches, err = MatchesSnapshot(file, snapshot)
+	if err != nil {
+		t.Fatalf("校验改写 snapshot 失败: %v", err)
+	}
+	if matches {
+		t.Fatal("既有 snapshot 被改写后仍被视为有效")
+	}
+
+	if err := os.Truncate(path, int64(len(original)-1)); err != nil {
+		t.Fatalf("截断 snapshot fixture 失败: %v", err)
+	}
+	matches, err = MatchesSnapshot(file, snapshot)
+	if err != nil {
+		t.Fatalf("校验截断 snapshot 失败: %v", err)
+	}
+	if matches {
+		t.Fatal("被截断的 snapshot 仍被视为有效")
+	}
+}
