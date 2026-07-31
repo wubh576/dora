@@ -138,4 +138,6 @@ GET /api/v1/snapshot
 make verify
 ```
 
-该命令会运行后端测试并构建前端。
+提交前运行该命令，它会执行后端测试并构建前端。
+
+推送到 `main` 或创建 Pull Request 后，GitHub Actions 会在 macOS 上使用 Go 1.21 和 Node.js 22 重新安装依赖、检查 Go module 是否干净，并执行相同验证与 `go vet`。
