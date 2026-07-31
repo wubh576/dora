@@ -11,6 +11,7 @@
 | 3. Token 统计 API 与 Web 仪表盘 | 已完成 | `7718e42` |
 | 4. Codex 订阅配额 | 已完成 | `accba4e` |
 | 5. 第一期整体收尾 | 已完成 | `09d822e` |
+| 6. 中文桌面界面与 Token 热力图 | 已完成 | `b5a4875` |
 
 ## 里程碑 1：基础运行链路
 
@@ -122,4 +123,23 @@
 - 关键 provider 与 scan 包重复测试 100 次，SQLite、HTTP API 与 CLI 重复测试 50 次：通过。
 - Code Review：独立 Reviewer 复核累计 token、pending 对账、失败保旧、staging 清理、错误脱敏和并发文件快照；所有发现均已修复，最终无剩余 P0/P1/P2 问题。
 - Commit：`09d822e fix(usage): harden incremental scan accuracy`
+- 推送分支：`main`
+
+## 里程碑 6：中文桌面界面与 Token 热力图
+
+已完成：
+
+- 将通用界面文案调整为中文，保留 Input、Cache、Output、Reasoning 等必要技术术语。
+- 概览统一使用 `1D`、`7D`、`30D` 和 `ALL`，所有用量统计始于 `2026-07-29`。
+- Dashboard API 在同一份 SQLite 快照中返回完整活动序列，前端展示 GitHub 风格的 53 周 Token 热力图、累计 token、活跃天数和最长连续天数。
+- 采用适合 macOS 桌面浏览器的 Apple 风格视觉系统，并为有数据的热力图日期提供键盘聚焦、中文标签和可视精确值。
+- 集中维护 API 路径、服务端地址、统计起始日和重复视觉值；开发规则补充了适度避免散落硬编码的要求。
+
+验证记录：
+
+- `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check`：通过。
+- Analytics 与 HTTP API 连续测试 50 次通过，前端 TypeScript 检查和 Vite 生产构建通过。
+- macOS 桌面浏览器端到端：`1D` 为 180 tokens，`7D`、`30D`、`ALL` 均为 540 tokens；热力图固定读取 `2026-07-29` 至今的 540 tokens，页面无横向溢出和 JavaScript 控制台错误。
+- Code Review：独立 Reviewer 发现热力图初始定位、键盘详情和重复视觉色值 3 个 P2；全部修复后复审通过，无剩余 P0/P1/P2。
+- Commit：`b5a4875 feat(dashboard): add Chinese token heatmap`
 - 推送分支：`main`
