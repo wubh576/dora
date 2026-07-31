@@ -1,6 +1,6 @@
 module github.com/wubh576/dora/backend
 
-go 1.20
+go 1.21
 
 require (
 	github.com/klauspost/compress v1.17.11
