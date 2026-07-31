@@ -14,7 +14,8 @@
 | 6. 中文桌面界面与 Token 热力图 | 已完成 | `b5a4875` |
 | 7. Token 数量级与默认配额 | 已完成 | `4afa3a0` |
 | 8. 单进程生产运行 | 已完成 | `98ac8b2` |
-| 9. macOS 系统代理适配 | 已完成 | 本次提交 |
+| 9. macOS 系统代理适配 | 已完成 | `62218e3` |
+| 10. Token API 等价费用估算 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -202,3 +203,22 @@
 - `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check` 通过；provider 重复测试和 Linux amd64 交叉构建通过。
 - 生产服务使用临时 SQLite 和临时 Codex home 通过真实系统代理进入 quota `ready` 状态；验收后服务正常退出，测试端口均已释放。
 - Code Review：独立 Reviewer 复核代理语义、`scutil` 超时与进程回收、OAuth 安全边界和测试隔离，无 P0/P1/P2/P3 可行动问题。
+
+## 里程碑 10：Token API 等价费用估算
+
+已完成：
+
+- 增加随程序嵌入的版本化 JSON 定价目录，记录 USD 单位、OpenAI 官方来源、逐模型价格和核对日期；更新定价不需要 migration、重扫 transcript 或改写 SQLite。
+- 支持模型 ID、显式 alias 和最长 snapshot prefix 匹配；当前覆盖 GPT-5.6 Sol/Terra/Luna、GPT-5.5、GPT-5.4 和 GPT-5.3-Codex。
+- 按五类非重叠 token 计算 Input、Cache read、Cache creation、Output 和 Reasoning 费用；Reasoning 使用 output 价格，GPT-5.6 cache write 使用 uncached input 的 `1.25x`。
+- 未知模型、只有 total 的记录和已知模型中无法分类的 total gap 保持未定价；API 返回已定价 token、未定价 token、覆盖率、分类费用、官方来源和核对日期。
+- Dashboard 新增 API 等价美元费用卡片，展示已定价部分、分类费用、覆盖率、未完整定价模型和限制说明，明确它不是 Codex 订阅实际账单。
+- README 和开发指南记录定价更新流程；运行时不抓取官网 HTML，未来自动更新只接受经过校验的版本化签名清单。
+
+验证记录：
+
+- OpenAI 今日官方模型页与 Compare 页逐项复核当前价格；独立 Reviewer 发现初版 Terra/Luna 使用了 3 天旧搜索索引价格，已改为今日页面现价并增加逐模型价格回归断言。
+- `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check` 通过；前端 TypeScript 检查、Vite 生产构建和 production Go 构建通过。
+- 真实数据桌面端验收：7D 页面从统一 Dashboard API 读取 `230.9M` token，展示已定价部分 `$150.40`、定价覆盖 `92.1%`、官方来源和未完整定价模型；刷新和切换 `1D` 后状态正常，控制台无警告或错误。
+- 端到端使用临时复制的 SQLite，未修改用户原数据库；验收后生产服务正常退出，测试端口和临时数据均已清理。
+- Code Review：首轮 1 个 P1 已修复；复审确认五类计价无重复、未知与 total gap 处理诚实、覆盖率和溢出边界正确，无剩余 P0/P1/P2/P3。

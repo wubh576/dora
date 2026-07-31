@@ -34,7 +34,7 @@ make dev
 open http://127.0.0.1:5173
 ```
 
-页面会通过 Vite 的同源代理调用真实后端 API。“概览”展示本机真实 Codex token 总量、五类非重叠 token、Cache 命中率、每日趋势、模型分布、项目分布和 53 周 Token 热力图；“诊断”展示扫描状态、文件数、存储事件数、parser 版本和初始化时间。
+页面会通过 Vite 的同源代理调用真实后端 API。“概览”展示本机真实 Codex token 总量、五类非重叠 token、API 等价美元估算、Cache 命中率、每日趋势、模型分布、项目分布和 53 周 Token 热力图；“诊断”展示扫描状态、文件数、存储事件数、parser 版本和初始化时间。
 
 概览支持 `1D`、`7D`、`30D` 和 `ALL`。Dora 的用量统计统一始于 `2026-07-29`，所有范围按 macOS 本地时区的日历日计算；汇总、趋势、分布和热力图来自同一份 SQLite 数据快照。所选范围可以改变汇总与趋势，热力图始终保留从统计起始日至今的完整足迹。
 
@@ -153,6 +153,10 @@ PUT /api/v1/settings
 
 页面中的 token 总量使用英文紧凑数量级：`K`、`M`、`B`、`T`；需要核对时仍同时保留带千位分隔符的精确值。
 
+费用使用 `backend/internal/pricing/catalog.json` 中的版本化定价目录计算。目录记录 OpenAI 官方来源和核对日期，当前核对于 `2026-07-31`；更新目录后只需重新构建 Dora，不需要重扫 Codex 会话或改写 SQLite。
+
+费用是按照公开的标准 API 文本 token 价格得出的等价估算，不是 Codex 订阅的实际账单。Reasoning 按 output 价格计算；未匹配的模型和只有总量、缺少 token 分类的记录保持未定价，页面同时展示覆盖率。当前聚合数据无法可靠还原单次请求是否触发长上下文、区域处理、优先处理或工具调用附加费，因此这些费用不计入估算。
+
 ```text
 GET /api/v1/summary?range=7D
 GET /api/v1/timeline?range=30D&granularity=day
@@ -163,6 +167,14 @@ GET /api/v1/snapshot
 ```
 
 `/api/v1/dashboard` 是 Web 页面使用的统一快照，保证标题总量、每日趋势和两个分布复用同一个时间窗口。`/api/v1/snapshot` 提供今日、7 日、全部 token、最高用量模型和扫描新鲜度，供后续本地客户端复用。
+
+定价更新流程：
+
+1. 在 OpenAI 官方模型页核对 input、cached input、cache write 和 output 价格。
+2. 更新 `backend/internal/pricing/catalog.json` 的模型条目、来源和 `checkedAt`。
+3. 运行 `make verify`；定价单元测试会验证目录、模型匹配和费用口径。
+
+Dora 不在运行时抓取官网 HTML。若以后需要自动更新，应使用带版本和签名的定价清单，下载后完整校验再原子替换本地目录；在 OpenAI 提供稳定的机器可读定价接口前，不把网页结构当作运行时 API。
 
 ## 验证
 

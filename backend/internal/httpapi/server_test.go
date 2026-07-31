@@ -311,6 +311,11 @@ func TestDashboardUsesOneConsistentSnapshot(t *testing.T) {
 		timelineTotal != dashboard.Summary.TotalTokens {
 		t.Fatalf("dashboard 时间窗口不一致: %+v", dashboard)
 	}
+	if dashboard.Summary.Cost.UnpricedTokens != dashboard.Summary.TotalTokens ||
+		dashboard.Summary.Cost.PricedTokens != 0 ||
+		dashboard.Summary.Cost.SourceURL == "" {
+		t.Fatalf("dashboard 费用估算元数据不完整: %+v", dashboard.Summary.Cost)
+	}
 	if len(dashboard.Models) != 2 ||
 		len(dashboard.Projects) != 2 ||
 		dashboard.Diagnostics.StoredEvents != 3 {

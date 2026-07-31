@@ -427,17 +427,6 @@ CREATE TABLE provider_state (
     last_quota_error    TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE model_prices (
-    model_pattern                       TEXT PRIMARY KEY,
-    display_name                        TEXT NOT NULL,
-    input_price_per_mtok_usd            REAL NOT NULL,
-    output_price_per_mtok_usd           REAL NOT NULL,
-    cache_read_price_per_mtok_usd       REAL NOT NULL,
-    cache_creation_price_per_mtok_usd   REAL NOT NULL,
-    reasoning_price_per_mtok_usd        REAL NOT NULL,
-    source                              TEXT NOT NULL,
-    updated_at_ms                       INTEGER NOT NULL
-);
 ```
 
 ### 7.4 为什么保存事件而不是只保存 bucket
@@ -445,7 +434,7 @@ CREATE TABLE model_prices (
 30 分钟 bucket 适合多人和大规模聚合。个人版保存去重后的事件更合适：
 
 - parser 修正后可以重建并核对单条事件。
-- 定价表变化时可以重新计算费用。
+- 定价目录变化时可以重新计算费用。
 - 可以检查 reported total 与明细差异。
 - 仍可通过 SQL 或 Go 聚合出 30 分钟和日级趋势。
 
@@ -797,9 +786,9 @@ resetsAt := time.Unix(resetAt, 0).UTC()
 - 超过 10 分钟未成功更新标记 stale。
 - quota 失败不能影响 transcript token 统计。
 
-## 14. 可选费用估算
+## 14. 费用估算
 
-第一期可以展示费用，但它是 token 的派生值：
+第一期展示 API 等价费用，但它仍是 token 的派生值：
 
 ```text
 input / 1M × input price
@@ -811,11 +800,20 @@ input / 1M × input price
 
 要求：
 
-- 定价表带来源和更新时间。
-- 最长、最具体的 model pattern 优先匹配。
+- `backend/internal/pricing/catalog.json` 是第一期唯一的定价来源，随程序嵌入并纳入版本控制。
+- 定价目录带版本、货币、官方来源和核对日期；更新目录后重新构建即可，不需要 migration。
+- 先匹配精确模型 ID 和显式 alias，再按最长、最具体的 snapshot prefix 匹配。
 - 未匹配模型显示“未定价”。
 - 不使用一个任意默认价格静默估算未知模型。
+- 只有总 token、缺少分类明细的记录不能猜测输入输出比例，保持未定价。
+- reasoning token 使用对应模型的 output token 价格。
+- GPT-5.6 cache write 使用官方公布的 uncached input `1.25x`；更早模型按目录中明确记录的标准 uncached input 价格计算。
+- API 返回已定价 token、未定价 token、覆盖率、分类费用、官方来源和核对日期。
+- 页面必须明确说明它是标准 API 等价估算，不是 Codex 订阅实际账单。
+- 聚合事件无法可靠还原单次请求的上下文长度，不计算长上下文、区域处理、优先处理和工具调用附加费。
 - 更新定价不需要重扫 transcript。
+
+运行时不抓取 OpenAI 网页。官方模型页是面向人的文档，网页结构变化不应影响 Dora 启动和本地统计。未来如需自动更新，只接受带版本和签名的机器可读清单，经过 schema、来源、价格范围和签名验证后原子替换；在此之前由代码更新同步维护内置目录。
 
 ## 15. 本地 API
 

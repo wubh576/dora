@@ -9,6 +9,7 @@ import (
 
 	"github.com/wubh576/dora/backend/internal/analytics"
 	"github.com/wubh576/dora/backend/internal/domain"
+	"github.com/wubh576/dora/backend/internal/pricing"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
 	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
@@ -74,9 +75,10 @@ type usageDiagnostics struct {
 }
 
 type summaryResponse struct {
-	Range    string `json:"range"`
-	StartUTC string `json:"startUtc"`
-	EndUTC   string `json:"endUtc"`
+	Range    string           `json:"range"`
+	StartUTC string           `json:"startUtc"`
+	EndUTC   string           `json:"endUtc"`
+	Cost     pricing.Estimate `json:"cost"`
 	analytics.TokenTotals
 }
 
@@ -262,10 +264,16 @@ func (s *server) summary(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "汇总 token", "请重新扫描 Codex 用量")
 		return
 	}
+	cost, err := pricing.Default.Estimate(events)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "估算费用", "请重新扫描 Codex 用量")
+		return
+	}
 	writeNoStoreJSON(w, summaryResponse{
 		Range:       window.Range,
 		StartUTC:    window.StartUTC.Format(time.RFC3339Nano),
 		EndUTC:      window.EndUTC.Format(time.RFC3339Nano),
+		Cost:        cost,
 		TokenTotals: totals,
 	})
 }
@@ -348,6 +356,11 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重新扫描 Codex 用量")
 		return
 	}
+	cost, err := pricing.Default.Estimate(events)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成费用估算", "请重新扫描 Codex 用量")
+		return
+	}
 	timeline, err := analytics.DailyTimeline(events, window)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, domain.CodexSource, "生成仪表盘", "请重新扫描 Codex 用量")
@@ -390,6 +403,7 @@ func (s *server) dashboard(w http.ResponseWriter, r *http.Request) {
 			Range:       window.Range,
 			StartUTC:    window.StartUTC.Format(time.RFC3339Nano),
 			EndUTC:      window.EndUTC.Format(time.RFC3339Nano),
+			Cost:        cost,
 			TokenTotals: summary,
 		},
 		Timeline: timeline,

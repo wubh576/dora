@@ -9,6 +9,7 @@ export type UsageSummary = {
   range: UsageRange;
   startUtc: string;
   endUtc: string;
+  cost: CostEstimate;
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
@@ -18,6 +19,25 @@ export type UsageSummary = {
   reportedTotalTokens: number;
   cacheHitRate: number;
   eventCount: number;
+};
+
+export type CostEstimate = {
+  currency: "USD";
+  estimatedUsd: number;
+  pricedTokens: number;
+  unpricedTokens: number;
+  coverage: number;
+  breakdown: {
+    inputUsd: number;
+    cacheReadUsd: number;
+    cacheCreationUsd: number;
+    outputUsd: number;
+    reasoningUsd: number;
+  };
+  checkedAt: string;
+  sourceUrl: string;
+  basis: string;
+  unpricedModels: string[];
 };
 
 export type TimelinePoint = {

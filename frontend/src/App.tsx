@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { ActivityHeatmap } from "./ActivityHeatmap";
-import { formatNumber, formatTokenCompact } from "./format";
+import { formatNumber, formatTokenCompact, formatUSD } from "./format";
 import {
   type BreakdownItem,
+  type CostEstimate,
   type DashboardData,
   type DoraSettings,
   type HealthStatus,
@@ -394,6 +395,8 @@ function DashboardContent({
         </article>
       </section>
 
+      <CostPanel estimate={summary.cost} />
+
       <ActivityHeatmap {...data.activity} />
 
       <section className="panel trend-panel">
@@ -419,6 +422,56 @@ function DashboardContent({
         onRefresh={onQuotaRefresh}
       />
     </>
+  );
+}
+
+function CostPanel({ estimate }: { estimate: CostEstimate }) {
+  const hasPricedTokens = estimate.pricedTokens > 0;
+  const partial = estimate.unpricedTokens > 0;
+  const rows = [
+    ["Input", estimate.breakdown.inputUsd],
+    ["Cache read", estimate.breakdown.cacheReadUsd],
+    ["Cache creation", estimate.breakdown.cacheCreationUsd],
+    ["Output", estimate.breakdown.outputUsd],
+    ["Reasoning", estimate.breakdown.reasoningUsd],
+  ] as const;
+
+  return (
+    <section className="panel cost-panel">
+      <div className="cost-overview">
+        <p className="panel-label">API 等价费用 · {estimate.currency}</p>
+        <h2>这些 token 大约值多少钱</h2>
+        <strong>{hasPricedTokens ? formatUSD(estimate.estimatedUsd) : "—"}</strong>
+        <span>{partial ? "当前已定价部分" : "所选范围估算"}</span>
+      </div>
+
+      <div className="cost-details">
+        <dl className="cost-breakdown">
+          {rows.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{formatUSD(value)}</dd>
+            </div>
+          ))}
+        </dl>
+        <div className="cost-meta">
+          <span>
+            定价覆盖 {formatPercent(estimate.coverage)}
+            {partial && ` · ${formatTokenCompact(estimate.unpricedTokens)} token 未定价`}
+          </span>
+          <span>
+            核对于 {estimate.checkedAt} ·{" "}
+            <a href={estimate.sourceUrl} target="_blank" rel="noreferrer">OpenAI 官方定价</a>
+          </span>
+        </div>
+        {estimate.unpricedModels.length > 0 && (
+          <p className="cost-unpriced">
+            未完整定价：{estimate.unpricedModels.join("、")}
+          </p>
+        )}
+        <p className="cost-basis">{estimate.basis}</p>
+      </div>
+    </section>
   );
 }
 

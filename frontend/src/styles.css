@@ -334,11 +334,121 @@ h2 {
 
 .hero-metric,
 .token-mix,
+.cost-panel,
 .trend-panel,
 .breakdown-card,
 .quota-placeholder,
 .diagnostic-detail {
   padding: 30px;
+}
+
+.cost-panel {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.55fr) minmax(0, 1.45fr);
+  gap: 42px;
+  margin-top: 18px;
+}
+
+.cost-overview {
+  display: flex;
+  flex-direction: column;
+}
+
+.cost-overview h2 {
+  max-width: 280px;
+}
+
+.cost-overview > strong {
+  margin-top: auto;
+  padding-top: 28px;
+  font-size: 48px;
+  font-weight: 660;
+  letter-spacing: -0.055em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-overview > span {
+  margin-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.cost-details {
+  min-width: 0;
+}
+
+.cost-breakdown {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgb(248 248 250 / 86%);
+}
+
+.cost-breakdown div {
+  min-width: 0;
+  padding: 16px;
+  border-right: 1px solid var(--border);
+}
+
+.cost-breakdown div:last-child {
+  border-right: 0;
+}
+
+.cost-breakdown dt {
+  margin-bottom: 7px;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cost-breakdown dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 17px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.cost-meta a {
+  color: var(--blue);
+  font-weight: 630;
+  text-decoration: none;
+}
+
+.cost-meta a:hover {
+  text-decoration: underline;
+}
+
+.cost-unpriced,
+.cost-basis {
+  margin-bottom: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.cost-unpriced {
+  margin-top: 12px;
+  color: var(--text-secondary);
+}
+
+.cost-basis {
+  margin-top: 5px;
 }
 
 .hero-metric {
@@ -1364,6 +1474,7 @@ h2 {
 
   .hero-metric,
   .token-mix,
+  .cost-panel,
   .trend-panel,
   .breakdown-card,
   .quota-placeholder,
