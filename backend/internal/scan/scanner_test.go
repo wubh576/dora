@@ -331,6 +331,70 @@ func TestScannerRebuildsOnTruncateAndFileDeletion(t *testing.T) {
 	}
 }
 
+func TestScannerRebuildsWhenDeletedFileIsReplacedAtSameCount(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatalf("创建 session 目录失败: %v", err)
+	}
+	aPath := filepath.Join(sessionDir, "a.jsonl")
+	bPath := filepath.Join(sessionDir, "b.jsonl")
+	aFixture := `{"timestamp":"2026-01-02T03:04:05Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-a","last_token_usage":{"input_tokens":9,"output_tokens":1,"total_tokens":10},"total_token_usage":{"input_tokens":9,"output_tokens":1,"total_tokens":10}}}}` + "\n"
+	bFixture := `{"timestamp":"2026-01-03T03:04:05Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-b","last_token_usage":{"input_tokens":18,"output_tokens":2,"total_tokens":20},"total_token_usage":{"input_tokens":18,"output_tokens":2,"total_tokens":20}}}}` + "\n"
+	if err := os.WriteFile(aPath, []byte(aFixture), 0o600); err != nil {
+		t.Fatalf("写入 A fixture 失败: %v", err)
+	}
+	if err := os.WriteFile(bPath, []byte(bFixture), 0o600); err != nil {
+		t.Fatalf("写入 B fixture 失败: %v", err)
+	}
+
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	defer store.Close()
+	scanner := New(store, []string{home})
+	first, err := scanner.Scan(ctx, false)
+	if err != nil {
+		t.Fatalf("首次扫描失败: %v", err)
+	}
+	if first.Mode != "full" || first.FilesSeen != 2 || first.EventsStored != 2 {
+		t.Fatalf("首次 A+B 扫描结果错误: %+v", first)
+	}
+
+	if err := os.Remove(bPath); err != nil {
+		t.Fatalf("删除 B fixture 失败: %v", err)
+	}
+	cPath := filepath.Join(sessionDir, "c.jsonl")
+	cFixture := `{"timestamp":"2026-01-04T03:04:05Z","type":"event_msg","payload":{"type":"token_count","info":{"model":"gpt-c","last_token_usage":{"input_tokens":27,"output_tokens":3,"total_tokens":30},"total_token_usage":{"input_tokens":27,"output_tokens":3,"total_tokens":30}}}}` + "\n"
+	if err := os.WriteFile(cPath, []byte(cFixture), 0o600); err != nil {
+		t.Fatalf("写入 C fixture 失败: %v", err)
+	}
+
+	second, err := scanner.Scan(ctx, false)
+	if err != nil {
+		t.Fatalf("A+C 扫描失败: %v", err)
+	}
+	if second.Mode != "full" || second.FilesSeen != 2 || second.EventsStored != 2 {
+		t.Fatalf("同数量文件替换未触发全量重建: %+v", second)
+	}
+	events, err := store.LoadUsageEvents(ctx, domain.CodexSource)
+	if err != nil {
+		t.Fatalf("读取 A+C usage 失败: %v", err)
+	}
+	totalsByModel := make(map[string]int64, len(events))
+	for _, event := range events {
+		totalsByModel[event.Model] += event.TotalTokens
+	}
+	if len(events) != 2 ||
+		totalsByModel["gpt-a"] != 10 ||
+		totalsByModel["gpt-c"] != 30 ||
+		totalsByModel["gpt-b"] != 0 {
+		t.Fatalf("全量重建后仍有陈旧 usage: events=%+v", events)
+	}
+}
+
 func TestScannerRebuildsWhenCompressedFileChanges(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()

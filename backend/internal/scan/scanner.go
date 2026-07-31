@@ -272,12 +272,10 @@ func (s *Scanner) plan(
 	}
 
 	full := forceFull || lastFull == nil || now.Sub(*lastFull) >= fullVerificationInterval
-	if len(previous) != len(files) {
-		for _, old := range previous {
-			if _, exists := metadata[old.Path]; !exists {
-				full = true
-				break
-			}
+	for _, old := range previous {
+		if _, exists := metadata[old.Path]; !exists {
+			full = true
+			break
 		}
 	}
 	if full {
