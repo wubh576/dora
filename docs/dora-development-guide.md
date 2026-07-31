@@ -43,7 +43,7 @@
   → 统一 UsageEvent
   → 本地 SQLite
   → Go loopback API
-  → React 页面 / SwiftUI 菜单栏
+  → React 页面 / AppKit 菜单栏
 ```
 
 ### 2.1 必须保留
@@ -90,14 +90,15 @@
 
 ### 3.3 macOS 菜单栏
 
-第二期使用一个薄的 SwiftUI `MenuBarExtra` App：
+第二期在 Go 生产程序内使用轻量 AppKit 状态栏桥接：
 
-- 菜单栏 App 不直接读写 SQLite。
-- 通过 `GET /api/v1/snapshot` 读取核心进程的规范化快照。
-- 核心进程不可用时显示最后成功快照，并标记 stale。
-- 通过 LaunchAgent 保持核心进程常驻。
+- `dora menubar` 是唯一进程，同时持有菜单栏、HTTP/API、SQLite、扫描器和配额服务。
+- 菜单栏通过同一进程的 loopback API 读取规范化 snapshot，不直接查询 SQLite，也不复制统计逻辑。
+- 复用 `dora serve` 的应用运行时，启动失败、信号退出和数据库关闭采用同一条路径。
+- 状态项使用内嵌的单色 template icon，并设置为 accessory application，不创建窗口或 Dock 图标。
+- 通过 LaunchAgent 运行同一个 `dora menubar` 进程，不额外启动 Core、Vite 或 Node 服务。
 
-选择 SwiftUI 外壳，是为了让 macOS UI 与 Go 数据核心保持清晰边界，同时避免把 AppKit 生命周期塞进统计代码。
+这一结构保留了 UI 与数据职责边界，同时避免两个常驻进程、端口协调和双重生命周期。
 
 ## 4. 推荐目录结构
 
@@ -1010,20 +1011,16 @@ dora doctor
 ## 19. 第二期架构
 
 ```text
-                         ┌──────────────────┐
-Codex / Claude files ──→ │ Go Core + SQLite │
-Claude statusline ─────→ │ + /api/v1       │
-                         └────────┬─────────┘
-                                  │ loopback JSON
-                         ┌────────▼─────────┐
-                         │ SwiftUI MenuBar  │
-                         └──────────────────┘
+Codex / Claude files ──→ 单个 dora menubar 进程
+                         ├─ Go runtime + SQLite
+                         ├─ loopback HTTP/API + 内嵌 React
+                         └─ AppKit status item
 ```
 
 原则：
 
-- SQLite 仍然只有 Go Core 一个写入者。
-- SwiftUI 不复制 analytics SQL。
+- SQLite 仍然只有 Dora runtime 一个写入者。
+- 菜单栏不复制 analytics SQL。
 - Web 和菜单栏使用同一个 snapshot DTO。
 - Provider 独立失败。
 
@@ -1037,28 +1034,26 @@ Claude statusline ─────→ │ + /api/v1       │
 12.4M
 ```
 
-Popover：
+菜单：
 
 - 1D / 7D / ALL token。
 - top model。
 - Codex 5h/7d quota。
-- Claude Code 5h/7d quota。
 - 最后扫描和刷新时间。
-- stale/error badge。
 - “立即刷新”。
 - “打开仪表盘”。
-- “设置”。
 - “退出”。
 
-不在菜单栏实现复杂趋势图和项目表格。
+当前菜单展示 Codex 5h/7d quota；Claude Code 接入时复用相同 DTO 扩展。菜单不实现复杂趋势图、项目表格或设置页面。
 
 ### 20.2 刷新
 
-- 打开 popover 时读取 snapshot。
-- 后台每 5 分钟刷新。
-- 用户手动刷新调用 Core API，不在 SwiftUI 内自己扫描文件。
-- Core 对 scan/quota refresh 使用 singleflight。
-- API 失败时保留最后成功 snapshot，标记 stale。
+- 打开菜单时读取 snapshot，后台每分钟重读当前状态；扫描与配额后台周期仍由共享 runtime 统一管理。
+- 手动刷新在后台 goroutine 中先扫描 token，再按用户授权刷新配额，不能并发触发，也不能阻塞菜单事件循环。
+- 配额刷新失败不能回滚新的 token 数据；刷新结束后重新读取 snapshot。
+- 菜单栏复用 loopback API DTO，不自行解析文件、查询 SQLite 或实现另一套统计。
+- “打开仪表盘”用参数化系统命令打开 runtime 的实际 loopback 地址。
+- 退出、SIGINT 和 SIGTERM 都取消同一个 application context，正常关闭 HTTP、后台任务和 SQLite。
 
 ### 20.3 LaunchAgent
 

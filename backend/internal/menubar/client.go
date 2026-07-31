@@ -1,0 +1,89 @@
+package menubar
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+)
+
+type Snapshot struct {
+	GeneratedAt string        `json:"generatedAt"`
+	Usage       SnapshotUsage `json:"usage"`
+	Quotas      []QuotaItem   `json:"quotas"`
+	Errors      []string      `json:"errors"`
+}
+
+type SnapshotUsage struct {
+	TodayTokens    int64   `json:"todayTokens"`
+	SevenDayTokens int64   `json:"sevenDayTokens"`
+	AllTimeTokens  int64   `json:"allTimeTokens"`
+	TopModel       string  `json:"topModel"`
+	LastScanAt     *string `json:"lastScanAt"`
+	Stale          bool    `json:"stale"`
+}
+
+type QuotaState struct {
+	Enabled bool        `json:"enabled"`
+	Status  string      `json:"status"`
+	Items   []QuotaItem `json:"items"`
+	Message string      `json:"message"`
+}
+
+type QuotaItem struct {
+	WindowKey        string  `json:"windowKey"`
+	RemainingPercent float64 `json:"remainingPercent"`
+	ResetsAt         *string `json:"resetsAt"`
+	SourceState      string  `json:"sourceState"`
+}
+
+type State struct {
+	Snapshot Snapshot
+	Quota    QuotaState
+}
+
+type Loader interface {
+	Load(context.Context) (State, error)
+}
+
+type Client struct {
+	baseURL string
+	http    *http.Client
+}
+
+func NewClient(baseURL string) *Client {
+	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: 3 * time.Second}}
+}
+
+func (c *Client) Load(ctx context.Context) (State, error) {
+	var state State
+	if err := c.getJSON(ctx, "/api/v1/snapshot", &state.Snapshot); err != nil {
+		return State{}, err
+	}
+	// 配额端点异常不能丢弃已经读取到的 token 快照。
+	if err := c.getJSON(ctx, "/api/v1/quotas", &state.Quota); err != nil {
+		state.Quota = QuotaState{Enabled: true, Status: "error", Message: "Codex 配额状态读取失败"}
+	}
+	return state, nil
+}
+
+func (c *Client) getJSON(ctx context.Context, path string, target any) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("创建本地状态请求: %w", err)
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("连接 Dora 本地服务: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("Dora 本地服务返回 HTTP %d", response.StatusCode)
+	}
+	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
+		return fmt.Errorf("解析 Dora 本地状态: %w", err)
+	}
+	return nil
+}

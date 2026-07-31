@@ -58,7 +58,7 @@ SQLite 默认保存在：
 
 ```bash
 make build
-./bin/dora serve
+./bin/dora menubar
 ```
 
 浏览器访问：
@@ -67,18 +67,26 @@ make build
 open http://127.0.0.1:8080
 ```
 
-`make build` 会先清理旧前端产物，执行 Vite 生产构建，再把生成的页面资源嵌入 `bin/dora`。运行时只需要这个可执行文件，不需要 Node.js、npm、Vite、仓库源码或 `frontend/dist`；把 `bin/dora` 复制到其他目录后也可以启动。
+`make build` 会先清理旧前端产物，执行 Vite 生产构建，再把生成的页面资源嵌入 `bin/dora`。`menubar` 由同一个进程运行菜单栏、HTTP/API、SQLite、扫描器和配额服务，不会额外启动 `dora serve`、Node.js、npm 或 Vite。
+
+菜单栏标题显示今日 token；点开后可查看今日、7 日、全部 token、最高用量模型、Codex 5 小时/7 日配额和最近状态。菜单支持异步刷新、打开真实 loopback 仪表盘和正常退出。退出会关闭 HTTP 服务并释放端口。
+
+不需要菜单栏时，也可以继续手动启动同一套运行时：
+
+```bash
+./bin/dora serve
+```
 
 生产程序仍只监听 `127.0.0.1`，并支持手动指定本地地址、数据库和 Codex 数据目录：
 
 ```bash
-./bin/dora serve \
+./bin/dora menubar \
   --addr 127.0.0.1:8080 \
   --db "$HOME/Library/Application Support/Dora/dora.db" \
   --codex-home "$HOME/.codex"
 ```
 
-当前阶段由用户手动启动程序并打开浏览器。后续 macOS 菜单栏和 LaunchAgent 会接管常驻启动；本次不实现自动启动或自动打开浏览器。
+`--addr` 必须是明确的 `127.0.0.1:<port>`。端口被占用时 Dora 会直接报告冲突，不会终止旧进程或偷偷换端口。菜单中的“打开仪表盘”始终使用进程实际监听的地址。
 
 ## Codex 本地用量扫描
 
