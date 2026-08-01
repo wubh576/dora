@@ -1,9 +1,9 @@
 {
-  "version": 2,
+  "version": 3,
   "currency": "USD",
   "unitTokens": 1000000,
   "checkedAt": "2026-08-01",
-  "basis": "按模型对应厂商的标准 API 文本 token 价格估算，不等于 Codex 或 Claude 订阅账单；模型价格不与 Agent 框架绑定，不含长上下文、区域处理、优先处理、Fast mode 和工具调用附加费。",
+  "basis": "按模型对应厂商的标准 API 文本 token 价格估算，不等于 Codex、Claude 或 Kimi 订阅账单；模型价格不与 Agent 框架绑定，不含长上下文、区域处理、优先处理、Fast mode 和工具调用附加费。",
   "models": [
     {
       "id": "gpt-5.6-sol",
@@ -70,6 +70,17 @@
       "outputUsdPerMTok": 14,
       "sourceLabel": "OpenAI 官方定价",
       "sourceUrl": "https://developers.openai.com/api/docs/models/compare"
+    },
+    {
+      "id": "kimi-k3",
+      "aliases": [],
+      "snapshotPrefixes": [],
+      "inputUsdPerMTok": 3,
+      "cachedInputUsdPerMTok": 0.3,
+      "cacheWriteUsdPerMTok": 3,
+      "outputUsdPerMTok": 15,
+      "sourceLabel": "Kimi 官方定价",
+      "sourceUrl": "https://platform.kimi.ai/docs/pricing/chat-k3"
     },
     {
       "id": "claude-opus-4-8",

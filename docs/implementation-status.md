@@ -24,7 +24,8 @@
 | 16. Provider 隔离与 Claude Code 只读采集 | 已完成 | `7a88a17`、`e2c905f` |
 | 17. 多 Provider 统一展示 | 已完成 | `ed41bf8`、`a950d69` |
 | 18. 统一统计起始日 | 已完成 | `5a26c1e` |
-| 19. 多厂商模型定价与 Claude 缓存明细 | 已完成 | 本次提交 |
+| 19. 多厂商模型定价与 Claude 缓存明细 | 已完成 | `bb79c81` |
+| 20. Kimi K3 API 等价计费 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -378,3 +379,18 @@
 - 脱敏多 Agent fixture 页面展示 Codex 180 token、Claude Code 40 token，费用覆盖 208/220 token，同时显示 OpenAI 与 Anthropic 官方来源；自定义模型保持未定价。
 - `make verify`、`go vet ./...`、`go test -race ./...`、前端 TypeScript/Vite production build 和 `git diff --check` 通过；临时服务、18081 端口和 SQLite 副本均已清理。
 - Code Review：独立 Reviewer 发现 Claude 4.6+ 不存在日期 snapshot 的 P1；移除所有宽泛 Claude prefix，改为官方精确 ID/完整 alias，并补齐第三方 `custom`/`preview` 后缀负例后复审通过，无剩余 P0/P1/P2/P3。
+
+## 里程碑 20：Kimi K3 API 等价计费
+
+已完成：
+
+- 定价目录加入 Kimi 官方 `kimi-k3` 精确模型 ID，不依赖 Claude Code provider；cache miss input/cache creation、cache hit 和 output/reasoning 分别按官方标准 API 价格计算。
+- 不登记 Claude Code 环境变量专用的 `kimi-k3[1m]` 或宽泛前缀，避免把配置选择器和第三方后缀误当成官方模型 ID。
+- 页面费用来源按真实已定价模型增加 Kimi 官方定价链接；订阅额度仍不换算为账单，费用只表示标准 API 等价估算。
+
+验证记录：
+
+- 当前 Mac 真实 Claude Code transcript 返回 `kimi-k3`；SQLite 副本中 7 条事件合计 209,184 token，其中 input 10,003、cache read 197,376、output 1,805，对应 Kimi API 等价费用 `$0.1162968`。
+- 临时生产服务的 Dashboard API 和桌面页面均显示 Claude Code 的 `kimi-k3` 用量与 Kimi 官方定价来源，浏览器无 warning/error。
+- `make verify`、`go vet ./...`、`go test -race ./...`、前端 TypeScript/Vite production build 和 `git diff --check` 通过；临时服务已关闭，18082 端口和 SQLite 副本均已清理。
+- Code Review：独立 Reviewer 确认精确模型匹配、跨 Agent 计费、cache 口径、金额测试和已有数据安全均正确，无 P0/P1/P2/P3。

@@ -249,9 +249,11 @@ PUT /api/v1/settings
 
 价格只按 transcript 中的真实模型 ID 匹配，不与 Codex、Claude Code 等 Agent 框架绑定。Claude Code 调用 GPT 时按 GPT 价格，Codex 调用 Claude 时按 Claude 价格；Kimi 等第三方模型只有存在自己的显式官方定价条目时才计算，否则保持未定价，绝不会套用当前 Agent 的默认价格。
 
+当前目录支持 Kimi K3 的官方模型 ID `kimi-k3`：cache miss 输入与 cache creation 按 `$3.00 / 1M tokens`、cache hit 按 `$0.30 / 1M tokens`、输出和 reasoning 按 `$15.00 / 1M tokens` 估算。Claude Code 环境变量中的 `kimi-k3[1m]` 只是上下文选择写法，Dora 仍以 transcript 返回的 `kimi-k3` 为准，不把环境配置字符串登记为模型 alias。
+
 模型 ID 匹配保持保守：Claude 4.6 及以后只接受官方无日期固定 ID，4.5 及更早只接受目录中明确登记的官方 alias 或完整日期 ID；带 `custom`、`preview` 等第三方后缀的兼容模型不会自动套用 Anthropic 价格。
 
-费用是按照公开的标准 API 文本 token 价格得出的等价估算，不是 Codex 或 Claude 订阅的实际账单。Reasoning 按对应模型的 output 价格计算；Anthropic 5 分钟和 1 小时 cache write 使用各自价格，缺少时长明细的 Claude cache write 保持未定价。未匹配模型、只有总量的记录和无法分类的 token 同样保持未定价，页面同时展示覆盖率。当前聚合数据无法可靠还原单次请求是否触发长上下文、区域处理、优先处理、Fast mode 或工具调用附加费，因此这些费用不计入估算。
+费用是按照公开的标准 API 文本 token 价格得出的等价估算，不是 Codex、Claude 或 Kimi 订阅的实际账单。Reasoning 按对应模型的 output 价格计算；Anthropic 5 分钟和 1 小时 cache write 使用各自价格，缺少时长明细的 Claude cache write 保持未定价。未匹配模型、只有总量的记录和无法分类的 token 同样保持未定价，页面同时展示覆盖率。当前聚合数据无法可靠还原单次请求是否触发长上下文、区域处理、优先处理、Fast mode 或工具调用附加费，因此这些费用不计入估算。
 
 ```text
 GET /api/v1/summary?range=7D

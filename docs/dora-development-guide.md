@@ -820,14 +820,16 @@ input / 1M × input price
 - 新厂商只需增加精确模型条目和经过人工核对的 HTTPS 官方来源，不得要求修改 Agent scanner 或定价匹配代码；厂商未公布的 cache 类别允许缺省，相应 token 单独保持未定价。
 - 先匹配精确模型 ID 和显式 alias，再按最长、最具体的 snapshot prefix 匹配。
 - Claude 4.6 及以后只匹配官方无日期固定 ID，不接受额外后缀；4.5 及更早只登记官方明确公布的 alias 和完整日期 ID，不使用家族或年份前缀，避免兼容网关自定义 ID 误匹配。
+- Kimi K3 只匹配 transcript 返回的官方 `kimi-k3`。Claude Code 配置中的 `kimi-k3[1m]` 是上下文选择写法，不是 transcript 模型 ID，也不登记为 alias。
 - 未匹配模型显示“未定价”。
 - 不使用一个任意默认价格静默估算未知模型。
 - 只有总 token、缺少分类明细的记录不能猜测输入输出比例，保持未定价。
 - reasoning token 使用对应模型的 output token 价格。
 - GPT-5.6 cache write 使用官方公布的 uncached input `1.25x`；更早模型按目录中明确记录的标准 uncached input 价格计算。
 - Anthropic 5 分钟和 1 小时 cache write 分别按官方价格计算；无法从 usage 确认时长的 Claude cache creation 保持未定价，不能默认套用较低价格。
+- Kimi K3 的 cache read 使用官方 cache hit 价格；普通 input 与 Anthropic-compatible usage 中的 cache creation 都按 cache miss 输入价格计算，官方未公布独立 cache write 加价时不得自行增加费用。
 - API 返回已定价 token、未定价 token、覆盖率、分类费用、官方来源和核对日期。
-- 页面必须明确说明它是标准 API 等价估算，不是 Codex 订阅实际账单。
+- 页面必须明确说明它是标准 API 等价估算，不是 Codex、Claude 或 Kimi 订阅实际账单。
 - 聚合事件无法可靠还原单次请求的上下文长度，不计算长上下文、区域处理、优先处理和工具调用附加费。
 - 单纯更新定价不需要重扫 transcript；只有 parser 新增了费用所需的 token 明细时才通过 parser version 升级只读重扫。
 

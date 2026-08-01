@@ -25,6 +25,7 @@ func TestDefaultCatalogMatchesSupportedModels(t *testing.T) {
 		{model: "gpt-5.5", input: 5, cached: 0.5, cacheWrite: 5, output: 30},
 		{model: "gpt-5.4", input: 2.5, cached: 0.25, cacheWrite: 2.5, output: 15},
 		{model: "gpt-5.3-codex", input: 1.75, cached: 0.175, cacheWrite: 1.75, output: 14},
+		{model: "kimi-k3", input: 3, cached: 0.3, cacheWrite: 3, output: 15},
 		{model: "claude-opus-4-8", input: 5, cached: 0.5, cache5m: 6.25, cache1h: 10, output: 25},
 		{model: "claude-opus-4-7", input: 5, cached: 0.5, cache5m: 6.25, cache1h: 10, output: 25},
 		{model: "claude-opus-4-6", input: 5, cached: 0.5, cache5m: 6.25, cache1h: 10, output: 25},
@@ -55,10 +56,35 @@ func TestDefaultCatalogMatchesSupportedModels(t *testing.T) {
 		"claude-sonnet-4-6-preview",
 		"claude-haiku-4-5-custom",
 		"claude-haiku-4-5-20251001-custom",
+		"kimi-k3-custom",
+		"kimi-k3[1m]",
 	} {
 		if _, ok := Default.match(model); ok {
-			t.Fatalf("非官方 Claude 模型 ID %q 不应套用 Anthropic 价格", model)
+			t.Fatalf("非目录模型 ID %q 不应套用官方价格", model)
 		}
+	}
+}
+
+func TestEstimatePricesKimiK3ClaudeCodeUsage(t *testing.T) {
+	estimate, err := Default.Estimate([]domain.UsageEvent{{
+		Source:            domain.ClaudeCodeSource,
+		Model:             "kimi-k3",
+		InputTokens:       6_908,
+		CachedInputTokens: 48_896,
+		OutputTokens:      350,
+		TotalTokens:       56_154,
+	}})
+	if err != nil {
+		t.Fatalf("Kimi K3 费用估算失败: %v", err)
+	}
+	if !closeEnough(estimate.EstimatedUSD, 0.0406428) {
+		t.Fatalf("Kimi K3 费用 = %.9f，期望 0.0406428", estimate.EstimatedUSD)
+	}
+	if estimate.PricedTokens != 56_154 || estimate.UnpricedTokens != 0 || estimate.Coverage != 1 {
+		t.Fatalf("Kimi K3 定价覆盖错误: %+v", estimate)
+	}
+	if len(estimate.Sources) != 1 || estimate.Sources[0].Label != "Kimi 官方定价" {
+		t.Fatalf("Kimi K3 定价来源错误: %+v", estimate.Sources)
 	}
 }
 
@@ -115,6 +141,11 @@ func TestEstimateMatchesModelPricingIndependentOfAgentSource(t *testing.T) {
 			InputTokens: 1_000_000, TotalTokens: 1_000_000,
 		},
 		{
+			Source: domain.ClaudeCodeSource, Model: "kimi-k3",
+			InputTokens: 1_000_000, CachedInputTokens: 1_000_000,
+			CacheCreationInputTokens: 1_000_000, OutputTokens: 1_000_000, TotalTokens: 4_000_000,
+		},
+		{
 			Source: domain.ClaudeCodeSource, Model: "kimi-future-model",
 			InputTokens: 1_000_000, TotalTokens: 1_000_000,
 		},
@@ -122,13 +153,16 @@ func TestEstimateMatchesModelPricingIndependentOfAgentSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Estimate() 失败: %v", err)
 	}
-	if !closeEnough(estimate.EstimatedUSD, 68.25) {
-		t.Fatalf("跨 Agent 模型定价 = %f，期望 68.25", estimate.EstimatedUSD)
+	if !closeEnough(estimate.EstimatedUSD, 89.55) {
+		t.Fatalf("跨 Agent 模型定价 = %f，期望 89.55", estimate.EstimatedUSD)
 	}
-	if estimate.PricedTokens != 7_000_000 || estimate.UnpricedTokens != 1_000_000 {
+	if estimate.PricedTokens != 11_000_000 || estimate.UnpricedTokens != 1_000_000 {
 		t.Fatalf("跨 Agent 定价覆盖错误: %+v", estimate)
 	}
-	if len(estimate.Sources) != 2 || estimate.Sources[0].Label != "Anthropic 官方定价" || estimate.Sources[1].Label != "OpenAI 官方定价" {
+	if len(estimate.Sources) != 3 ||
+		estimate.Sources[0].Label != "Anthropic 官方定价" ||
+		estimate.Sources[1].Label != "Kimi 官方定价" ||
+		estimate.Sources[2].Label != "OpenAI 官方定价" {
 		t.Fatalf("多厂商定价来源错误: %+v", estimate.Sources)
 	}
 	if len(estimate.UnpricedModels) != 1 || estimate.UnpricedModels[0] != "kimi-future-model" {
