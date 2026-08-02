@@ -1,0 +1,6 @@
+{
+  "session_id": "fixture-session",
+  "cwd": "/Users/example/dora",
+  "hook_event_name": "SessionEnd",
+  "model": "gpt-fixture"
+}

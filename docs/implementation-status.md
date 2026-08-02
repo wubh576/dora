@@ -26,7 +26,7 @@
 | 18. 统一统计起始日 | 已完成 | `5a26c1e` |
 | 19. 多厂商模型定价与 Claude 缓存明细 | 已完成 | `bb79c81` |
 | 20. Kimi K3 API 等价计费 | 已完成 | `11d6557` |
-| 21. Codex 实时等待提醒与精确跳转 | 已完成 | `216ee52`、`76b4c09`、本次提交 |
+| 21. Codex 实时等待提醒与精确跳转 | 已完成 | `0778965`、`c40dfce`、`6ff055f`、`e1fd056`、`0a54972`、本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -411,10 +411,13 @@
 
 验证记录：
 
-- 当前 Codex App `0.146.0-alpha.9.2` 的官方 `hooks/list` 真实识别全部 7 个 Dora handlers，matcher、timeout、source path 与 current hash 和 Dora 计算结果一致；初始状态保持 untrusted，等待用户显式授权。
+- 当前 Codex App `0.146.0-alpha.9.2` 的官方 `hooks/list` 真实识别全部 7 个 Dora handlers，matcher、timeout、source path 与 current hash 和 Dora 计算结果一致；用户已在 `/hooks` 明确授权，`dora hooks status codex` 返回“已授权”。重复执行 `dora install` 后 `hooks.json` SHA-256 仍为 `ebd8f8ddbf6d857f610de359e4cc1667940289d152aba75a9ae2dabe07f82f9e`，证明稳定命令不会让普通升级反复授权。
+- Codex CLI `0.146.0` 真实 iTerm2 探针确认 Allow 顺序为 `PermissionRequest → PostToolUse(Bash) → Stop → SessionEnd`：PermissionRequest 后 Attention API 为 1 并只播放一次 `Glass`，PostToolUse 到达时恢复为 0。取消路径在按 Esc 后没有即时 resolved Hook，下一次 `UserPromptSubmit` 到达时恢复为 0，随后为 `Stop → SessionEnd`。
+- 结构化追问真实探针确认 `PreToolUse(request_user_input) → PostToolUse(request_user_input) → Stop → SessionEnd`，菜单摘要为“Codex 等待回答”，回答后立即解除。当前 CLI 默认模式下该工具仍由 under-development feature 控制；Dora 只监听工具真实出现的结构化事件，不把普通问号或 final answer 识别为 waiting。
+- iTerm2 与 macOS Terminal 均从各自真实 Codex CLI 进程注册为独立 session，保存对应 exact TTY；两个测试窗口均按 exact TTY 关闭，未使用标题、cwd 或最近窗口回退。脱敏事件形状已保存到 `backend/internal/codexhooks/testdata/`，不含 prompt、回复、完整命令、凭证或真实 session ID。
 - 自动测试覆盖事件转换、SQLite transition/dedup/restart、API 边界、hooks merge/idempotence/uninstall/broken config/path/trust、redirect 隐私、稳定 JSON hash、surface/TTY 检测、声音去重、菜单实时视图和精确跳转参数。
 - 当前用户 LaunchAgent 安装后运行正常；真实 loopback 事件让菜单栏从普通 token 标题切换为 3 个等待提示，AppKit `Glass` 声音链路被触发，发送 `SessionEnd` 后 Attention API 和菜单计数恢复为 0。
 - 当前 Codex App task 已用 `codex://threads/<thread-id>` deep link 和前台激活完成真实跳转；iTerm2 `/dev/ttys000` 与 Terminal `/dev/ttys002` 均使用 exact TTY AppleScript 定位成功，没有使用标题、cwd 或最近窗口回退。
 - 当前交付形态是 LaunchAgent 独立二进制，不具有可靠系统通知所需的稳定 App Bundle 身份；因此没有伪造原生横幅，可靠提醒路径为菜单栏红色计数与 AppKit `Glass` 声音。
 - `make verify`、`go vet ./...`、相关 `go test -race` 与 `git diff --check` 通过；前端 TypeScript/Vite production build、生产 Go 构建和 LaunchAgent 健康检查通过。
-- Code Review：Phase 1 修复路径隐私、启动 cutoff、事件重放与等待时间；Phase 2 修复 redirect 泄漏、trust 误判、稳定 hash 和 surface 误判；Phase 3 修复跳转错误生命周期、AppleScript 诊断、声音批次失败和异步菜单视图竞态。独立 Reviewer 最终确认无剩余 P0/P1/P2/P3。
+- Code Review：Phase 1 修复路径隐私、启动 cutoff、事件重放与等待时间；Phase 2 修复 redirect 泄漏、trust 误判、稳定 hash 和 surface 误判；Phase 3 修复跳转错误生命周期、AppleScript 诊断、声音批次失败和异步菜单视图竞态。最终探针 Review 发现取消路径缺少 fixture 驱动回归测试的 P3，补充 `PermissionRequest → UserPromptSubmit` 跨 parser/SQLite 序列测试后复审通过，无剩余 P0/P1/P2/P3。

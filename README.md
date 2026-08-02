@@ -142,7 +142,7 @@ open http://127.0.0.1:8080
 "$HOME/Library/Application Support/Dora/bin/dora" hooks status codex
 ```
 
-安装会原子合并 `~/.codex/hooks.json`，保留其他工具和用户已有的 hooks；重复执行会更新 Dora 可执行文件路径，不产生重复 handler。Codex 自己的 hook 信任机制不会被绕过：每个 macOS 用户在首次安装或 Hook 命令真正变化后，需要在 Codex 中打开 `/hooks`，检查命令与配置来源后明确授权一次。授权 hash 会持久保存；Dora 普通升级仍使用同一稳定路径和 Hook 命令，不会重复询问。`--dangerously-bypass-hook-trust` 不是 Dora 的安装方式。
+安装会原子合并 `~/.codex/hooks.json`，保留其他工具和用户已有的 hooks；重复执行会更新 Dora 可执行文件路径，不产生重复 handler。Codex 自己的 hook 信任机制不会被绕过：每个 macOS 用户在每台 Mac 首次安装或 Hook 命令真正变化后，需要在 Codex 中打开 `/hooks`，检查命令与配置来源后明确授权一次。授权 hash 会持久保存；Dora 普通升级仍使用同一稳定路径和 Hook 命令，不会重复询问。未授权时只缺少实时 waiting 提醒，Codex 交互以及 Dora 的 token、费用、配额和 Web 仍然正常；`dora status` 会明确显示“待授权”。`--dangerously-bypass-hook-trust` 不是 Dora 的安装方式。
 
 卸载只移除带 Dora 标记的 handler：
 
@@ -152,7 +152,7 @@ open http://127.0.0.1:8080
 
 Hook helper 只向固定的 `127.0.0.1:8080` 发送有界、脱敏 JSON，不跟随重定向。Dora 不保存 prompt、回复、完整命令、工具参数、环境变量、transcript 路径或完整 cwd；SQLite 只在实时 session 存活期间保存 external session ID、cwd basename、模型、App/CLI surface、受支持终端的精确 TTY 和等待状态。`SessionEnd` 或跳转确认目标已消失时会移除 runtime session；重启后保留尚未结束的 waiting 展示，但不会对历史请求重复发声。
 
-PermissionRequest 不存在假想的即时 resolved 回调。Dora 在同 Session 后续出现 `PostToolUse`、`UserPromptSubmit`、`Stop` 或 `SessionEnd` 时解除 waiting；因此 Allow 后通常要等工具完成，Deny/Cancel 要等 Stop 或下一次结构化活动，菜单计数才会回落。若进程异常退出且缺失结束事件，超过 7 天没有任何 Hook 活动的 runtime session 会在启动和定时 reconciliation 中清理，避免永久残留，同时不会用几秒钟的盲目 timeout 提前解除真实 waiting。
+PermissionRequest 不存在假想的即时 resolved 回调。Codex CLI `0.146.0` 实测 Allow 后最早在 `PostToolUse` 解除；按 Esc 取消后没有即时完成事件，最早在下一次 `UserPromptSubmit` 解除。Dora 也会在 `Stop` 或 `SessionEnd` 清理 waiting。若进程异常退出且缺失结束事件，超过 7 天没有任何 Hook 活动的 runtime session 会在启动和定时 reconciliation 中清理，避免永久残留，同时不会用几秒钟的盲目 timeout 提前解除真实 waiting。
 
 当前跳转支持 Codex App deep link、iTerm2 exact TTY 和 macOS Terminal exact TTY。首次回跳终端时，macOS 可能询问是否允许 Dora 控制 iTerm2 或 Terminal；允许后才能选择准确 Tab。未知终端不会使用窗口标题或 cwd 猜测目标；这类 session 仍可显示提醒，但会明确提示不能精确跳转。
 

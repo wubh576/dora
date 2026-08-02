@@ -1,0 +1,11 @@
+{
+  "session_id": "fixture-session",
+  "turn_id": "fixture-turn",
+  "cwd": "/Users/example/dora",
+  "hook_event_name": "PermissionRequest",
+  "model": "gpt-fixture",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "fixture command"
+  }
+}

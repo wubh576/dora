@@ -7,12 +7,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/domain"
+	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
 
 type fixedDetector struct{ surface Surface }
@@ -51,6 +54,93 @@ func TestParseHookEventSanitizesSensitiveFields(t *testing.T) {
 		if strings.Contains(serialized, secret) {
 			t.Fatalf("净化事件泄漏 %q: %+v", secret, event)
 		}
+	}
+}
+
+func TestParseVerifiedHookFixtures(t *testing.T) {
+	tests := []struct {
+		file      string
+		event     string
+		tool      string
+		toolUseID string
+		needsHash bool
+	}{
+		{file: "session-start.json", event: "SessionStart"},
+		{file: "user-prompt-submit.json", event: "UserPromptSubmit"},
+		{file: "permission-request.json", event: "PermissionRequest", tool: "Bash", needsHash: true},
+		{file: "request-user-input-pre.json", event: "PreToolUse", tool: "request_user_input", toolUseID: "fixture-tool"},
+		{file: "request-user-input-post.json", event: "PostToolUse", tool: "request_user_input", toolUseID: "fixture-tool"},
+		{file: "stop.json", event: "Stop"},
+		{file: "session-end.json", event: "SessionEnd"},
+	}
+	for _, test := range tests {
+		t.Run(test.event, func(t *testing.T) {
+			input, err := os.Open("testdata/" + test.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer input.Close()
+			event, err := parseHookEvent(input, Surface{
+				Name: domain.CodexSurfaceCLI, TerminalKind: domain.TerminalITerm2, TTY: "/dev/ttys099",
+			})
+			if err != nil {
+				t.Fatalf("解析 fixture 失败: %v", err)
+			}
+			if event.SessionID != "fixture-session" || event.CWDBasename != "dora" ||
+				event.HookEvent != test.event || event.ToolName != test.tool || event.ToolUseID != test.toolUseID {
+				t.Fatalf("fixture 解析结果错误: %+v", event)
+			}
+			if (event.InputHash != "") != test.needsHash {
+				t.Fatalf("fixture input hash 错误: %q", event.InputHash)
+			}
+		})
+	}
+}
+
+func TestVerifiedCancelSequenceResolvesOnNextPrompt(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 2, 15, 0, 0, 0, time.UTC)
+	parseFixture := func(file string, at time.Time) domain.CodexHookEvent {
+		t.Helper()
+		input, err := os.Open("testdata/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, err := parseHookEvent(input, Surface{Name: domain.CodexSurfaceApp})
+		closeErr := input.Close()
+		if err != nil || closeErr != nil {
+			t.Fatalf("解析 fixture 失败: %v；关闭 fixture: %v", err, closeErr)
+		}
+		domainEvent, err := event.Domain(at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return domainEvent
+	}
+
+	permission := parseFixture("permission-request.json", now)
+	if created, err := store.ApplyCodexHookEvent(ctx, permission); err != nil || !created {
+		t.Fatalf("PermissionRequest = created %t, err %v", created, err)
+	}
+	if waiting, err := store.WaitingSessions(ctx); err != nil || len(waiting) != 1 {
+		t.Fatalf("取消前 waiting = %+v, %v", waiting, err)
+	}
+
+	// CLI 取消授权没有额外 Hook；下一条 prompt 是最早可观察的解除事件。
+	nextPrompt := parseFixture("user-prompt-submit.json", now.Add(time.Minute))
+	if _, err := store.ApplyCodexHookEvent(ctx, nextPrompt); err != nil {
+		t.Fatal(err)
+	}
+	if waiting, err := store.WaitingSessions(ctx); err != nil || len(waiting) != 0 {
+		t.Fatalf("UserPromptSubmit 后 waiting = %+v, %v", waiting, err)
+	}
+	if state, err := store.RuntimeSessionState(ctx, permission.ExternalSessionID); err != nil || state != domain.RuntimeStateRunning {
+		t.Fatalf("UserPromptSubmit 后 state = %q, %v", state, err)
 	}
 }
 

@@ -1,0 +1,9 @@
+{
+  "session_id": "fixture-session",
+  "turn_id": "fixture-turn",
+  "cwd": "/Users/example/dora",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-fixture",
+  "tool_name": "request_user_input",
+  "tool_use_id": "fixture-tool"
+}

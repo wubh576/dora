@@ -1,0 +1,7 @@
+{
+  "session_id": "fixture-session",
+  "turn_id": "fixture-turn",
+  "cwd": "/Users/example/dora",
+  "hook_event_name": "Stop",
+  "model": "gpt-fixture"
+}
