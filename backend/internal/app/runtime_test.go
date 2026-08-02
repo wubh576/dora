@@ -17,9 +17,106 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/buildinfo"
+	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
+	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
+
+func TestRuntimeMarksOnlyPreStartupAttentionAsNotified(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "dora.db")
+	store, err := dorasqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open() 失败: %v", err)
+	}
+	event := domain.CodexHookEvent{
+		ExternalSessionID: "runtime-restart",
+		EventName:         "PermissionRequest",
+		TurnID:            "turn",
+		CWDBasename:       "dora",
+		Surface:           domain.CodexSurfaceApp,
+		ToolName:          "apply_patch",
+		EventKey:          "codex:runtime-restart",
+		ReceivedAt:        time.Now().UTC().Add(-time.Minute),
+	}
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatalf("保存历史等待请求失败: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() 失败: %v", err)
+	}
+
+	runtime, err := Start(ctx, Config{
+		Address:      "127.0.0.1:0",
+		DBPath:       dbPath,
+		CodexHomes:   []string{filepath.Join(t.TempDir(), "codex")},
+		ScanInterval: time.Hour,
+		Logger:       log.New(io.Discard, "", 0),
+	})
+	if err != nil {
+		t.Fatalf("Start() 失败: %v", err)
+	}
+	defer runtime.Close()
+	requests, err := runtime.store.UnnotifiedAttention(ctx)
+	if err != nil || len(requests) != 0 {
+		t.Fatalf("Runtime 重复提醒启动前的请求: %+v, %v", requests, err)
+	}
+}
+
+func TestRuntimeBindFailureDoesNotMarkAttentionNotified(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "dora.db")
+	store, err := dorasqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open() 失败: %v", err)
+	}
+	event := domain.CodexHookEvent{
+		ExternalSessionID: "runtime-bind-failure",
+		EventName:         "PermissionRequest",
+		TurnID:            "turn",
+		CWDBasename:       "dora",
+		Surface:           domain.CodexSurfaceApp,
+		ToolName:          "apply_patch",
+		EventKey:          "codex:runtime-bind-failure",
+		ReceivedAt:        time.Now().UTC().Add(-time.Minute),
+	}
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatalf("保存历史等待请求失败: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() 失败: %v", err)
+	}
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("占用测试端口失败: %v", err)
+	}
+	defer occupied.Close()
+	_, err = Start(ctx, Config{
+		Address:      occupied.Addr().String(),
+		DBPath:       dbPath,
+		CodexHomes:   []string{filepath.Join(t.TempDir(), "codex")},
+		ScanInterval: time.Hour,
+		Logger:       log.New(io.Discard, "", 0),
+	})
+	if err == nil {
+		t.Fatal("Start() 在端口冲突时意外成功")
+	}
+
+	store, err = dorasqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("重新打开 SQLite 失败: %v", err)
+	}
+	defer store.Close()
+	requests, err := store.UnnotifiedAttention(ctx)
+	if err != nil {
+		t.Fatalf("读取未提醒请求失败: %v", err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("端口冲突修改了提醒状态: %+v", requests)
+	}
+}
 
 func TestBackgroundFailureLogsIncludeActionableCause(t *testing.T) {
 	tests := []struct {

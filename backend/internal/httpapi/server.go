@@ -2,12 +2,16 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/analytics"
+	"github.com/wubh576/dora/backend/internal/attention"
 	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/pricing"
@@ -159,6 +163,26 @@ type snapshotProviderUsage struct {
 	Tokens int64  `json:"tokens"`
 }
 
+type attentionResponse struct {
+	GeneratedAt  string                     `json:"generatedAt"`
+	WaitingCount int                        `json:"waitingCount"`
+	Sessions     []attentionSessionResponse `json:"sessions"`
+}
+
+type attentionSessionResponse struct {
+	ID           int64  `json:"id"`
+	Provider     string `json:"provider"`
+	Surface      string `json:"surface"`
+	TerminalKind string `json:"terminalKind,omitempty"`
+	CWDBasename  string `json:"cwdBasename"`
+	Model        string `json:"model,omitempty"`
+	Summary      string `json:"summary"`
+	Kind         string `json:"kind"`
+	WaitingSince string `json:"waitingSince"`
+	WaitSeconds  int64  `json:"waitSeconds"`
+	RequestCount int    `json:"requestCount"`
+}
+
 func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 	s := &server{
 		store:          store,
@@ -194,10 +218,90 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 	mux.HandleFunc("/api/v1/quotas", s.quotas)
 	mux.HandleFunc("/api/v1/quota/refresh", s.refreshQuota)
 	mux.HandleFunc("/api/v1/settings", s.localSettings)
+	mux.HandleFunc("/api/v1/attention", s.attention)
+	mux.HandleFunc("/api/v1/hooks/codex", s.codexHook)
 	if len(options) == 0 || options[0].StaticFS == nil {
 		return mux
 	}
 	return newApplicationHandler(mux, options[0].StaticFS)
+}
+
+func (s *server) attention(w http.ResponseWriter, r *http.Request) {
+	if !requireGet(w, r) {
+		return
+	}
+	now := s.now().UTC()
+	waiting, err := s.store.WaitingSessions(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "读取实时等待状态", "请检查本地数据库")
+		return
+	}
+	sessions := make([]attentionSessionResponse, 0, len(waiting))
+	for _, item := range waiting {
+		waitSeconds := int64(now.Sub(item.WaitingSince).Seconds())
+		if waitSeconds < 0 {
+			waitSeconds = 0
+		}
+		sessions = append(sessions, attentionSessionResponse{
+			ID:           item.Session.ID,
+			Provider:     item.Session.Provider,
+			Surface:      item.Session.Surface,
+			TerminalKind: item.Session.TerminalKind,
+			CWDBasename:  item.Session.CWDBasename,
+			Model:        item.Session.Model,
+			Summary:      item.Latest.Summary,
+			Kind:         item.Latest.Kind,
+			WaitingSince: item.WaitingSince.Format(time.RFC3339Nano),
+			WaitSeconds:  waitSeconds,
+			RequestCount: item.RequestCount,
+		})
+	}
+	writeNoStoreJSON(w, attentionResponse{
+		GeneratedAt:  now.Format(time.RFC3339Nano),
+		WaitingCount: len(sessions),
+		Sessions:     sessions,
+	})
+}
+
+func (s *server) codexHook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeAPIError(w, http.StatusUnsupportedMediaType, domain.CodexSource, "接收实时事件", "请求必须使用 JSON")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var event attention.Event
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&event); err != nil {
+		var maxBytes *http.MaxBytesError
+		if errors.As(err, &maxBytes) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, domain.CodexSource, "接收实时事件", "事件超过大小限制")
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "接收实时事件", "事件格式无效")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "接收实时事件", "事件格式无效")
+		return
+	}
+	domainEvent, err := event.Domain(s.now())
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "接收实时事件", "事件字段无效")
+		return
+	}
+	if _, err := s.store.ApplyCodexHookEvent(r.Context(), domainEvent); err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "保存实时事件", "请检查本地数据库")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {

@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const migrationVersion = 5
+const migrationVersion = 6
 
 type Store struct {
 	db     *sql.DB
@@ -110,6 +110,7 @@ func (s *Store) initialize(ctx context.Context) error {
 		migrateQuota,
 		migrateUsageProviderDiagnostics,
 		migrateCacheCreationDurations,
+		migrateRuntimeAttention,
 	}
 	for index, migration := range migrations {
 		version := index + 1
@@ -309,6 +310,47 @@ func migrateCacheCreationDurations(ctx context.Context, tx *sql.Tx, _ int64) err
 		"ALTER TABLE usage_events_staging ADD COLUMN cache_creation_5m_tokens INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE usage_events_staging ADD COLUMN cache_creation_1h_tokens INTEGER NOT NULL DEFAULT 0",
 	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateRuntimeAttention(ctx context.Context, tx *sql.Tx, _ int64) error {
+	statements := []string{
+		`CREATE TABLE runtime_sessions (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider            TEXT NOT NULL,
+			external_session_id TEXT NOT NULL,
+			cwd_basename        TEXT NOT NULL DEFAULT '',
+			model               TEXT NOT NULL DEFAULT '',
+			surface             TEXT NOT NULL DEFAULT 'unknown',
+			terminal_kind       TEXT NOT NULL DEFAULT '',
+			tty                 TEXT NOT NULL DEFAULT '',
+			state               TEXT NOT NULL,
+			last_seen_at_ms     INTEGER NOT NULL,
+			UNIQUE (provider, external_session_id)
+		)`,
+		`CREATE INDEX idx_runtime_sessions_state_seen
+			ON runtime_sessions (state, last_seen_at_ms DESC)`,
+		`CREATE TABLE attention_requests (
+			id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+			runtime_session_id   INTEGER,
+			event_key            TEXT NOT NULL UNIQUE,
+			kind                 TEXT NOT NULL,
+			summary              TEXT NOT NULL,
+			turn_id              TEXT NOT NULL DEFAULT '',
+			created_at_ms        INTEGER NOT NULL,
+			notified_at_ms       INTEGER,
+			resolved_at_ms       INTEGER,
+			resolution_reason    TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY (runtime_session_id) REFERENCES runtime_sessions(id) ON DELETE SET NULL
+		)`,
+		`CREATE INDEX idx_attention_requests_active
+			ON attention_requests (runtime_session_id, resolved_at_ms, created_at_ms DESC)`,
+	}
+	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
 		}

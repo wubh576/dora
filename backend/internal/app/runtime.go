@@ -71,6 +71,7 @@ type Runtime struct {
 }
 
 func Start(parent context.Context, config Config) (*Runtime, error) {
+	startedAt := time.Now().UTC()
 	if config.Address == "" {
 		config.Address = DefaultAddress
 	}
@@ -114,12 +115,17 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		cleanup()
 		return nil, fmt.Errorf("读取 Dora 初始化状态: %w", err)
 	}
-
 	// 先完成端口绑定，避免启动失败时留下半运行的后台任务或菜单。
 	listener, err := net.Listen("tcp", config.Address)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("监听 HTTP 地址 %s: %w", config.Address, err)
+	}
+	// 进程启动前遗留的 waiting 仍展示，但不作为本次启动的新提醒再次发声。
+	if err := store.MarkHistoricalAttentionNotified(ctx, startedAt, time.Now().UTC()); err != nil {
+		_ = listener.Close()
+		cleanup()
+		return nil, fmt.Errorf("恢复 Codex 实时提醒状态: %w", err)
 	}
 	actualAddress := listener.Addr().String()
 	server := &http.Server{
