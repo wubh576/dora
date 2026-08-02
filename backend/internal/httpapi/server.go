@@ -191,6 +191,32 @@ type attentionSessionResponse struct {
 	RequestCount int    `json:"requestCount"`
 }
 
+type runtimeResponse struct {
+	GeneratedAt  string                   `json:"generatedAt"`
+	WaitingCount int                      `json:"waitingCount"`
+	RunningCount int                      `json:"runningCount"`
+	Sessions     []runtimeSessionResponse `json:"sessions"`
+}
+
+type runtimeSessionResponse struct {
+	ID            int64  `json:"id"`
+	Provider      string `json:"provider"`
+	State         string `json:"state"`
+	Surface       string `json:"surface"`
+	TerminalKind  string `json:"terminalKind,omitempty"`
+	CWDBasename   string `json:"cwdBasename"`
+	SessionName   string `json:"sessionName"`
+	Model         string `json:"model,omitempty"`
+	PromptPreview string `json:"promptPreview,omitempty"`
+	LastSeenAt    string `json:"lastSeenAt"`
+	RequestID     int64  `json:"requestId,omitempty"`
+	Summary       string `json:"summary,omitempty"`
+	Kind          string `json:"kind,omitempty"`
+	WaitingSince  string `json:"waitingSince,omitempty"`
+	WaitSeconds   int64  `json:"waitSeconds,omitempty"`
+	RequestCount  int    `json:"requestCount,omitempty"`
+}
+
 func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 	s := &server{
 		store:          store,
@@ -231,11 +257,50 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 	mux.HandleFunc("/api/v1/quota/refresh", s.refreshQuota)
 	mux.HandleFunc("/api/v1/settings", s.localSettings)
 	mux.HandleFunc("/api/v1/attention", s.attention)
+	mux.HandleFunc("/api/v1/runtime", s.runtimeSessions)
 	mux.HandleFunc("/api/v1/hooks/codex", s.codexHook)
 	if len(options) == 0 || options[0].StaticFS == nil {
 		return mux
 	}
 	return newApplicationHandler(mux, options[0].StaticFS)
+}
+
+func (s *server) runtimeSessions(w http.ResponseWriter, r *http.Request) {
+	if !requireGet(w, r) {
+		return
+	}
+	now := s.now().UTC()
+	active, err := s.store.RuntimeSessions(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "读取实时运行状态", "请检查本地数据库")
+		return
+	}
+	response := runtimeResponse{GeneratedAt: now.Format(time.RFC3339Nano), Sessions: make([]runtimeSessionResponse, 0, len(active))}
+	for _, item := range active {
+		name := item.Session.CWDBasename
+		if name == "" {
+			name = "未命名会话"
+		}
+		value := runtimeSessionResponse{
+			ID: item.Session.ID, Provider: item.Session.Provider, State: item.Session.State,
+			Surface: item.Session.Surface, TerminalKind: item.Session.TerminalKind,
+			CWDBasename: item.Session.CWDBasename, SessionName: name, Model: item.Session.Model,
+			PromptPreview: item.Session.PromptPreview, LastSeenAt: item.Session.LastSeenAt.Format(time.RFC3339Nano),
+		}
+		if item.Session.State == domain.RuntimeStateWaiting && item.Latest != nil {
+			value.RequestID = item.Latest.ID
+			value.Summary = item.Latest.Summary
+			value.Kind = item.Latest.Kind
+			value.WaitingSince = item.WaitingSince.Format(time.RFC3339Nano)
+			value.WaitSeconds = max(0, int64(now.Sub(item.WaitingSince).Seconds()))
+			value.RequestCount = item.RequestCount
+			response.WaitingCount++
+		} else {
+			response.RunningCount++
+		}
+		response.Sessions = append(response.Sessions, value)
+	}
+	writeNoStoreJSON(w, response)
 }
 
 func (s *server) attention(w http.ResponseWriter, r *http.Request) {

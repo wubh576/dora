@@ -85,6 +85,7 @@ type rawHookEvent struct {
 	ToolName      string          `json:"tool_name"`
 	ToolUseID     string          `json:"tool_use_id"`
 	ToolInput     json.RawMessage `json:"tool_input"`
+	Prompt        string          `json:"prompt"`
 }
 
 func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
@@ -121,6 +122,9 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 		ToolName:     strings.TrimSpace(raw.ToolName),
 		ToolUseID:    strings.TrimSpace(raw.ToolUseID),
 	}
+	if event.HookEvent == "UserPromptSubmit" {
+		event.PromptPreview = raw.Prompt
+	}
 	if event.HookEvent == "PermissionRequest" {
 		if len(raw.ToolInput) == 0 {
 			return attention.Event{}, errors.New("Codex 授权事件缺少工具输入")
@@ -138,8 +142,17 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 		hash := sha256.Sum256(canonicalInput)
 		event.InputHash = hex.EncodeToString(hash[:])
 	}
-	if _, err := event.Domain(time.Now().UTC()); err != nil {
+	domainEvent, err := event.Domain(time.Now().UTC())
+	if err != nil {
 		return attention.Event{}, errors.New("Codex Hook 事件字段无效")
 	}
+	// 在 helper 出站前完成脱敏和截断，原始 prompt 不穿过 loopback API。
+	event.SessionID = domainEvent.ExternalSessionID
+	event.TurnID = domainEvent.TurnID
+	event.CWDBasename = domainEvent.CWDBasename
+	event.Model = domainEvent.Model
+	event.TTY = domainEvent.TTY
+	event.ToolName = domainEvent.ToolName
+	event.PromptPreview = domainEvent.PromptPreview
 	return event, nil
 }

@@ -1,8 +1,8 @@
 # Dora：个人 AI Coding 用量 Demo 开发指南
 
-> 状态：第一期、第二期 A、第二期 B 与 Codex 实时提醒已完成
+> 状态：第一期、第二期 A、第二期 B、Codex 实时提醒与原生灵动岛已完成
 > 目标平台：macOS，本地单用户
-> 范围：第一期 Codex 本地 Web 仪表盘；第二期 A macOS 菜单栏；第二期 B Claude Code 本地用量；Codex 实时等待提醒与精确跳转
+> 范围：第一期 Codex 本地 Web 仪表盘；第二期 A macOS 桌面控制中心；第二期 B Claude Code 本地用量；Codex 实时等待提醒与精确跳转
 > 不在本文范围：多 Agent session 管理、团队协作、排行榜、云端同步
 
 ## 1. 最终目标
@@ -13,8 +13,8 @@
 - 实际 token 用量与订阅配额同等重要，但两条链路相互独立。
 - 数据只存放在本机 SQLite，不需要 MySQL、PostgreSQL、Docker、登录系统或云服务。
 - Web 页面只监听 `127.0.0.1`，由同一个 Go 核心进程提供 API 和静态资源。
-- 第二期 A 增加原生 macOS 菜单栏；第二期 B 接入 Claude Code 的实际用量。
-- 不保存 prompt、回复正文、工具参数或完整 transcript 副本。
+- 第二期 A 增加原生 macOS 顶部灵动岛；第二期 B 接入 Claude Code 的实际用量。
+- 不保存完整 prompt、回复正文、工具参数或完整 transcript 副本；仅在 Codex 活跃运行态保存清洗、截断的一行 prompt 摘要，并在 Stop/SessionEnd 清除。
 - Usage session ID、父子关系和完整项目路径只在扫描期间用于去重和聚合计数。Codex 实时提醒仅在运行态保存精确跳转所需的 external session ID，不扩展为 session 管理。
 
 推荐的两期产品形态如下：
@@ -22,8 +22,8 @@
 | 阶段 | 产品形态 | Usage 数据 | Quota 数据 |
 |---|---|---|---|
 | 第一期 | 本地 Web 仪表盘 | Codex transcript | Codex OAuth quota |
-| 第二期 A | Web + macOS 菜单栏 | Codex transcript | Codex OAuth quota |
-| 第二期 B | Web + macOS 菜单栏 | Codex + Claude Code transcript | Codex OAuth quota |
+| 第二期 A | Web + macOS 灵动岛 | Codex transcript | Codex OAuth quota |
+| 第二期 B | Web + macOS 灵动岛 | Codex + Claude Code transcript | Codex OAuth quota |
 
 ## 2. 架构取舍
 
@@ -35,7 +35,7 @@
   → HTTP ingest
   → PostgreSQL
   → 多用户聚合 API
-  → React 页面 / 菜单栏
+  → React 页面 / 灵动岛
 ```
 
 个人 Demo 改成：
@@ -45,7 +45,7 @@
   → 统一 UsageEvent
   → 本地 SQLite
   → Go loopback API
-  → React 页面 / AppKit 菜单栏
+  → React 页面 / AppKit 灵动岛
 ```
 
 ### 2.1 必须保留
@@ -79,7 +79,7 @@
 - 标准库 `net/http` 提供本地 API 和静态文件。
 - `modernc.org/sqlite` 作为纯 Go SQLite driver，避免个人构建时依赖 CGO。
 - `go:embed` 内嵌前端构建产物。
-- 单进程拥有 SQLite 写权限，Web 页面和菜单栏都通过 loopback API 访问数据。
+- 单进程拥有 SQLite 写权限，Web 页面和灵动岛都通过 loopback API 访问数据。
 
 个人 macOS Demo 直接固定纯 Go driver，减少构建分支。
 
@@ -90,14 +90,14 @@
 - Vitest + Testing Library。
 - 不需要 SSR、Node 服务端或复杂状态管理。
 
-### 3.3 macOS 菜单栏
+### 3.3 macOS 灵动岛
 
-第二期在 Go 生产程序内使用轻量 AppKit 状态栏桥接：
+第二期在 Go 生产程序内使用轻量 AppKit 顶部面板桥接：
 
-- `dora menubar` 是唯一进程，同时持有菜单栏、HTTP/API、SQLite、扫描器和配额服务。
-- 菜单栏通过同一进程的 loopback API 读取规范化 snapshot，不直接查询 SQLite，也不复制统计逻辑。
+- `dora menubar` 是兼容命令名和唯一进程，同时持有灵动岛、HTTP/API、SQLite、扫描器和配额服务。
+- 灵动岛通过同一进程的 loopback API 读取规范化 snapshot 与 runtime，不直接查询 SQLite，也不复制统计逻辑。
 - 复用 `dora serve` 的应用运行时，启动失败、信号退出和数据库关闭采用同一条路径。
-- 状态项使用内嵌的单色 template icon，并设置为 accessory application，不创建窗口或 Dock 图标。
+- 使用无边框、nonactivating 的原生 `NSPanel`，按当前屏幕 frame、visibleFrame 和 safeAreaInsets 顶部居中；不创建 `NSStatusItem`、菜单栏占位或 Dock 图标。
 - 通过 LaunchAgent 运行同一个 `dora menubar` 进程，不额外启动 Core、Vite 或 Node 服务。
 
 这一结构保留了 UI 与数据职责边界，同时避免两个常驻进程、端口协调和双重生命周期。
@@ -851,8 +851,9 @@ input / 1M × input price
 | GET | `/breakdown?range=30D&dimension=provider` | Provider 分布 |
 | GET | `/breakdown?range=30D&dimension=provider_model` | 保留 Provider 归属的模型分布 |
 | GET | `/quotas` | 最新 quota 与 stale 状态 |
-| GET | `/snapshot` | 菜单栏使用的紧凑快照，与 Web dashboard 保持相同统计口径 |
-| GET | `/attention` | 菜单栏使用的 waiting session 脱敏快照，不返回 external session ID 或 TTY |
+| GET | `/snapshot` | 灵动岛使用的紧凑用量快照，与 Web dashboard 保持相同统计口径 |
+| GET | `/runtime` | 灵动岛每秒读取的 running/waiting session 统一脱敏快照 |
+| GET | `/attention` | 兼容旧客户端的 waiting-only 快照，不作为灵动岛第二份状态源 |
 | GET | `/diagnostics` | 数据源、扫描状态、错误 |
 | POST | `/hooks/codex` | 仅供本机 helper 写入结构化脱敏 Codex 事件 |
 | POST | `/scan` | 手动触发扫描 |
@@ -864,8 +865,8 @@ input / 1M × input price
 - 只监听 `127.0.0.1`，不监听 `0.0.0.0`。
 - 前后端同源，不开放 CORS。
 - 浏览器写接口验证 `Origin`；启动时生成随机 control token，并要求对应 header。
-- Codex hook 写接口不接受浏览器控制操作，只接受 loopback、`application/json`、64 KiB 以内的脱敏事件；helper 禁止 redirect 且不包含 prompt、回复、完整命令、工具输入、环境变量、完整 cwd 或 external URL。
-- Usage、Diagnostics 与 attention API 不返回 external session ID、TTY、完整项目路径、`source_files.path`、access token 或原始错误 body；attention 只返回点击跳转所需的临时内部 runtime ID。
+- Codex hook 写接口不接受浏览器控制操作，只接受 loopback、`application/json`、64 KiB 以内的脱敏事件；helper 禁止 redirect。`UserPromptSubmit.prompt` 只转换为去控制字符、压缩空白、最多 160 个 Unicode 字符的一行摘要，其他完整 prompt、回复、命令、工具输入、环境变量、完整 cwd 和 external URL 一律不进入 API。
+- Usage、Diagnostics、runtime 与 attention API 不返回 external session ID、TTY、完整项目路径、`source_files.path`、access token 或原始错误 body；runtime/attention 只返回点击跳转所需的临时内部 runtime ID。
 - JSON 错误包含 provider、操作和可行动建议。
 
 ## 16. Web 仪表盘
@@ -913,7 +914,7 @@ cache read / (input + cache read + cache creation)
 
 ### 16.3 Snapshot DTO
 
-菜单栏使用以下紧凑 DTO；Web 使用 `/dashboard`，两者复用同一 analytics 统计口径：
+灵动岛使用以下紧凑 DTO；Web 使用 `/dashboard`，两者复用同一 analytics 统计口径：
 
 ```json
 {
@@ -944,6 +945,36 @@ cache read / (input + cache read + cache creation)
 }
 ```
 
+### 16.4 Runtime DTO
+
+`/runtime` 是 running 与 waiting 的唯一实时读模型。waiting 按最早 active request 排序，running 按最近活动排序；同一 session 只出现一行：
+
+```json
+{
+  "generatedAt": "2026-08-02T12:00:00Z",
+  "waitingCount": 1,
+  "runningCount": 1,
+  "sessions": [
+    {
+      "id": 7,
+      "provider": "provider.codex",
+      "state": "waiting",
+      "surface": "codex_app",
+      "sessionName": "dora",
+      "promptPreview": "实现原生灵动岛",
+      "lastSeenAt": "2026-08-02T11:59:55Z",
+      "requestId": 12,
+      "summary": "Codex 等待授权",
+      "waitingSince": "2026-08-02T11:59:56Z",
+      "waitSeconds": 4,
+      "requestCount": 1
+    }
+  ]
+}
+```
+
+会话名优先使用 Hook 可用的真实名称；当前 Codex Hook 没有提供独立 session title，因此回退为 cwd basename，再回退为“未命名会话”。不得读取 Codex 私有 cache 或用 AI 猜测名称。
+
 ## 17. 第一期运行方式
 
 CLI：
@@ -968,7 +999,7 @@ dora doctor
 
 不要在 HTTP server ready 之前执行耗时全量扫描。
 
-第一期由用户手动打开 loopback 页面，不自动打开浏览器；后续由菜单栏和 LaunchAgent 接管启动入口。
+第一期由用户手动打开 loopback 页面，不自动打开浏览器；后续由灵动岛和 LaunchAgent 接管启动入口。
 
 ## 18. 第一期测试与验收
 
@@ -1031,11 +1062,11 @@ dora doctor
 - input/cache/output/reasoning 口径可解释。
 - Codex quota 开启后展示 5h/7d 和重置时间。
 - quota 离线时 usage 仍可用。
-- SQLite 不包含 prompt 或 access token。
+- SQLite 的 usage/quota 数据不包含 prompt 或 access token；仅 Codex 活跃 runtime 可保存清洗截断的一行 preview，Stop/SessionEnd 清除。
 - Web 只通过 loopback 访问。
 - Diagnostics 能解释每个失败 provider。
 
-# 第二期：macOS 菜单栏与 Claude Code 本地用量
+# 第二期：macOS 灵动岛与 Claude Code 本地用量
 
 ## 19. 第二期架构
 
@@ -1043,43 +1074,35 @@ dora doctor
 Codex / Claude files ──→ 单个 dora menubar 进程
                          ├─ Go runtime + SQLite
                          ├─ loopback HTTP/API + 内嵌 React
-                         └─ AppKit status item
+                         └─ AppKit nonactivating NSPanel
 ```
 
 原则：
 
 - SQLite 仍然只有 Dora runtime 一个写入者。
-- 菜单栏不复制 analytics SQL。
-- Web 使用 dashboard DTO，菜单栏使用 compact snapshot DTO；两者调用同一 analytics 层并保持统计口径一致。
+- 灵动岛不复制 analytics SQL，也不直接查询 SQLite。
+- Web 使用 dashboard DTO，灵动岛使用 compact snapshot 与 runtime DTO；两者调用同一后端并保持统计口径一致。
 - Provider 独立失败。
 
-## 20. macOS 菜单栏
+## 20. macOS 灵动岛
 
-### 20.1 功能
+### 20.1 功能与状态
 
-菜单栏标题默认显示今日 token，例如：
+- 紧凑态常驻当前屏幕顶部中央，展示 Dora、running/waiting 数量和今日 token；waiting 使用红色优先级，running 使用蓝色状态。
+- 鼠标进入立即切换 `expanded_by_hover`，离开后约 320 ms 收起；新 attention request 进入 `expanded_by_attention`，高亮对应会话并在约 6 秒后按 hover 状态回落。
+- 展开态展示 1D / 7D / ALL token、Codex 5h/7d quota、状态、waiting/running 会话、刷新、仪表盘和退出。
+- waiting 始终排在 running 之前；中部会话列表独立滚动，固定头部和底部操作不滚动，无水平滚动。
+- 点击任一会话立即收起，再用临时内部 runtime ID 精确跳转；点击不解决 waiting。
+- 不创建 `NSStatusItem`、状态栏图标占位或 Dock 图标；panel 不抢应用焦点，只有精确跳转成功时目标 App/终端被激活。
 
-```text
-12.4M
-```
-
-菜单：
-
-- 1D / 7D / ALL token。
-- Codex 5h/7d quota。
-- 最后扫描和刷新时间。
-- “立即刷新”。
-- “打开仪表盘”。
-- “退出”。
-
-当前菜单使用统一 snapshot 展示 Codex + Claude Code 用量，并单独展示 Codex 5h/7d quota。菜单不实现复杂趋势图、项目表格或设置页面。
+当前灵动岛使用统一 snapshot 展示 Codex + Claude Code 用量，并单独展示 Codex 5h/7d quota。它不实现复杂趋势图、项目表格或设置页面。
 
 ### 20.2 刷新
 
-- 打开菜单时读取 snapshot，后台每分钟重读当前状态；扫描与配额后台周期仍由共享 runtime 统一管理。
-- 手动刷新在后台 goroutine 中先扫描 token，再按用户授权刷新配额，不能并发触发，也不能阻塞菜单事件循环。
+- 启动与每分钟读取 snapshot；每秒只读取一次统一 `/runtime`，不再分别轮询 running 与 attention。扫描与配额后台周期仍由共享 runtime 统一管理。
+- 手动刷新在后台 goroutine 中先扫描 token，再按用户授权刷新配额，不能并发触发，也不能阻塞 AppKit 事件循环。
 - 配额刷新失败不能回滚新的 token 数据；刷新结束后重新读取 snapshot。
-- 菜单栏复用 loopback API DTO，不自行解析文件、查询 SQLite 或实现另一套统计。
+- 灵动岛复用 loopback API DTO，不自行解析文件、查询 SQLite 或实现另一套统计。
 - “打开仪表盘”用参数化系统命令打开 runtime 的实际 loopback 地址。
 - 退出、SIGINT 和 SIGTERM 都取消同一个 application context，正常关闭 HTTP、后台任务和 SQLite。
 
@@ -1113,7 +1136,7 @@ dora uninstall
 - install 等待 loopback health，重复执行不会产生多个 LaunchAgent 或 Dora 常驻进程。
 - status 综合 plist、安装二进制、`launchctl print`、health 和 Codex Hook 安装/信任状态；退出码 0 为正常，1 为未安装/未运行/异常，2 为检查失败。Hook 未授权只降级实时提醒，不影响 token、成本、配额和 Web。
 - uninstall 幂等，删除 plist、安装二进制、对应临时文件和 Dora Hook handlers，保留 SQLite、settings、日志、用户其他 Hooks 和 Codex 原始数据。
-- 菜单“退出 Dora”产生成功退出，当前登录会话不立即重启；下次登录仍由 RunAtLoad 启动。
+- 灵动岛“退出”产生成功退出，当前登录会话不立即重启；下次登录仍由 RunAtLoad 启动。
 - stdout 和 stderr 各自以 200 MiB 为活动文件阈值；启动时检查一次，运行中每 10 分钟检查一次，任一侧失败不阻断另一侧或应用主流程。
 - 达到阈值时先原子覆盖同名 `.1` 备份，再 truncate 原活动文件，保证 launchd 已打开的文件描述符继续写入原 inode；每侧只保留一个备份，不生成 `.2`。
 - 轮转由共享 application runtime 管理 context 生命周期。启用前必须同时确认 `XPC_SERVICE_NAME` 为官方 Label、当前可执行文件位于安装路径，并且 stdout/stderr 文件描述符与 plist 的两个日志为同一文件；手动 `serve`、普通 `menubar` 或只伪加 `--launchagent` 都不得操作已安装日志。
@@ -1323,14 +1346,16 @@ DORA_CLAUDE_OAUTH_TOKEN
 
 ## 24. 第二期测试与验收
 
-### 24.1 macOS 菜单栏
+### 24.1 macOS 灵动岛
 
-- Core 可用时显示当前 snapshot。
-- Core 不可用时显示最后成功 snapshot + stale。
+- runtime 可用时显示当前 snapshot 和 active session。
+- runtime 短暂不可用时保留最后成功视图并显示连接状态。
 - 手动刷新不会产生并行 scan。
 - “打开仪表盘”打开 loopback URL。
 - LaunchAgent install/status/uninstall 幂等。
-- 菜单栏退出不误删数据。
+- hover/attention timer 使用可注入时钟测试，不依赖真实 sleep。
+- 刘海屏、普通屏、屏幕尺寸变化和长会话列表布局使用纯 Go 几何测试。
+- 灵动岛退出不误删数据，测试启动的窗口和服务必须在验收后关闭。
 
 ### 24.2 Claude parser
 
@@ -1358,14 +1383,14 @@ DORA_CLAUDE_OAUTH_TOKEN
 
 ### 24.4 第二期 Definition of Done
 
-- macOS 登录后 Core 与菜单栏可自动启动。
-- 菜单栏展示 Codex + Claude Code 合并后的今日 token，并明确标注 Codex quota。
+- macOS 登录后单个 Dora runtime 与灵动岛可自动启动。
+- 灵动岛展示 Codex + Claude Code 合并后的今日 token，并明确标注 Codex quota。
 - Claude Code 历史 token 可在 Web 中查询。
 - Codex 与 Claude 使用统一五类 token DTO。
 - Claude fork 和 streaming 不重复。
 - Claude Code quota 不在当前范围；现有 quota 始终属于 Codex。
 - 任一 provider 失败不影响另一 provider。
-- Web 与菜单栏的 snapshot 数值一致。
+- Web 与灵动岛的 snapshot 数值一致。
 
 ## 25. Codex 实时提醒与精确跳转
 
@@ -1375,7 +1400,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 - `SessionStart`、`UserPromptSubmit` 进入 running；`PermissionRequest` 与 `request_user_input` 的 `PreToolUse` 进入 waiting；对应后续事件回到 running；`Stop` 进入 idle；`SessionEnd` 移除 runtime session。
 - waiting 数量按 session 计算，不按 request 叠加；同一 session 可以显示 active request 数。
 - attention event key 必须稳定去重。PermissionRequest 在缺少 tool use ID 时使用规范化 JSON 的输入 hash，只存 hash，不存输入正文。
-- notified 与 resolved 分开记录。一次新 request 只发一次声音；点击菜单只跳转，不解决 request；重启不重放历史声音。
+- notified 与 resolved 分开记录。一次新 request 只发一次声音并自动展开灵动岛；点击会话只跳转，不解决 request；重启不重放历史声音。
 - PermissionRequest 没有单独假设 resolved Hook：`PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。
 - 不能用几秒钟 timeout 盲目解除 waiting。缺失 `SessionEnd` 的异常残留以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。
 - Codex App `0.146.0-alpha.9.2` 实机探针确认全局 Hook 会产生 `SessionStart → UserPromptSubmit → Stop → SessionEnd`，且无 TTY 的 App 进程祖先会稳定识别为 `codex_app`；原始 thread ID 可直接用于 deep link。
@@ -1397,16 +1422,16 @@ dora hooks emit codex
 - emit 限制 stdin 大小，只提取最小字段，并以短超时 POST 到固定 loopback endpoint；禁止 redirect，Dora 未运行时静默成功，不阻塞 Codex。
 - surface 依据受控字段、进程 executable/ancestry、TTY 和终端类型识别。只有实际 App ancestry 才标记 Codex App；CLI 只支持 iTerm2 与 Terminal exact TTY。
 
-### 25.3 菜单栏和跳转
+### 25.3 灵动岛和跳转
 
-- 无 waiting 时标题显示今日 token；有 waiting 时显示 `🔴 N`，顶部“需要关注”区域的子菜单中每个 waiting session 一行。
-- 行内容包括 Codex surface、cwd basename、精简摘要、等待时长和 active request 数；实时轮询独立于 usage scan。
+- 紧凑态同时表达今日 token、running 与 waiting；新 waiting 通过红色、高亮、自动展开和一次性声音获得最高视觉优先级。
+- 展开态按 session 展示 Codex surface、会话名回退、清洗后的 prompt 摘要、等待时长和 active request 数；实时轮询独立于 usage scan。
 - Codex App 使用参数化 `codex://threads/<external_session_id>` deep link 并前台激活。
 - iTerm2 与 Terminal 使用 AppleScript 精确匹配 TTY；TTY 只能通过 `osascript` argv 传入，不插值进源码，并负责取消最小化和激活窗口。
 - 不使用窗口标题、cwd 或“最近窗口”模糊匹配。目标消失时给出明确错误并解决对应 runtime 状态。
 - 首次控制 iTerm2/Terminal 时由 macOS Automation 权限保护；拒绝或未授权必须显示可行动错误，不能误判为目标已经结束。
-- 当前 LaunchAgent 运行的是无稳定 bundle identifier 的独立二进制，不是 `.app`。系统原生通知横幅无法作为可靠交付路径，因此当前只保证菜单栏红点和 AppKit 系统声音，不伪造横幅完成状态。
-- Claude Code 实时提醒和屏幕刘海 UI 不在当前范围。
+- 当前 LaunchAgent 运行的是无稳定 bundle identifier 的独立二进制，不是 `.app`。系统原生通知横幅无法作为可靠交付路径，因此当前保证灵动岛自动展开、高亮和 AppKit 系统声音，不伪造横幅完成状态。
+- Claude Code 实时提醒不在当前范围。
 
 ## 26. 日志与隐私
 
@@ -1424,11 +1449,11 @@ dora hooks emit codex
 
 后台失败日志必须保持单行。正常 context cancellation 或 Dora 主动退出不记录为失败；配额网络和认证错误在 provider 边界保留有价值的 error chain，但不得包含请求 Header、OAuth token、Cookie 或响应正文。
 
-LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，各覆盖一个 `.1` 备份。阈值按单个活动文件计算，不按两个日志合计；磁盘占用评估必须同时计入两个活动文件和两个备份。轮转失败只记录单行原因并在下个周期重试，不影响 Web、菜单栏、扫描或配额服务；uninstall 不删除活动日志或备份。
+LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，各覆盖一个 `.1` 备份。阈值按单个活动文件计算，不按两个日志合计；磁盘占用评估必须同时计入两个活动文件和两个备份。轮转失败只记录单行原因并在下个周期重试，不影响 Web、灵动岛、扫描或配额服务；uninstall 不删除活动日志或备份。
 
 ### 26.2 禁止记录
 
-- prompt、response、thinking 内容。
+- 完整 prompt、response、thinking 内容；运行态只允许保存已经清洗和截断的一行 prompt preview，日志仍禁止记录 preview。
 - JSONL 原始行。
 - access token、refresh token、ID token。
 - quota HTTP response body。
@@ -1471,20 +1496,20 @@ LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，�
 ### 第二期
 
 1. 固化 `/api/v1/snapshot`。
-2. 实现单进程 AppKit 菜单栏状态项。
+2. 实现单进程 AppKit 顶部灵动岛。
 3. 实现 LaunchAgent 管理。
 4. 编写 Claude fixtures。
 5. 实现 Claude main/subagent parser。
 6. 实现 stable ID、fork、streaming dedup。
 7. 实现 native reasoning 与 thinking carve。
-8. 在 Web 和菜单栏接入 Claude，并保留 provider 归属。
+8. 在 Web 和灵动岛接入 Claude，并保留 provider 归属。
 9. 完成第二期验收测试。
 
 ### Codex 实时提醒
 
 1. 建立 runtime session 与 attention request migration、状态机和 loopback API。
 2. 实现 Codex hooks install/status/uninstall/emit，完成官方 hooks/list 兼容性探测。
-3. 接入一次性声音、菜单栏 waiting 区域和 App/iTerm2/Terminal 精确跳转。
+3. 接入一次性声音、灵动岛 waiting 区域和 App/iTerm2/Terminal 精确跳转。
 4. 完成重启去重、隐私、跳转和真实 macOS 验收。
 
 ## 28. 最终边界
@@ -1492,7 +1517,7 @@ LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，�
 本文交付边界：
 
 - 第一期：本地 Web 仪表盘 + SQLite + Codex usage + Codex quota。
-- 第二期：macOS 菜单栏 + Claude Code usage；订阅 quota 仍只支持 Codex。
+- 第二期：macOS 灵动岛 + Claude Code usage；订阅 quota 仍只支持 Codex。
 - Codex 实时提醒：只观察等待状态并回到原位置，不提供 session 管理。
 
 不同 Agent 之间的 session 浏览、恢复、迁移、启动和上下文管理不在本文设计或验收范围内。

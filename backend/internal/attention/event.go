@@ -7,22 +7,24 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/wubh576/dora/backend/internal/domain"
 )
 
 type Event struct {
-	SessionID    string `json:"sessionId"`
-	HookEvent    string `json:"hookEvent"`
-	TurnID       string `json:"turnId,omitempty"`
-	CWDBasename  string `json:"cwdBasename,omitempty"`
-	Model        string `json:"model,omitempty"`
-	Surface      string `json:"surface"`
-	TerminalKind string `json:"terminalKind,omitempty"`
-	TTY          string `json:"tty,omitempty"`
-	ToolName     string `json:"toolName,omitempty"`
-	ToolUseID    string `json:"toolUseId,omitempty"`
-	InputHash    string `json:"inputHash,omitempty"`
+	SessionID     string `json:"sessionId"`
+	HookEvent     string `json:"hookEvent"`
+	TurnID        string `json:"turnId,omitempty"`
+	CWDBasename   string `json:"cwdBasename,omitempty"`
+	Model         string `json:"model,omitempty"`
+	Surface       string `json:"surface"`
+	TerminalKind  string `json:"terminalKind,omitempty"`
+	TTY           string `json:"tty,omitempty"`
+	ToolName      string `json:"toolName,omitempty"`
+	ToolUseID     string `json:"toolUseId,omitempty"`
+	InputHash     string `json:"inputHash,omitempty"`
+	PromptPreview string `json:"promptPreview,omitempty"`
 }
 
 func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
@@ -52,6 +54,10 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 		}
 		eventKey = stableEventKey(event.SessionID, event.TurnID, event.HookEvent, event.ToolName, stablePart)
 	}
+	promptPreview := ""
+	if event.HookEvent == "UserPromptSubmit" {
+		promptPreview = cleanPromptPreview(event.PromptPreview, 160)
+	}
 	return domain.CodexHookEvent{
 		ExternalSessionID: event.SessionID,
 		EventName:         event.HookEvent,
@@ -63,8 +69,32 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 		TTY:               cleanLabel(event.TTY, 80),
 		ToolName:          event.ToolName,
 		EventKey:          eventKey,
+		PromptPreview:     promptPreview,
 		ReceivedAt:        receivedAt.UTC(),
 	}, nil
+}
+
+func cleanPromptPreview(value string, limit int) string {
+	var builder strings.Builder
+	separated := true
+	count := 0
+	for _, current := range value {
+		if unicode.IsSpace(current) || unicode.IsControl(current) || unicode.In(current, unicode.Cf) {
+			if !separated && count < limit {
+				builder.WriteByte(' ')
+				count++
+			}
+			separated = true
+			continue
+		}
+		if count >= limit {
+			break
+		}
+		builder.WriteRune(current)
+		count++
+		separated = false
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func cwdBasename(value string) string {

@@ -3,5 +3,6 @@
   "turn_id": "fixture-turn",
   "cwd": "/Users/example/dora",
   "hook_event_name": "UserPromptSubmit",
-  "model": "gpt-fixture"
+  "model": "gpt-fixture",
+  "prompt": "  帮我实现\n灵动岛\t状态  "
 }

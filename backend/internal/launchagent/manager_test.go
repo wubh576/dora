@@ -159,7 +159,7 @@ func TestInstallDoesNotTrustUnrelatedHealthyEndpoint(t *testing.T) {
 	manager, runner, _, _ := newTestManager(t, true)
 	runner.stopAfterKickstart = true
 	err := manager.Install(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "菜单栏进程未保持运行") {
+	if err == nil || !strings.Contains(err.Error(), "Dora 桌面进程未保持运行") {
 		t.Fatalf("未识别 health 与 launchd job 脱节: %v", err)
 	}
 }

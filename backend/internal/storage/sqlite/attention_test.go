@@ -105,6 +105,98 @@ func TestCodexAttentionTransitionsDeduplicateAndResolve(t *testing.T) {
 	}
 }
 
+func TestRuntimeSessionsCombineRunningAndWaitingWithSafePreview(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 2, 8, 30, 0, 0, time.UTC)
+	running := attentionEvent("UserPromptSubmit", now)
+	running.ExternalSessionID = "running-session"
+	running.PromptPreview = "实现灵动岛"
+	if _, err := store.ApplyCodexHookEvent(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	waiting := attentionEvent("PermissionRequest", now.Add(time.Second))
+	waiting.ExternalSessionID = "waiting-session"
+	waiting.ToolName, waiting.EventKey = "Bash", "codex:runtime-waiting"
+	if _, err := store.ApplyCodexHookEvent(ctx, waiting); err != nil {
+		t.Fatal(err)
+	}
+
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 2 {
+		t.Fatalf("RuntimeSessions() = %+v, %v", active, err)
+	}
+	if active[0].Session.State != domain.RuntimeStateWaiting || active[0].Latest == nil || active[0].Latest.ID <= 0 {
+		t.Fatalf("waiting 未排在首位或缺少请求: %+v", active[0])
+	}
+	if active[1].Session.State != domain.RuntimeStateRunning || active[1].Latest != nil || active[1].Session.PromptPreview != "实现灵动岛" {
+		t.Fatalf("running 状态或 preview 错误: %+v", active[1])
+	}
+
+	// 非 prompt Hook 不能覆盖用户最后一次提交的安全摘要。
+	running.EventName = "SessionStart"
+	running.PromptPreview = "不应覆盖"
+	running.ReceivedAt = now.Add(2 * time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.RuntimeSession(ctx, active[1].Session.ID)
+	if err != nil || session.PromptPreview != "实现灵动岛" {
+		t.Fatalf("非 prompt Hook 覆盖了 preview: %+v, %v", session, err)
+	}
+	running.EventName = "Stop"
+	running.ReceivedAt = now.Add(3 * time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	session, err = store.RuntimeSession(ctx, active[1].Session.ID)
+	if err != nil || session.PromptPreview != "" || session.State != domain.RuntimeStateIdle {
+		t.Fatalf("Stop 未清除 runtime preview: %+v, %v", session, err)
+	}
+}
+
+func TestRuntimeSessionsSortWaitingThenRecentRunning(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 2, 8, 45, 0, 0, time.UTC)
+	events := []domain.CodexHookEvent{
+		attentionEvent("PermissionRequest", now.Add(2*time.Second)),
+		attentionEvent("PermissionRequest", now.Add(time.Second)),
+		attentionEvent("UserPromptSubmit", now),
+		attentionEvent("UserPromptSubmit", now.Add(3*time.Second)),
+	}
+	events[0].ExternalSessionID, events[0].ToolName, events[0].EventKey = "waiting-late", "Bash", "codex:waiting-late"
+	events[1].ExternalSessionID, events[1].ToolName, events[1].EventKey = "waiting-early", "Bash", "codex:waiting-early"
+	events[2].ExternalSessionID = "running-old"
+	events[3].ExternalSessionID = "running-new"
+	for _, event := range events {
+		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"waiting-early", "waiting-late", "running-new", "running-old"}
+	if len(active) != len(want) {
+		t.Fatalf("RuntimeSessions 数量 = %d", len(active))
+	}
+	for index, expected := range want {
+		if active[index].Session.ExternalSessionID != expected {
+			t.Fatalf("RuntimeSessions[%d] = %q, want %q", index, active[index].Session.ExternalSessionID, expected)
+		}
+	}
+}
+
 func TestCodexAttentionRestartDoesNotRenotifyHistoricalWaiting(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "dora.db")

@@ -31,6 +31,7 @@ type CodexHookEvent struct {
 	TTY               string
 	ToolName          string
 	EventKey          string
+	PromptPreview     string
 	ReceivedAt        time.Time
 }
 
@@ -44,6 +45,7 @@ type RuntimeSession struct {
 	TerminalKind      string
 	TTY               string
 	State             string
+	PromptPreview     string
 	LastSeenAt        time.Time
 }
 
@@ -63,6 +65,13 @@ type AttentionRequest struct {
 type WaitingSession struct {
 	Session      RuntimeSession
 	Latest       AttentionRequest
+	WaitingSince time.Time
+	RequestCount int
+}
+
+type ActiveSession struct {
+	Session      RuntimeSession
+	Latest       *AttentionRequest
 	WaitingSince time.Time
 	RequestCount int
 }

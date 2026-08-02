@@ -1,8 +1,10 @@
 package attention
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wubh576/dora/backend/internal/domain"
 )
@@ -25,6 +27,9 @@ func TestEventDomainKeepsOnlySafeRuntimeLabels(t *testing.T) {
 	if event.ToolName != "Bash forged-log" {
 		t.Fatalf("tool 标签未压缩为单行: %q", event.ToolName)
 	}
+	if event.PromptPreview != "" {
+		t.Fatalf("非 UserPromptSubmit 保留了 preview: %q", event.PromptPreview)
+	}
 
 	for _, invalid := range []Event{
 		{SessionID: "session", HookEvent: "Stop", Surface: domain.CodexSurfaceCLI, TerminalKind: "custom-terminal"},
@@ -33,5 +38,30 @@ func TestEventDomainKeepsOnlySafeRuntimeLabels(t *testing.T) {
 		if _, err := invalid.Domain(time.Now()); err == nil {
 			t.Fatalf("Domain() 接受无效 runtime 元数据: %+v", invalid)
 		}
+	}
+}
+
+func TestEventDomainSanitizesPromptPreview(t *testing.T) {
+	input := "  第一行\n\t第二行\u200b\u001b[31m  第三行  "
+	event, err := (Event{
+		SessionID: "session", HookEvent: "UserPromptSubmit",
+		Surface: domain.CodexSurfaceApp, PromptPreview: input,
+	}).Domain(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.PromptPreview != "第一行 第二行 [31m 第三行" {
+		t.Fatalf("prompt preview = %q", event.PromptPreview)
+	}
+
+	long, err := (Event{
+		SessionID: "session", HookEvent: "UserPromptSubmit",
+		Surface: domain.CodexSurfaceApp, PromptPreview: strings.Repeat("界", 200),
+	}).Domain(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := utf8.RuneCountInString(long.PromptPreview); count != 160 {
+		t.Fatalf("prompt preview 长度 = %d", count)
 	}
 }

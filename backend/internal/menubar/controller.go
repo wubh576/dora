@@ -35,248 +35,269 @@ type Controller struct {
 	present      Presenter
 	now          func() time.Time
 	jumper       SessionJumper
-	jumpTimeout  time.Duration
+	machine      *Machine
 
-	presentMu        sync.Mutex
-	mu               sync.Mutex
-	last             *State
-	version          uint64
-	presentation     uint64
-	loading          bool
-	attentionLoading bool
-	attentionVersion uint64
-	refreshing       bool
-	jumping          bool
-	operationStatus  string
-	operationUntil   time.Time
-	stopped          bool
-}
-
-func (c *Controller) SetSessionJumper(jumper SessionJumper) {
-	c.mu.Lock()
-	c.jumper = jumper
-	c.mu.Unlock()
+	presentMu       sync.Mutex
+	mu              sync.Mutex
+	last            *State
+	screen          ScreenMetrics
+	loading         bool
+	runtimeLoading  bool
+	loadVersion     uint64
+	runtimeVersion  uint64
+	refreshing      bool
+	jumping         bool
+	operationStatus string
+	operationUntil  time.Time
+	runtimeStatus   string
+	stopped         bool
 }
 
 func NewController(loader Loader, refresher Refresher, dashboardURL string, present Presenter) *Controller {
-	return &Controller{
-		loader:       loader,
-		refresher:    refresher,
-		dashboardURL: dashboardURL,
-		runner:       execRunner{},
-		present:      present,
-		now:          time.Now,
-		jumpTimeout:  jumpTimeout,
+	controller := &Controller{
+		loader: loader, refresher: refresher, dashboardURL: dashboardURL,
+		runner: execRunner{}, present: present, now: time.Now,
+		screen: ScreenMetrics{Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947}},
 	}
+	controller.machine = NewMachine(func(MachineState) { controller.publish() })
+	return controller
 }
 
-func (c *Controller) LoadAsync(ctx context.Context) bool {
-	c.mu.Lock()
-	if c.loading || c.refreshing || c.stopped {
-		c.mu.Unlock()
+func (controller *Controller) SetSessionJumper(jumper SessionJumper) {
+	controller.mu.Lock()
+	controller.jumper = jumper
+	controller.mu.Unlock()
+}
+
+func (controller *Controller) SetScreen(screen ScreenMetrics) {
+	controller.mu.Lock()
+	controller.screen = screen
+	controller.mu.Unlock()
+	controller.publish()
+}
+
+func (controller *Controller) Hover(inside bool) { controller.machine.Hover(inside) }
+
+func (controller *Controller) NotifyAttention(requestID, sessionID int64) bool {
+	return controller.machine.Attention(requestID, sessionID)
+}
+
+func (controller *Controller) LoadAsync(ctx context.Context) bool {
+	controller.mu.Lock()
+	if controller.loading || controller.refreshing || controller.stopped {
+		controller.mu.Unlock()
 		return false
 	}
-	c.loading = true
-	c.version++
-	version := c.version
-	c.mu.Unlock()
-	go c.load(ctx, version)
+	controller.loading = true
+	controller.loadVersion++
+	loadVersion := controller.loadVersion
+	controller.runtimeVersion++
+	runtimeVersion := controller.runtimeVersion
+	controller.mu.Unlock()
+	go func() {
+		state, err := controller.loader.Load(ctx)
+		runtimeState, runtimeErr := controller.loader.LoadRuntime(ctx)
+		controller.mu.Lock()
+		if controller.stopped || loadVersion != controller.loadVersion {
+			controller.mu.Unlock()
+			return
+		}
+		controller.loading = false
+		if err == nil {
+			if runtimeVersion == controller.runtimeVersion {
+				if runtimeErr == nil {
+					state.Runtime = runtimeState
+					controller.runtimeStatus = ""
+				} else {
+					controller.runtimeStatus = "实时状态连接失败"
+					if controller.last != nil {
+						state.Runtime = controller.last.Runtime
+					}
+				}
+			} else if controller.last != nil {
+				state.Runtime = controller.last.Runtime
+			}
+			controller.last = &state
+		}
+		if err != nil {
+			controller.setStatusLocked("连接本地服务失败")
+		}
+		controller.mu.Unlock()
+		controller.publish()
+	}()
 	return true
 }
 
-func (c *Controller) RefreshAsync(ctx context.Context) bool {
-	c.mu.Lock()
-	if c.refreshing || c.stopped {
-		c.mu.Unlock()
+func (controller *Controller) LoadRuntimeAsync(ctx context.Context) bool {
+	controller.mu.Lock()
+	if controller.runtimeLoading || controller.stopped {
+		controller.mu.Unlock()
 		return false
 	}
-	c.refreshing = true
-	c.loading = false
-	c.operationStatus = ""
-	c.operationUntil = time.Time{}
-	c.version++
-	version := c.version
-	last := cloneState(c.last)
-	c.presentation++
-	presentation := c.presentation
-	c.mu.Unlock()
-	c.publish(presentation, BuildView(last, c.now(), true, ""))
+	controller.runtimeLoading = true
+	controller.runtimeVersion++
+	version := controller.runtimeVersion
+	controller.mu.Unlock()
 	go func() {
-		usageErr, quotaErr := c.refresher.Refresh(ctx)
-		state, loadErr := c.loader.Load(ctx)
-		c.mu.Lock()
-		if version != c.version || c.stopped {
-			c.mu.Unlock()
+		runtimeState, err := controller.loader.LoadRuntime(ctx)
+		controller.mu.Lock()
+		if controller.stopped {
+			controller.mu.Unlock()
 			return
 		}
-		if loadErr == nil {
-			state.Attention = attentionFrom(c.last)
-			c.last = &state
+		controller.runtimeLoading = false
+		if version != controller.runtimeVersion {
+			controller.mu.Unlock()
+			return
 		}
-		last := cloneState(c.last)
-		c.refreshing = false
-		c.presentation++
-		presentation := c.presentation
-		c.mu.Unlock()
+		if err == nil {
+			if controller.last == nil {
+				controller.last = &State{}
+			}
+			controller.last.Runtime = runtimeState
+			controller.runtimeStatus = ""
+		} else {
+			controller.runtimeStatus = "实时状态连接失败"
+		}
+		controller.mu.Unlock()
+		controller.publish()
+	}()
+	return true
+}
+
+func (controller *Controller) RefreshAsync(ctx context.Context) bool {
+	controller.mu.Lock()
+	if controller.refreshing || controller.stopped {
+		controller.mu.Unlock()
+		return false
+	}
+	controller.refreshing = true
+	controller.loading = false
+	controller.loadVersion++
+	loadVersion := controller.loadVersion
+	controller.runtimeVersion++
+	runtimeVersion := controller.runtimeVersion
+	controller.operationStatus = ""
+	controller.mu.Unlock()
+	controller.publish()
+	go func() {
+		usageErr, quotaErr := controller.refresher.Refresh(ctx)
+		state, loadErr := controller.loader.Load(ctx)
+		runtimeState, runtimeErr := controller.loader.LoadRuntime(ctx)
+		controller.mu.Lock()
+		if controller.stopped || loadVersion != controller.loadVersion {
+			controller.mu.Unlock()
+			return
+		}
+		controller.refreshing = false
+		if loadErr == nil {
+			if runtimeVersion == controller.runtimeVersion {
+				if runtimeErr == nil {
+					state.Runtime = runtimeState
+					controller.runtimeStatus = ""
+				} else {
+					controller.runtimeStatus = "实时状态连接失败"
+					if controller.last != nil {
+						state.Runtime = controller.last.Runtime
+					}
+				}
+			} else if controller.last != nil {
+				state.Runtime = controller.last.Runtime
+			}
+			controller.last = &state
+		}
 		status := refreshStatus(usageErr, quotaErr)
 		if loadErr != nil {
 			status = "连接本地服务失败"
+		} else if runtimeErr != nil && runtimeVersion == controller.runtimeVersion {
+			status = "实时状态连接失败"
 		}
-		c.publish(presentation, BuildView(last, c.now(), false, status))
+		controller.setStatusLocked(status)
+		controller.mu.Unlock()
+		controller.publish()
 	}()
 	return true
 }
 
-func (c *Controller) LoadAttentionAsync(ctx context.Context) bool {
-	loader, ok := c.loader.(AttentionLoader)
-	if !ok {
-		return false
-	}
-	c.mu.Lock()
-	if c.attentionLoading || c.stopped {
-		c.mu.Unlock()
-		return false
-	}
-	c.attentionLoading = true
-	c.attentionVersion++
-	attentionVersion := c.attentionVersion
-	c.mu.Unlock()
-	go func() {
-		attention, err := loader.LoadAttention(ctx)
-		now := c.now()
-		c.mu.Lock()
-		if attentionVersion != c.attentionVersion || c.stopped {
-			c.mu.Unlock()
-			return
-		}
-		c.attentionLoading = false
-		if err != nil {
-			c.mu.Unlock()
-			return
-		}
-		if c.last == nil {
-			c.last = &State{}
-		}
-		c.last.Attention = attention
-		last, refreshing := cloneState(c.last), c.refreshing
-		status := c.operationStatusLocked(now)
-		c.presentation++
-		presentation := c.presentation
-		c.mu.Unlock()
-		c.publish(presentation, BuildView(last, now, refreshing, status))
-	}()
-	return true
-}
-
-func (c *Controller) JumpAttentionSessionAsync(ctx context.Context, sessionID int64) bool {
-	c.mu.Lock()
-	jumper := c.jumper
-	if jumper == nil || c.jumping || c.stopped {
-		c.mu.Unlock()
+func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID int64) bool {
+	controller.machine.ClickSession()
+	controller.mu.Lock()
+	controller.operationStatus = ""
+	controller.operationUntil = time.Time{}
+	jumper := controller.jumper
+	if jumper == nil || controller.jumping || controller.stopped {
+		controller.mu.Unlock()
 		if jumper == nil {
-			c.PresentStatus("Codex 跳转服务未配置")
+			controller.PresentStatus("Codex 跳转服务未配置")
 		}
 		return false
 	}
-	c.jumping = true
-	c.operationStatus = ""
-	c.operationUntil = time.Time{}
-	timeout := c.jumpTimeout
-	c.mu.Unlock()
+	controller.jumping = true
+	controller.mu.Unlock()
+	controller.publish()
 	go func() {
-		jumpCtx, cancel := context.WithTimeout(ctx, timeout)
+		jumpContext, cancel := context.WithTimeout(ctx, jumpTimeout)
 		defer cancel()
-		err := jumper.JumpAttentionSession(jumpCtx, sessionID)
-		if err != nil {
-			c.PresentStatus(fmt.Sprintf("跳转 Codex 会话失败：%v", err))
+		if err := jumper.JumpAttentionSession(jumpContext, sessionID); err != nil {
+			controller.PresentStatus(fmt.Sprintf("跳转 Codex 会话失败：%v", err))
 		}
-		c.mu.Lock()
-		c.jumping = false
-		c.mu.Unlock()
-		c.LoadAttentionAsync(ctx)
+		controller.mu.Lock()
+		controller.jumping = false
+		controller.mu.Unlock()
+		controller.LoadRuntimeAsync(ctx)
 	}()
 	return true
 }
 
-func (c *Controller) OpenDashboard() error {
-	if err := c.runner.Run("open", c.dashboardURL); err != nil {
+func (controller *Controller) OpenDashboard() error {
+	if err := controller.runner.Run("open", controller.dashboardURL); err != nil {
 		return fmt.Errorf("打开仪表盘: %w", err)
 	}
 	return nil
 }
 
-func (c *Controller) PresentStatus(message string) {
-	c.mu.Lock()
-	now := c.now()
-	c.operationStatus = message
-	c.operationUntil = now.Add(operationStatusTTL)
-	last := cloneState(c.last)
-	refreshing, stopped := c.refreshing, c.stopped
-	c.presentation++
-	presentation := c.presentation
-	c.mu.Unlock()
-	if !stopped {
-		c.publish(presentation, BuildView(last, now, refreshing, message))
-	}
+func (controller *Controller) PresentStatus(message string) {
+	controller.mu.Lock()
+	controller.setStatusLocked(message)
+	controller.mu.Unlock()
+	controller.publish()
 }
 
-func (c *Controller) Stop() {
-	c.mu.Lock()
-	c.stopped = true
-	c.version++
-	c.presentation++
-	c.mu.Unlock()
+func (controller *Controller) Stop() {
+	controller.machine.Stop()
+	controller.presentMu.Lock()
+	defer controller.presentMu.Unlock()
+	controller.mu.Lock()
+	controller.stopped = true
+	controller.mu.Unlock()
 }
 
-func (c *Controller) load(ctx context.Context, version uint64) {
-	state, err := c.loader.Load(ctx)
-	c.mu.Lock()
-	if version != c.version || c.stopped {
-		c.mu.Unlock()
+func (controller *Controller) publish() {
+	controller.presentMu.Lock()
+	defer controller.presentMu.Unlock()
+	controller.mu.Lock()
+	if controller.stopped {
+		controller.mu.Unlock()
 		return
 	}
-	if err == nil {
-		state.Attention = attentionFrom(c.last)
-		c.last = &state
+	now := controller.now()
+	status := controller.operationStatus
+	if status != "" && !now.Before(controller.operationUntil) {
+		controller.operationStatus = ""
+		status = ""
 	}
-	last := cloneState(c.last)
-	c.loading = false
-	status := c.operationStatusLocked(c.now())
-	c.presentation++
-	presentation := c.presentation
-	c.mu.Unlock()
-	if err != nil {
-		status = "连接本地服务失败"
+	if status == "" {
+		status = controller.runtimeStatus
 	}
-	c.publish(presentation, BuildView(last, c.now(), false, status))
+	last := cloneState(controller.last)
+	screen, refreshing := controller.screen, controller.refreshing
+	controller.mu.Unlock()
+	controller.present(BuildView(last, controller.machine.State(), screen, now, refreshing, status))
 }
 
-func (c *Controller) operationStatusLocked(now time.Time) string {
-	if c.operationStatus != "" && now.Before(c.operationUntil) {
-		return c.operationStatus
-	}
-	c.operationStatus = ""
-	c.operationUntil = time.Time{}
-	return ""
-}
-
-func attentionFrom(state *State) AttentionState {
-	if state == nil {
-		return AttentionState{}
-	}
-	return state.Attention
-}
-
-// publish 串行提交菜单视图，并在真正写 UI 前再次丢弃已经过期的异步结果。
-func (c *Controller) publish(presentation uint64, view View) {
-	c.presentMu.Lock()
-	defer c.presentMu.Unlock()
-	c.mu.Lock()
-	current := presentation == c.presentation && !c.stopped
-	c.mu.Unlock()
-	if current {
-		c.present(view)
-	}
+func (controller *Controller) setStatusLocked(message string) {
+	controller.operationStatus = message
+	controller.operationUntil = controller.now().Add(operationStatusTTL)
 }
 
 func refreshStatus(usageErr, quotaErr error) string {
@@ -297,6 +318,7 @@ func cloneState(value *State) *State {
 		return nil
 	}
 	copy := *value
+	copy.Runtime.Sessions = append([]RuntimeSession(nil), value.Runtime.Sessions...)
 	return &copy
 }
 

@@ -2,6 +2,7 @@ package codexhooks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,12 @@ func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("offline")
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
 func TestParseHookEventSanitizesSensitiveFields(t *testing.T) {
 	input := `{
   "session_id":"session-1",
@@ -49,7 +56,7 @@ func TestParseHookEventSanitizesSensitiveFields(t *testing.T) {
 	if event.CWDBasename != "secret-project" || event.InputHash == "" || event.ToolName != "Bash" {
 		t.Fatalf("事件字段错误: %+v", event)
 	}
-	serialized := event.SessionID + event.TurnID + event.CWDBasename + event.Model + event.ToolName + event.InputHash
+	serialized := event.SessionID + event.TurnID + event.CWDBasename + event.Model + event.ToolName + event.InputHash + event.PromptPreview
 	for _, secret := range []string{"rm -rf private", "never store me", "/Users/example"} {
 		if strings.Contains(serialized, secret) {
 			t.Fatalf("净化事件泄漏 %q: %+v", secret, event)
@@ -92,6 +99,9 @@ func TestParseVerifiedHookFixtures(t *testing.T) {
 			}
 			if (event.InputHash != "") != test.needsHash {
 				t.Fatalf("fixture input hash 错误: %q", event.InputHash)
+			}
+			if test.event == "UserPromptSubmit" && event.PromptPreview != "帮我实现 灵动岛 状态" {
+				t.Fatalf("fixture prompt 未在 helper 出站前净化: %q", event.PromptPreview)
 			}
 		})
 	}
@@ -204,6 +214,39 @@ func TestEmitterTreatsUnavailableServiceAsSilentCondition(t *testing.T) {
 	err := emitter.Emit(context.Background(), strings.NewReader(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"Stop","model":"gpt"}`))
 	if !errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("Emit() = %v，期望 ErrServiceUnavailable", err)
+	}
+}
+
+func TestEmitterBoundsPromptBeforeLoopbackRequest(t *testing.T) {
+	var body []byte
+	emitter := &Emitter{
+		endpoint: "http://127.0.0.1:8080/api/v1/hooks/codex",
+		client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			var err error
+			body, err = io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
+		})},
+		detector: fixedDetector{surface: Surface{Name: domain.CodexSurfaceApp}},
+	}
+	rawPrompt := strings.Repeat("x", 100_000)
+	input := `{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"` + rawPrompt + `"}`
+	if err := emitter.Emit(context.Background(), strings.NewReader(input)); err != nil {
+		t.Fatal(err)
+	}
+	if len(body) >= 64<<10 {
+		t.Fatalf("helper 请求正文未限制在 API 上限内: %d bytes", len(body))
+	}
+	var event struct {
+		PromptPreview string `json:"promptPreview"`
+	}
+	if err := json.Unmarshal(body, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.PromptPreview != strings.Repeat("x", 160) {
+		t.Fatalf("prompt preview 长度或内容错误: %d", len(event.PromptPreview))
 	}
 }
 

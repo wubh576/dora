@@ -81,72 +81,109 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 	return created, nil
 }
 
-func (s *Store) WaitingSessions(ctx context.Context) ([]domain.WaitingSession, error) {
+func (s *Store) RuntimeSessions(ctx context.Context) ([]domain.ActiveSession, error) {
 	rows, err := s.readDB.QueryContext(ctx, `
+		WITH active AS (
+			SELECT runtime_session_id, MIN(created_at_ms) AS waiting_since,
+				COUNT(id) AS request_count
+			FROM attention_requests
+			WHERE resolved_at_ms IS NULL
+			GROUP BY runtime_session_id
+		)
 		SELECT
 			s.id, s.provider, s.external_session_id, s.cwd_basename, s.model,
-			s.surface, s.terminal_kind, s.tty, s.state, s.last_seen_at_ms,
+			s.surface, s.terminal_kind, s.tty, s.state, s.prompt_preview, s.last_seen_at_ms,
 			r.id, r.event_key, r.kind, r.summary, r.turn_id, r.created_at_ms,
-			r.notified_at_ms, MIN(active.created_at_ms), COUNT(active.id)
+			r.notified_at_ms, active.waiting_since, active.request_count
 		FROM runtime_sessions s
-		JOIN attention_requests active
-			ON active.runtime_session_id = s.id AND active.resolved_at_ms IS NULL
-		JOIN attention_requests r ON r.id = (
+		LEFT JOIN active ON active.runtime_session_id = s.id
+		LEFT JOIN attention_requests r ON r.id = (
 			SELECT latest.id
 			FROM attention_requests latest
 			WHERE latest.runtime_session_id = s.id AND latest.resolved_at_ms IS NULL
 			ORDER BY latest.created_at_ms DESC, latest.id DESC
 			LIMIT 1
 		)
-		WHERE s.state = ?
-		GROUP BY s.id, r.id
-		ORDER BY r.created_at_ms ASC, s.id ASC
-	`, domain.RuntimeStateWaiting)
+		WHERE s.state IN (?, ?)
+		ORDER BY CASE s.state WHEN ? THEN 0 ELSE 1 END,
+			CASE WHEN s.state = ? THEN active.waiting_since END ASC,
+			CASE WHEN s.state = ? THEN s.last_seen_at_ms END DESC,
+			s.id ASC
+	`, domain.RuntimeStateWaiting, domain.RuntimeStateRunning,
+		domain.RuntimeStateWaiting, domain.RuntimeStateWaiting, domain.RuntimeStateRunning)
 	if err != nil {
-		return nil, fmt.Errorf("读取等待中的 Codex session: %w", err)
+		return nil, fmt.Errorf("读取 Codex 运行态 session: %w", err)
 	}
 	defer rows.Close()
 
-	result := make([]domain.WaitingSession, 0)
+	result := make([]domain.ActiveSession, 0)
 	for rows.Next() {
-		var waiting domain.WaitingSession
-		var sessionSeen, requestCreated, waitingSince int64
+		var item domain.ActiveSession
+		var sessionSeen int64
+		var requestID, requestCreated, waitingSince, requestCount sql.NullInt64
+		var eventKey, kind, summary, turnID sql.NullString
 		var notified sql.NullInt64
 		if err := rows.Scan(
-			&waiting.Session.ID,
-			&waiting.Session.Provider,
-			&waiting.Session.ExternalSessionID,
-			&waiting.Session.CWDBasename,
-			&waiting.Session.Model,
-			&waiting.Session.Surface,
-			&waiting.Session.TerminalKind,
-			&waiting.Session.TTY,
-			&waiting.Session.State,
+			&item.Session.ID,
+			&item.Session.Provider,
+			&item.Session.ExternalSessionID,
+			&item.Session.CWDBasename,
+			&item.Session.Model,
+			&item.Session.Surface,
+			&item.Session.TerminalKind,
+			&item.Session.TTY,
+			&item.Session.State,
+			&item.Session.PromptPreview,
 			&sessionSeen,
-			&waiting.Latest.ID,
-			&waiting.Latest.EventKey,
-			&waiting.Latest.Kind,
-			&waiting.Latest.Summary,
-			&waiting.Latest.TurnID,
+			&requestID,
+			&eventKey,
+			&kind,
+			&summary,
+			&turnID,
 			&requestCreated,
 			&notified,
 			&waitingSince,
-			&waiting.RequestCount,
+			&requestCount,
 		); err != nil {
-			return nil, fmt.Errorf("解析等待中的 Codex session: %w", err)
+			return nil, fmt.Errorf("解析 Codex 运行态 session: %w", err)
 		}
-		waiting.Session.LastSeenAt = time.UnixMilli(sessionSeen).UTC()
-		waiting.Latest.RuntimeSessionID = waiting.Session.ID
-		waiting.Latest.CreatedAt = time.UnixMilli(requestCreated).UTC()
-		waiting.WaitingSince = time.UnixMilli(waitingSince).UTC()
-		if notified.Valid {
-			value := time.UnixMilli(notified.Int64).UTC()
-			waiting.Latest.NotifiedAt = &value
+		item.Session.LastSeenAt = time.UnixMilli(sessionSeen).UTC()
+		if requestID.Valid {
+			latest := &domain.AttentionRequest{
+				ID: requestID.Int64, RuntimeSessionID: item.Session.ID,
+				EventKey: eventKey.String, Kind: kind.String, Summary: summary.String,
+				TurnID: turnID.String, CreatedAt: time.UnixMilli(requestCreated.Int64).UTC(),
+			}
+			if notified.Valid {
+				value := time.UnixMilli(notified.Int64).UTC()
+				latest.NotifiedAt = &value
+			}
+			item.Latest = latest
+			item.WaitingSince = time.UnixMilli(waitingSince.Int64).UTC()
+			item.RequestCount = int(requestCount.Int64)
 		}
-		result = append(result, waiting)
+		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历等待中的 Codex session: %w", err)
+		return nil, fmt.Errorf("遍历 Codex 运行态 session: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Store) WaitingSessions(ctx context.Context) ([]domain.WaitingSession, error) {
+	active, err := s.RuntimeSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]domain.WaitingSession, 0, len(active))
+	for _, item := range active {
+		if item.Session.State != domain.RuntimeStateWaiting || item.Latest == nil {
+			continue
+		}
+		result = append(result, domain.WaitingSession{
+			Session: item.Session, Latest: *item.Latest,
+			WaitingSince: item.WaitingSince, RequestCount: item.RequestCount,
+		})
 	}
 	return result, nil
 }
@@ -279,7 +316,7 @@ func (s *Store) RuntimeSession(ctx context.Context, id int64) (domain.RuntimeSes
 	var lastSeen int64
 	err := s.readDB.QueryRowContext(ctx, `
 		SELECT id, provider, external_session_id, cwd_basename, model,
-			surface, terminal_kind, tty, state, last_seen_at_ms
+			surface, terminal_kind, tty, state, prompt_preview, last_seen_at_ms
 		FROM runtime_sessions
 		WHERE id = ?
 	`, id).Scan(
@@ -292,6 +329,7 @@ func (s *Store) RuntimeSession(ctx context.Context, id int64) (domain.RuntimeSes
 		&session.TerminalKind,
 		&session.TTY,
 		&session.State,
+		&session.PromptPreview,
 		&lastSeen,
 	)
 	if err != nil {
@@ -431,20 +469,28 @@ func attentionRequestState(ctx context.Context, conn *sql.Conn, eventKey string)
 
 func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.CodexHookEvent) (int64, error) {
 	state := domain.RuntimeStateRunning
+	promptPreview := ""
 	if event.EventName == "Stop" {
 		state = domain.RuntimeStateIdle
+	} else if event.EventName == "UserPromptSubmit" {
+		promptPreview = event.PromptPreview
 	}
 	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO runtime_sessions (
 			provider, external_session_id, cwd_basename, model,
-			surface, terminal_kind, tty, state, last_seen_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			surface, terminal_kind, tty, state, prompt_preview, last_seen_at_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider, external_session_id) DO UPDATE SET
 			cwd_basename = CASE WHEN excluded.cwd_basename != '' THEN excluded.cwd_basename ELSE runtime_sessions.cwd_basename END,
 			model = CASE WHEN excluded.model != '' THEN excluded.model ELSE runtime_sessions.model END,
 			surface = CASE WHEN excluded.surface != 'unknown' THEN excluded.surface ELSE runtime_sessions.surface END,
 			terminal_kind = CASE WHEN excluded.terminal_kind != '' THEN excluded.terminal_kind ELSE runtime_sessions.terminal_kind END,
 			tty = CASE WHEN excluded.tty != '' THEN excluded.tty ELSE runtime_sessions.tty END,
+			prompt_preview = CASE
+				WHEN ? = 'UserPromptSubmit' THEN excluded.prompt_preview
+				WHEN ? = 'Stop' THEN ''
+				ELSE runtime_sessions.prompt_preview
+			END,
 			state = excluded.state,
 			last_seen_at_ms = excluded.last_seen_at_ms
 	`,
@@ -456,7 +502,10 @@ func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.Code
 		event.TerminalKind,
 		event.TTY,
 		state,
+		promptPreview,
 		event.ReceivedAt.UTC().UnixMilli(),
+		event.EventName,
+		event.EventName,
 	); err != nil {
 		return 0, fmt.Errorf("更新 Codex runtime session: %w", err)
 	}

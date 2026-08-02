@@ -179,7 +179,7 @@ func (m *Manager) Install(ctx context.Context) error {
 		return err
 	}
 	if !started.Loaded || !started.Running {
-		return fmt.Errorf("LaunchAgent %s 已加载，但菜单栏进程未保持运行；请查看 %s，排障后重试 ./bin/dora install", Label, m.paths.StderrLog)
+		return fmt.Errorf("LaunchAgent %s 已加载，但 Dora 桌面进程未保持运行；请查看 %s，排障后重试 ./bin/dora install", Label, m.paths.StderrLog)
 	}
 	return nil
 }

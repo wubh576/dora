@@ -67,7 +67,7 @@ make build
 open http://127.0.0.1:8080
 ```
 
-`make build` 会先清理旧前端产物，执行 Vite 生产构建，再把生成的页面资源嵌入 `bin/dora`。`menubar` 由同一个进程运行菜单栏、HTTP/API、SQLite、扫描器和配额服务，不会额外启动 `dora serve`、Node.js、npm 或 Vite。
+`make build` 会先清理旧前端产物，执行 Vite 生产构建，再把生成的页面资源嵌入 `bin/dora`。`menubar` 是为兼容既有 LaunchAgent 保留的命令名，实际由同一个进程运行屏幕顶部灵动岛、HTTP/API、SQLite、扫描器和配额服务，不会额外启动 `dora serve`、Node.js、npm 或 Vite。
 
 构建会把 Git commit、工作区状态和 UTC 构建时间写入二进制。Dora 是个人本地工具，不维护独立版本号，也不要求为提交创建 Git tag；每个 Git commit 就是唯一构建来源。
 
@@ -77,9 +77,11 @@ open http://127.0.0.1:8080
 
 `status` 输出短 commit 构建标识、完整 commit、`dirty/clean`、构建时间、Go 版本、`GOOS/GOARCH`、macOS 版本和构建来源。LaunchAgent 正常时这些字段来自运行中的服务，避免与尚未安装的新构建混淆。`serve` 与 `menubar` 每次启动都会把相同信息写入日志，但不会记录用户名、设备序列号、OAuth token 或其他凭证。
 
-菜单栏标题通常显示今日 token；Codex 有等待授权、危险命令确认或用户问题时切换为 `🔴 N`。顶部“需要关注”子菜单会按 waiting session 展示 Codex App/iTerm2/Terminal、项目 basename、等待原因、时长和请求数，点击可精确回到对应 thread 或 TTY；点击不会把请求标记为已处理。菜单继续展示今日、7 日、全部 token、Codex 5 小时/7 日配额和最近状态，并支持异步刷新、打开真实 loopback 仪表盘和正常退出。退出会关闭 HTTP 服务并释放端口。
+屏幕顶部中央常驻一个原生 AppKit 灵动岛，不占用 macOS 菜单栏图标位，也不创建 Dock 图标。紧凑态显示 Dora、running/waiting 会话数和今日 token；鼠标移入后展开今日、7 日、全部 token、Codex 5 小时/7 日配额、waiting/running 会话、刷新、仪表盘和退出。新 attention request 会播放一次 `Glass`、自动展开约 6 秒并高亮对应会话；点击会话会先收起面板，再精确回到对应 Codex App thread 或 iTerm2/Terminal TTY，不会把请求标记为已处理。
 
-不需要菜单栏时，也可以继续手动启动同一套运行时：
+刘海屏使用顶部安全区定位；无刘海屏使用顶部居中的悬浮形态。会话较多时只滚动中间列表，头部统计与底部操作保持可见。退出会关闭 HTTP 服务并释放端口。
+
+不需要灵动岛时，也可以继续手动启动同一套运行时：
 
 ```bash
 ./bin/dora serve
@@ -121,7 +123,7 @@ open http://127.0.0.1:8080
 
 `status` 的退出码为：`0` 表示已安装且正常运行，`1` 表示未安装、未运行或运行异常，`2` 表示状态检查本身失败。输出的仪表盘地址固定为 `http://127.0.0.1:8080`，并会同时显示 Codex 实时提醒的安装与授权状态。
 
-在菜单中点击“退出 Dora”后，LaunchAgent 会把这次成功退出视为用户主动停止，因此本次登录会话不会立即拉起 Dora；下次登录 macOS 时仍会按 `RunAtLoad` 自动启动。需要立刻重新启动时，再执行一次 `./bin/dora install`。
+在灵动岛中点击“退出”后，LaunchAgent 会把这次成功退出视为用户主动停止，因此本次登录会话不会立即拉起 Dora；下次登录 macOS 时仍会按 `RunAtLoad` 自动启动。需要立刻重新启动时，再执行一次 `./bin/dora install`。
 
 卸载登录启动项和稳定位置中的二进制：
 
@@ -150,13 +152,13 @@ open http://127.0.0.1:8080
 "$HOME/Library/Application Support/Dora/bin/dora" hooks uninstall codex
 ```
 
-Hook helper 只向固定的 `127.0.0.1:8080` 发送有界、脱敏 JSON，不跟随重定向。Dora 不保存 prompt、回复、完整命令、工具参数、环境变量、transcript 路径或完整 cwd；SQLite 只在实时 session 存活期间保存 external session ID、cwd basename、模型、App/CLI surface、受支持终端的精确 TTY 和等待状态。`SessionEnd` 或跳转确认目标已消失时会移除 runtime session；重启后保留尚未结束的 waiting 展示，但不会对历史请求重复发声。
+Hook helper 只向固定的 `127.0.0.1:8080` 发送有界、脱敏 JSON，不跟随重定向。Dora 不保存完整 prompt、回复、完整命令、工具参数、环境变量、transcript 路径或完整 cwd；仅对 `UserPromptSubmit` 保存去控制字符、压缩空白且最多 160 个 Unicode 字符的一行摘要，用于活跃会话展示，并在 `Stop` 或 `SessionEnd` 时清除。SQLite 的临时 runtime 记录还包含 external session ID、cwd basename、模型、App/CLI surface、受支持终端的精确 TTY 和等待状态；这些定位字段不会由运行态 API 返回。`SessionEnd` 或跳转确认目标已消失时会移除 runtime session；重启后保留尚未结束的 waiting 展示，但不会对历史请求重复发声。
 
 PermissionRequest 不存在假想的即时 resolved 回调。Codex CLI `0.146.0` 实测 Allow 后最早在 `PostToolUse` 解除；按 Esc 取消后没有即时完成事件，最早在下一次 `UserPromptSubmit` 解除。Dora 也会在 `Stop` 或 `SessionEnd` 清理 waiting。若进程异常退出且缺失结束事件，超过 7 天没有任何 Hook 活动的 runtime session 会在启动和定时 reconciliation 中清理，避免永久残留，同时不会用几秒钟的盲目 timeout 提前解除真实 waiting。
 
 当前跳转支持 Codex App deep link、iTerm2 exact TTY 和 macOS Terminal exact TTY。首次回跳终端时，macOS 可能询问是否允许 Dora 控制 iTerm2 或 Terminal；允许后才能选择准确 Tab。未知终端不会使用窗口标题或 cwd 猜测目标；这类 session 仍可显示提醒，但会明确提示不能精确跳转。
 
-可靠主动提醒路径是菜单栏 `🔴 N` 和系统自带 `Glass` 声音。Dora 当前以 LaunchAgent 启动独立二进制，不是具有稳定 bundle identifier 的 `.app`；Apple 的通知中心 API 面向 app 或 app extension，因此当前不伪造不可靠的系统通知横幅。Claude Code 实时提醒和刘海 UI 不在本次范围内。
+可靠主动提醒路径是灵动岛自动展开、高亮和系统自带 `Glass` 声音。Dora 当前以 LaunchAgent 启动独立二进制，不是具有稳定 bundle identifier 的 `.app`；Apple 的通知中心 API 面向 app 或 app extension，因此当前不伪造不可靠的系统通知横幅。Claude Code 实时提醒不在本次范围内。
 
 ### 日志与排障
 
@@ -216,7 +218,7 @@ Dora 的用量扫描只保存 token 统计元数据、脱敏项目名和扫描 c
 
 ## Claude Code 本地用量扫描
 
-Dora 后端的自动扫描、`dora scan` 和菜单栏刷新都会同时只读检查：
+Dora 后端的自动扫描、`dora scan` 和灵动岛刷新都会同时只读检查：
 
 ```text
 ~/.claude/projects/<project>/<session>.jsonl
@@ -236,7 +238,7 @@ go run ./cmd/dora scan \
   --claude-home /path/to/claude-config
 ```
 
-每个 provider 独立提交 SQLite generation。Claude Code 文件损坏或权限不足时保留上一次成功的 Claude 统计，同时 Codex 扫描仍可成功；反向同理。Claude Code 配额不在当前范围内，页面和菜单栏中的订阅配额仍只属于 Codex。
+每个 provider 独立提交 SQLite generation。Claude Code 文件损坏或权限不足时保留上一次成功的 Claude 统计，同时 Codex 扫描仍可成功；反向同理。Claude Code 配额不在当前范围内，页面和灵动岛中的订阅配额仍只属于 Codex。
 
 ## Codex 订阅配额
 
@@ -292,7 +294,7 @@ GET /api/v1/snapshot
 GET /api/v1/attention
 ```
 
-这些 API 的总量默认合并 Codex 与 Claude Code；`providers` 和 `provider_model` 保留来源归属，即使两个 provider 报告同名模型也能区分。`/api/v1/dashboard` 是 Web 页面使用的统一快照，保证标题总量、每日趋势和分布复用同一个时间窗口。`/api/v1/snapshot` 提供合并后的今日、7 日、全部 token、最高用量模型、provider 总量和扫描新鲜度，供菜单栏复用；其中订阅配额仍明确只属于 Codex。
+这些 API 的总量默认合并 Codex 与 Claude Code；`providers` 和 `provider_model` 保留来源归属，即使两个 provider 报告同名模型也能区分。`/api/v1/dashboard` 是 Web 页面使用的统一快照，保证标题总量、每日趋势和分布复用同一个时间窗口。`/api/v1/snapshot` 提供合并后的今日、7 日、全部 token、最高用量模型、provider 总量和扫描新鲜度，供灵动岛复用；其中订阅配额仍明确只属于 Codex。`/api/v1/runtime` 每秒提供 active running/waiting 会话的脱敏统一快照，不返回 external session ID、TTY 或完整 cwd。
 
 定价更新流程：
 

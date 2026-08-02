@@ -587,3 +587,68 @@ func TestOpenMigratesVersionThreeWithoutLosingUsageOrQuota(t *testing.T) {
 		t.Fatalf("migration 数 = %d，期望 %d", migrationCount, migrationVersion)
 	}
 }
+
+func TestOpenMigratesVersionSixWithoutLosingRuntimeSession(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dora.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			applied_at_ms INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	for index, migration := range []func(context.Context, *sql.Tx, int64) error{
+		migrateDoraState, migrateUsage, migrateQuota, migrateUsageProviderDiagnostics,
+		migrateCacheCreationDurations, migrateRuntimeAttention,
+	} {
+		tx, err := legacy.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := migration(ctx, tx, 1); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations VALUES (?, 1)", index+1); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lastSeen := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	if _, err := legacy.ExecContext(ctx, `
+		INSERT INTO runtime_sessions (
+			provider, external_session_id, cwd_basename, model,
+			surface, terminal_kind, tty, state, last_seen_at_ms
+		) VALUES (?, 'legacy-session', 'dora', 'gpt-test', 'codex_cli', 'iterm2', '/dev/ttys001', 'waiting', ?)
+	`, domain.CodexSource, lastSeen.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("升级 v6 数据库失败: %v", err)
+	}
+	defer store.Close()
+	session, err := store.RuntimeSession(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ExternalSessionID != "legacy-session" || session.CWDBasename != "dora" ||
+		session.Model != "gpt-test" || session.Surface != domain.CodexSurfaceCLI ||
+		session.TerminalKind != domain.TerminalITerm2 || session.TTY != "/dev/ttys001" ||
+		session.State != domain.RuntimeStateWaiting || !session.LastSeenAt.Equal(lastSeen) || session.PromptPreview != "" {
+		t.Fatalf("v6 runtime migration 破坏原记录: %+v", session)
+	}
+}

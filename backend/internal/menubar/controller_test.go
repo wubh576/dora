@@ -3,320 +3,94 @@ package menubar
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestRefreshIsAsyncAndNonConcurrent(t *testing.T) {
-	loader := &fakeLoader{state: stateWithToday(20)}
-	refresher := &blockingRefresher{started: make(chan struct{}), release: make(chan struct{})}
-	views := make(chan View, 4)
-	controller := NewController(loader, refresher, "http://127.0.0.1:9090", func(view View) { views <- view })
-	if !controller.RefreshAsync(context.Background()) {
-		t.Fatal("首次刷新未启动")
-	}
-	select {
-	case <-refresher.started:
-	case <-time.After(time.Second):
-		t.Fatal("异步刷新未启动")
-	}
-	if controller.RefreshAsync(context.Background()) {
-		t.Fatal("刷新过程中启动了第二次刷新")
-	}
-	if first := <-views; !first.Refreshing {
-		t.Fatalf("首个 view 未禁用刷新: %+v", first)
-	}
-	close(refresher.release)
-	waitForView(t, views, func(view View) bool { return view.Status == "状态：刷新完成" })
-	if refresher.calls != 1 {
-		t.Fatalf("Refresh() 调用 %d 次，期望 1 次", refresher.calls)
-	}
-}
-
-func TestRefreshViewCannotBeOverwrittenByOlderLoad(t *testing.T) {
-	loader := &fakeLoader{state: stateWithToday(20)}
-	refresher := &blockingRefresher{started: make(chan struct{}), release: make(chan struct{})}
-	presentStarted := make(chan struct{})
-	releasePresent := make(chan struct{})
-	views := make(chan View, 4)
-	var presentOnce sync.Once
-	controller := NewController(loader, refresher, "http://127.0.0.1:9090", func(view View) {
-		presentOnce.Do(func() {
-			close(presentStarted)
-			<-releasePresent
-		})
-		views <- view
-	})
-	controller.LoadAsync(context.Background())
-	select {
-	case <-presentStarted:
-	case <-time.After(time.Second):
-		t.Fatal("旧状态未进入 presenter")
-	}
-	refreshReturned := make(chan bool, 1)
-	go func() { refreshReturned <- controller.RefreshAsync(context.Background()) }()
-	close(releasePresent)
-	if !<-refreshReturned {
-		t.Fatal("刷新未启动")
-	}
-	select {
-	case <-refresher.started:
-	case <-time.After(time.Second):
-		t.Fatal("异步刷新未进入 refresher")
-	}
-	first, second := <-views, <-views
-	if first.Refreshing || !second.Refreshing {
-		t.Fatalf("菜单视图顺序错误: first=%+v second=%+v", first, second)
-	}
-	close(refresher.release)
-	waitForView(t, views, func(view View) bool { return view.Status == "状态：刷新完成" })
-}
-
-func TestPresentStatusKeepsRefreshDisabled(t *testing.T) {
-	refresher := &blockingRefresher{started: make(chan struct{}), release: make(chan struct{})}
-	views := make(chan View, 4)
-	controller := NewController(&fakeLoader{}, refresher, "http://127.0.0.1:9090", func(view View) { views <- view })
-	controller.RefreshAsync(context.Background())
-	select {
-	case <-refresher.started:
-	case <-time.After(time.Second):
-		t.Fatal("异步刷新未进入 refresher")
-	}
-	<-views
-	controller.PresentStatus("无法打开仪表盘")
-	view := <-views
-	if !view.Refreshing || view.Status != "状态：无法打开仪表盘" {
-		t.Fatalf("刷新期间的操作状态错误: %+v", view)
-	}
-	close(refresher.release)
-	waitForView(t, views, func(view View) bool { return view.Status == "状态：刷新完成" })
-}
-
-func TestQuotaFailureKeepsNewTokenState(t *testing.T) {
-	views := make(chan View, 4)
-	controller := NewController(&fakeLoader{state: stateWithToday(250)}, staticRefresher{quotaErr: errors.New("quota unavailable")}, "http://127.0.0.1:9090", func(view View) { views <- view })
-	controller.RefreshAsync(context.Background())
-	view := waitForView(t, views, func(view View) bool { return view.Status == "状态：token 已更新，配额刷新失败" })
-	if view.Today != "今日：250 tokens" {
-		t.Fatalf("配额失败后 token 未保留: %+v", view)
-	}
-}
-
-func TestLoadFailureKeepsLastSuccessfulState(t *testing.T) {
-	loader := &fakeLoader{state: stateWithToday(400)}
-	views := make(chan View, 4)
-	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:9090", func(view View) { views <- view })
-	controller.LoadAsync(context.Background())
-	if view := waitForView(t, views, func(View) bool { return true }); view.Today != "今日：400 tokens" {
-		t.Fatalf("首次状态错误: %+v", view)
-	}
-	loader.mu.Lock()
-	loader.err = errors.New("offline")
-	loader.mu.Unlock()
-	controller.LoadAsync(context.Background())
-	view := waitForView(t, views, func(View) bool { return true })
-	if view.Today != "今日：400 tokens" || view.Status != "状态：连接本地服务失败" {
-		t.Fatalf("加载失败未保留旧状态: %+v", view)
-	}
-}
-
-func TestOpenDashboardUsesActualAddressAsArgument(t *testing.T) {
-	runner := &recordingRunner{}
-	controller := NewController(&fakeLoader{}, staticRefresher{}, "http://127.0.0.1:49152", func(View) {})
-	controller.runner = runner
-	if err := controller.OpenDashboard(); err != nil {
-		t.Fatalf("OpenDashboard() 失败: %v", err)
-	}
-	if runner.name != "open" || len(runner.args) != 1 || runner.args[0] != "http://127.0.0.1:49152" {
-		t.Fatalf("浏览器命令参数错误: %q %+v", runner.name, runner.args)
-	}
-}
-
-func TestAttentionLoadsIndependentlyAndJumpsBySessionID(t *testing.T) {
-	loader := &fakeLoader{state: State{Attention: AttentionState{
-		WaitingCount: 1,
-		Sessions:     []AttentionSession{{ID: 42, Surface: "codex_app", CWDBasename: "dora", Summary: "Codex 等待授权", RequestCount: 1}},
-	}}}
-	views := make(chan View, 2)
-	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
-	jumper := &recordingJumper{ids: make(chan int64, 1)}
-	controller.SetSessionJumper(jumper)
-	if !controller.LoadAttentionAsync(context.Background()) {
-		t.Fatal("独立 attention 加载未启动")
-	}
-	view := waitForView(t, views, func(view View) bool { return len(view.Waiting) == 1 })
-	if view.Title != "🔴 1" || view.Waiting[0].SessionID != 42 {
-		t.Fatalf("独立 attention view 错误: %+v", view)
-	}
-	if !controller.JumpAttentionSessionAsync(context.Background(), 42) {
-		t.Fatal("JumpAttentionSessionAsync() 未启动")
-	}
-	select {
-	case id := <-jumper.ids:
-		if id != 42 {
-			t.Fatalf("跳转 session ID = %d", id)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("等待异步跳转超时")
-	}
-}
-
-func TestFullLoadNeverOverwritesIndependentAttention(t *testing.T) {
-	loader := &splitLoader{
-		state: State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 500}}},
-		attention: AttentionState{WaitingCount: 1, Sessions: []AttentionSession{
-			{ID: 9, Surface: "codex_app", Summary: "Codex 等待授权", RequestCount: 1},
-		}},
-	}
-	views := make(chan View, 4)
-	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
-	controller.LoadAttentionAsync(context.Background())
-	waitForView(t, views, func(view View) bool { return len(view.Waiting) == 1 })
-	controller.LoadAsync(context.Background())
-	view := waitForView(t, views, func(view View) bool { return view.Today == "今日：500 tokens" })
-	if len(view.Waiting) != 1 || view.Waiting[0].SessionID != 9 {
-		t.Fatalf("完整 Load 覆盖了独立 attention: %+v", view)
-	}
-}
-
-func TestStaleFullLoadViewCannotPublishAfterNewAttentionView(t *testing.T) {
-	loader := &splitLoader{
-		state: State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 500}}},
-		attention: AttentionState{WaitingCount: 1, Sessions: []AttentionSession{
-			{ID: 2, Surface: "codex_app", Summary: "新请求", RequestCount: 1},
-		}},
-	}
-	views := make(chan View, 4)
-	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
-	controller.last = &State{Attention: AttentionState{WaitingCount: 1, Sessions: []AttentionSession{
-		{ID: 1, Surface: "codex_app", Summary: "旧请求", RequestCount: 1},
-	}}}
-	controller.presentMu.Lock()
-	controller.LoadAsync(context.Background())
-	waitForController(t, controller, func() bool {
-		return !controller.loading && controller.last.Snapshot.Usage.TodayTokens == 500
-	})
-	controller.LoadAttentionAsync(context.Background())
-	waitForController(t, controller, func() bool {
-		return !controller.attentionLoading && controller.last.Attention.Sessions[0].ID == 2
-	})
-	controller.presentMu.Unlock()
-	view := waitForView(t, views, func(view View) bool { return len(view.Waiting) > 0 })
-	if view.Waiting[0].SessionID != 2 {
-		t.Fatalf("旧完整加载视图覆盖了新 attention: %+v", view)
-	}
-	select {
-	case stale := <-views:
-		if len(stale.Waiting) > 0 && stale.Waiting[0].SessionID == 1 {
-			t.Fatalf("新 attention 后发布了旧视图: %+v", stale)
-		}
-	case <-time.After(20 * time.Millisecond):
-	}
-}
-
-func TestAttentionLoadFailureDoesNotDiscardPendingFullView(t *testing.T) {
-	loader := &splitLoader{
-		state:        State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 500}}},
-		attentionErr: errors.New("attention unavailable"),
-	}
-	views := make(chan View, 2)
-	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
-	controller.presentMu.Lock()
-	controller.LoadAsync(context.Background())
-	waitForController(t, controller, func() bool {
-		return !controller.loading && controller.last.Snapshot.Usage.TodayTokens == 500
-	})
-	controller.LoadAttentionAsync(context.Background())
-	waitForController(t, controller, func() bool { return !controller.attentionLoading })
-	controller.presentMu.Unlock()
-	view := waitForView(t, views, func(View) bool { return true })
-	if view.Today != "今日：500 tokens" {
-		t.Fatalf("attention 失败吞掉了等待发布的完整视图: %+v", view)
-	}
-}
-
-func TestJumpErrorIsAsyncAndSurvivesAttentionPoll(t *testing.T) {
-	loader := &fakeLoader{state: State{Attention: AttentionState{WaitingCount: 1}}}
-	views := make(chan View, 8)
-	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
-	jumper := &recordingJumper{ids: make(chan int64, 1), err: errors.New("Automation 权限被拒绝")}
-	controller.SetSessionJumper(jumper)
-	if !controller.JumpAttentionSessionAsync(context.Background(), 7) {
-		t.Fatal("异步跳转未启动")
-	}
-	select {
-	case <-jumper.ids:
-	case <-time.After(time.Second):
-		t.Fatal("同步菜单线程被跳转阻塞")
-	}
-	errorView := waitForView(t, views, func(view View) bool { return strings.Contains(view.Status, "Automation 权限被拒绝") })
-	if errorView.Status == "" {
-		t.Fatal("跳转错误未展示")
-	}
-	controller.LoadAttentionAsync(context.Background())
-	retained := waitForView(t, views, func(view View) bool { return strings.Contains(view.Status, "Automation 权限被拒绝") })
-	if retained.Status != errorView.Status {
-		t.Fatalf("attention 轮询覆盖了跳转错误: before=%q after=%q", errorView.Status, retained.Status)
-	}
-}
-
-func TestSuccessfulJumpClearsPreviousJumpError(t *testing.T) {
-	loader := &fakeLoader{state: State{Attention: AttentionState{WaitingCount: 1}}}
-	views := make(chan View, 8)
-	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
-	jumper := &sequenceJumper{ids: make(chan int64, 2), errs: []error{errors.New("Automation 权限被拒绝"), nil}}
-	controller.SetSessionJumper(jumper)
-	controller.JumpAttentionSessionAsync(context.Background(), 7)
-	<-jumper.ids
-	waitForView(t, views, func(view View) bool { return strings.Contains(view.Status, "Automation 权限被拒绝") })
-	waitForController(t, controller, func() bool { return !controller.jumping && !controller.attentionLoading })
-	for len(views) > 0 {
-		<-views
-	}
-	if !controller.JumpAttentionSessionAsync(context.Background(), 7) {
-		t.Fatal("错误后的成功重试未启动")
-	}
-	<-jumper.ids
-	view := waitForView(t, views, func(view View) bool { return !strings.Contains(view.Status, "Automation 权限被拒绝") })
-	if strings.Contains(view.Status, "跳转 Codex 会话失败") {
-		t.Fatalf("成功重试仍显示旧错误: %+v", view)
-	}
-}
-
 type fakeLoader struct {
-	mu    sync.Mutex
-	state State
-	err   error
+	state       State
+	runtime     RuntimeState
+	loadErr     error
+	runtimeErr  error
+	loadGate    <-chan struct{}
+	runtimeGate <-chan struct{}
 }
 
-func (f *fakeLoader) Load(context.Context) (State, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.state, f.err
+func (loader *fakeLoader) Load(context.Context) (State, error) {
+	if loader.loadGate != nil {
+		<-loader.loadGate
+	}
+	return loader.state, loader.loadErr
 }
 
-func (f *fakeLoader) LoadAttention(context.Context) (AttentionState, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.state.Attention, f.err
+func (loader *fakeLoader) LoadRuntime(context.Context) (RuntimeState, error) {
+	if loader.runtimeGate != nil {
+		<-loader.runtimeGate
+	}
+	return loader.runtime, loader.runtimeErr
 }
 
-type staticRefresher struct{ usageErr, quotaErr error }
+type fakeRefresher struct{ usageErr, quotaErr error }
 
-func (f staticRefresher) Refresh(context.Context) (error, error) { return f.usageErr, f.quotaErr }
+func (refresher fakeRefresher) Refresh(context.Context) (error, error) {
+	return refresher.usageErr, refresher.quotaErr
+}
+
+type sequencedLoader struct {
+	mu           sync.Mutex
+	calls        int
+	firstStarted chan struct{}
+	oldGate      chan struct{}
+}
+
+func (loader *sequencedLoader) Load(context.Context) (State, error) {
+	return State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 1000}}}, nil
+}
+
+func (loader *sequencedLoader) LoadRuntime(context.Context) (RuntimeState, error) {
+	loader.mu.Lock()
+	loader.calls++
+	call := loader.calls
+	loader.mu.Unlock()
+	if call == 1 {
+		close(loader.firstStarted)
+		<-loader.oldGate
+		return RuntimeState{RunningCount: 1}, nil
+	}
+	return RuntimeState{RunningCount: 2}, nil
+}
+
+type fakeJumper struct {
+	mu      sync.Mutex
+	session int64
+	calls   int
+	err     error
+}
+
+func (jumper *fakeJumper) JumpAttentionSession(_ context.Context, session int64) error {
+	jumper.mu.Lock()
+	defer jumper.mu.Unlock()
+	jumper.session = session
+	jumper.calls++
+	return jumper.err
+}
+
+func (jumper *fakeJumper) setError(err error) {
+	jumper.mu.Lock()
+	jumper.err = err
+	jumper.mu.Unlock()
+}
 
 type blockingRefresher struct {
-	started, release chan struct{}
-	calls            int
+	started chan struct{}
+	release chan struct{}
 }
 
-func (f *blockingRefresher) Refresh(context.Context) (error, error) {
-	f.calls++
-	close(f.started)
-	<-f.release
-	return nil, nil
+func (refresher *blockingRefresher) Refresh(context.Context) (error, error) {
+	close(refresher.started)
+	<-refresher.release
+	return nil, errors.New("quota offline")
 }
 
 type recordingRunner struct {
@@ -324,78 +98,217 @@ type recordingRunner struct {
 	args []string
 }
 
-type recordingJumper struct {
-	ids chan int64
-	err error
-}
-
-type sequenceJumper struct {
-	mu   sync.Mutex
-	ids  chan int64
-	errs []error
-}
-
-func (jumper *sequenceJumper) JumpAttentionSession(_ context.Context, id int64) error {
-	jumper.mu.Lock()
-	err := jumper.errs[0]
-	jumper.errs = jumper.errs[1:]
-	jumper.mu.Unlock()
-	jumper.ids <- id
-	return err
-}
-
-func (jumper *recordingJumper) JumpAttentionSession(_ context.Context, id int64) error {
-	jumper.ids <- id
-	return jumper.err
-}
-
-type splitLoader struct {
-	state        State
-	attention    AttentionState
-	attentionErr error
-}
-
-func (loader *splitLoader) Load(context.Context) (State, error) { return loader.state, nil }
-
-func (loader *splitLoader) LoadAttention(context.Context) (AttentionState, error) {
-	return loader.attention, loader.attentionErr
-}
-
-func (r *recordingRunner) Run(name string, args ...string) error {
-	r.name = name
-	r.args = append([]string(nil), args...)
+func (runner *recordingRunner) Run(name string, args ...string) error {
+	runner.name = name
+	runner.args = append([]string(nil), args...)
 	return nil
 }
-func stateWithToday(tokens int64) State {
-	return State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: tokens}}, Quota: QuotaState{Enabled: false}}
+
+func TestControllerLoadsUsageAndRuntimeIntoOneView(t *testing.T) {
+	loader := &fakeLoader{
+		state:   State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 1000}}},
+		runtime: RuntimeState{RunningCount: 1, Sessions: []RuntimeSession{{ID: 3, State: "running", SessionName: "dora"}}},
+	}
+	presented := make(chan View, 8)
+	controller := NewController(loader, fakeRefresher{}, "http://127.0.0.1:8080", func(view View) { presented <- view })
+	if !controller.LoadAsync(context.Background()) {
+		t.Fatal("首次 LoadAsync 未启动")
+	}
+	select {
+	case view := <-presented:
+		if view.CompactTokens != "1K" || view.RunningCount != 1 || len(view.Sessions) != 1 {
+			t.Fatalf("组合视图错误: %+v", view)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("LoadAsync 未发布")
+	}
 }
+
+func TestControllerStopDropsLateLoad(t *testing.T) {
+	gate := make(chan struct{})
+	loader := &fakeLoader{loadGate: gate, runtime: RuntimeState{}}
+	presented := make(chan View, 1)
+	controller := NewController(loader, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.LoadAsync(context.Background())
+	controller.Stop()
+	close(gate)
+	select {
+	case view := <-presented:
+		t.Fatalf("Stop 后发布了迟到视图: %+v", view)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestControllerDoesNotOverwriteNewRuntimeWithOlderFullLoad(t *testing.T) {
+	loader := &sequencedLoader{firstStarted: make(chan struct{}), oldGate: make(chan struct{})}
+	presented := make(chan View, 8)
+	controller := NewController(loader, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.LoadAsync(context.Background())
+	<-loader.firstStarted
+	if !controller.LoadRuntimeAsync(context.Background()) {
+		t.Fatal("并发实时加载未启动")
+	}
+	close(loader.oldGate)
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case view := <-presented:
+			if view.CompactTokens == "1K" && view.RunningCount == 2 {
+				return
+			}
+		case <-deadline:
+			t.Fatal("旧 full load 覆盖了更新的 runtime")
+		}
+	}
+}
+
+func TestControllerRuntimeFailureKeepsLastStateAndRecovers(t *testing.T) {
+	loader := &fakeLoader{runtime: RuntimeState{RunningCount: 1}}
+	presented := make(chan View, 8)
+	controller := NewController(loader, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.LoadAsync(context.Background())
+	<-presented
+	loader.runtimeErr = errors.New("offline")
+	controller.LoadRuntimeAsync(context.Background())
+	failed := <-presented
+	if failed.RunningCount != 1 || failed.OperationStatus != "实时状态连接失败" {
+		t.Fatalf("runtime 失败未保留状态或提示错误: %+v", failed)
+	}
+	loader.runtimeErr = nil
+	loader.runtime = RuntimeState{RunningCount: 2}
+	controller.LoadRuntimeAsync(context.Background())
+	recovered := <-presented
+	if recovered.RunningCount != 2 || recovered.OperationStatus != "" {
+		t.Fatalf("runtime 恢复后状态错误: %+v", recovered)
+	}
+}
+
+func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
+	refresher := &blockingRefresher{started: make(chan struct{}), release: make(chan struct{})}
+	loader := &fakeLoader{state: State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 2000}}}}
+	presented := make(chan View, 8)
+	controller := NewController(loader, refresher, "", func(view View) { presented <- view })
+	if !controller.RefreshAsync(context.Background()) {
+		t.Fatal("首次 refresh 未启动")
+	}
+	<-refresher.started
+	if controller.RefreshAsync(context.Background()) {
+		t.Fatal("并发 refresh 被错误接受")
+	}
+	close(refresher.release)
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case view := <-presented:
+			if view.CompactTokens == "2K" && view.OperationStatus == "token 已更新，配额刷新失败" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("部分刷新成功状态未发布")
+		}
+	}
+}
+
+func TestControllerOpenDashboardUsesConfiguredLoopbackURL(t *testing.T) {
+	runner := &recordingRunner{}
+	controller := NewController(&fakeLoader{}, fakeRefresher{}, "http://127.0.0.1:18083", func(View) {})
+	controller.runner = runner
+	if err := controller.OpenDashboard(); err != nil {
+		t.Fatal(err)
+	}
+	if runner.name != "open" || len(runner.args) != 1 || runner.args[0] != "http://127.0.0.1:18083" {
+		t.Fatalf("open 参数错误: %s %+v", runner.name, runner.args)
+	}
+}
+
+func TestControllerClickCollapsesBeforeExactJump(t *testing.T) {
+	jumper := &fakeJumper{err: errors.New("target gone")}
+	presented := make(chan View, 8)
+	controller := NewController(&fakeLoader{}, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.SetSessionJumper(jumper)
+	controller.NotifyAttention(9, 7)
+	if !controller.JumpSessionAsync(context.Background(), 7) {
+		t.Fatal("JumpSessionAsync 未启动")
+	}
+	deadline := time.After(time.Second)
+	for {
+		jumper.mu.Lock()
+		got := jumper.session
+		jumper.mu.Unlock()
+		if got == 7 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("未调用精确 session jumper")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if controller.machine.State().Mode != ModeCompact {
+		t.Fatalf("点击后未立即收起: %+v", controller.machine.State())
+	}
+	statusDeadline := time.After(time.Second)
+	for {
+		select {
+		case view := <-presented:
+			if view.OperationStatus == "跳转 Codex 会话失败：target gone" && !view.Expanded {
+				return
+			}
+		case <-statusDeadline:
+			t.Fatal("compact 状态没有显示跳转失败")
+		}
+	}
+}
+
+func TestControllerSuccessfulRetryClearsPreviousJumpError(t *testing.T) {
+	jumper := &fakeJumper{err: errors.New("denied")}
+	presented := make(chan View, 16)
+	controller := NewController(&fakeLoader{}, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.SetSessionJumper(jumper)
+	controller.JumpSessionAsync(context.Background(), 1)
+	waitForView(t, presented, func(view View) bool { return view.OperationStatus == "跳转 Codex 会话失败：denied" })
+	waitForJumpIdle(t, controller)
+	jumper.setError(nil)
+	controller.JumpSessionAsync(context.Background(), 1)
+	waitForView(t, presented, func(view View) bool { return !view.Expanded && view.OperationStatus == "" })
+	waitForJumpIdle(t, controller)
+	jumper.mu.Lock()
+	calls := jumper.calls
+	jumper.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("jump 调用次数 = %d", calls)
+	}
+}
+
 func waitForView(t *testing.T, views <-chan View, match func(View) bool) View {
 	t.Helper()
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
+	deadline := time.After(time.Second)
 	for {
 		select {
 		case view := <-views:
 			if match(view) {
 				return view
 			}
-		case <-timer.C:
-			t.Fatal("等待菜单 view 超时")
+		case <-deadline:
+			t.Fatal("等待目标视图超时")
 		}
 	}
 }
 
-func waitForController(t *testing.T, controller *Controller, match func() bool) {
+func waitForJumpIdle(t *testing.T, controller *Controller) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.After(time.Second)
+	for {
 		controller.mu.Lock()
-		matched := match()
+		jumping := controller.jumping
 		controller.mu.Unlock()
-		if matched {
+		if !jumping {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		select {
+		case <-deadline:
+			t.Fatal("等待 jump 完成超时")
+		case <-time.After(time.Millisecond):
+		}
 	}
-	t.Fatal("等待 controller 状态超时")
 }

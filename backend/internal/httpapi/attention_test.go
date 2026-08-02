@@ -78,6 +78,50 @@ func TestCodexHookAndAttentionAPIUsePersistedState(t *testing.T) {
 	}
 }
 
+func TestRuntimeAPICombinesRunningAndWaitingWithoutPrivateIdentifiers(t *testing.T) {
+	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 2, 10, 30, 0, 0, time.UTC)
+	handler := NewHandler(store, Options{Now: func() time.Time { return now }})
+	post := func(body string) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/codex", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("Hook 状态码 = %d: %s", response.Code, response.Body.String())
+		}
+	}
+	post(`{"sessionId":"private-running","hookEvent":"UserPromptSubmit","cwdBasename":"/Users/private/work/dora","surface":"codex_app","promptPreview":"实现 灵动岛"}`)
+	post(`{"sessionId":"private-waiting","hookEvent":"PermissionRequest","cwdBasename":"/Users/private/work/other","surface":"codex_cli","terminalKind":"terminal","tty":"/dev/ttys999","toolName":"Bash","inputHash":"sha256:runtime"}`)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("Runtime API 状态码 = %d: %s", response.Code, response.Body.String())
+	}
+	serialized := response.Body.String()
+	var payload runtimeResponse
+	if err := json.Unmarshal([]byte(serialized), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.WaitingCount != 1 || payload.RunningCount != 1 || len(payload.Sessions) != 2 {
+		t.Fatalf("Runtime API 计数错误: %+v", payload)
+	}
+	if payload.Sessions[0].State != "waiting" || payload.Sessions[0].RequestID <= 0 || payload.Sessions[1].PromptPreview != "实现 灵动岛" {
+		t.Fatalf("Runtime API session 错误: %+v", payload.Sessions)
+	}
+	for _, private := range []string{"private-running", "private-waiting", "/Users/private", "/dev/ttys999"} {
+		if strings.Contains(serialized, private) {
+			t.Fatalf("Runtime API 泄露 %q: %s", private, serialized)
+		}
+	}
+}
+
 func TestCodexHookAPIRejectsContentWithoutPersistingIt(t *testing.T) {
 	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
 	if err != nil {
@@ -92,7 +136,7 @@ func TestCodexHookAPIRejectsContentWithoutPersistingIt(t *testing.T) {
 		status                  int
 	}{
 		{name: "非 JSON", contentType: "text/plain", body: `{}`, status: http.StatusUnsupportedMediaType},
-		{name: "未知内容字段", contentType: "application/json", body: `{"sessionId":"s","hookEvent":"Stop","surface":"unknown","prompt":"secret"}`, status: http.StatusBadRequest},
+		{name: "未知内容字段", contentType: "application/json", body: `{"sessionId":"s","hookEvent":"Stop","surface":"unknown","rawPrompt":"secret"}`, status: http.StatusBadRequest},
 		{name: "等待缺少稳定标识", contentType: "application/json", body: `{"sessionId":"s","hookEvent":"PermissionRequest","surface":"unknown","toolName":"Bash"}`, status: http.StatusBadRequest},
 	}
 	for _, test := range tests {

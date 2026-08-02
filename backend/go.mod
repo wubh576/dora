@@ -3,14 +3,12 @@ module github.com/wubh576/dora/backend
 go 1.21
 
 require (
-	fyne.io/systray v1.12.2
 	github.com/klauspost/compress v1.17.11
 	modernc.org/sqlite v1.29.10
 )
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

@@ -45,38 +45,41 @@ type QuotaItem struct {
 	SourceState      string  `json:"sourceState"`
 }
 
+type RuntimeState struct {
+	GeneratedAt  string           `json:"generatedAt"`
+	WaitingCount int              `json:"waitingCount"`
+	RunningCount int              `json:"runningCount"`
+	Sessions     []RuntimeSession `json:"sessions"`
+}
+
+type RuntimeSession struct {
+	ID            int64  `json:"id"`
+	Provider      string `json:"provider"`
+	State         string `json:"state"`
+	Surface       string `json:"surface"`
+	TerminalKind  string `json:"terminalKind"`
+	CWDBasename   string `json:"cwdBasename"`
+	SessionName   string `json:"sessionName"`
+	Model         string `json:"model"`
+	PromptPreview string `json:"promptPreview"`
+	LastSeenAt    string `json:"lastSeenAt"`
+	RequestID     int64  `json:"requestId"`
+	Summary       string `json:"summary"`
+	Kind          string `json:"kind"`
+	WaitingSince  string `json:"waitingSince"`
+	WaitSeconds   int64  `json:"waitSeconds"`
+	RequestCount  int    `json:"requestCount"`
+}
+
 type State struct {
-	Snapshot  Snapshot
-	Quota     QuotaState
-	Attention AttentionState
-}
-
-type AttentionState struct {
-	GeneratedAt  string             `json:"generatedAt"`
-	WaitingCount int                `json:"waitingCount"`
-	Sessions     []AttentionSession `json:"sessions"`
-}
-
-type AttentionSession struct {
-	ID           int64  `json:"id"`
-	Provider     string `json:"provider"`
-	Surface      string `json:"surface"`
-	TerminalKind string `json:"terminalKind"`
-	CWDBasename  string `json:"cwdBasename"`
-	Model        string `json:"model"`
-	Summary      string `json:"summary"`
-	Kind         string `json:"kind"`
-	WaitingSince string `json:"waitingSince"`
-	WaitSeconds  int64  `json:"waitSeconds"`
-	RequestCount int    `json:"requestCount"`
+	Snapshot Snapshot
+	Quota    QuotaState
+	Runtime  RuntimeState
 }
 
 type Loader interface {
 	Load(context.Context) (State, error)
-}
-
-type AttentionLoader interface {
-	LoadAttention(context.Context) (AttentionState, error)
+	LoadRuntime(context.Context) (RuntimeState, error)
 }
 
 type Client struct {
@@ -100,10 +103,10 @@ func (c *Client) Load(ctx context.Context) (State, error) {
 	return state, nil
 }
 
-func (c *Client) LoadAttention(ctx context.Context) (AttentionState, error) {
-	var state AttentionState
-	if err := c.getJSON(ctx, "/api/v1/attention", &state); err != nil {
-		return AttentionState{}, err
+func (c *Client) LoadRuntime(ctx context.Context) (RuntimeState, error) {
+	var state RuntimeState
+	if err := c.getJSON(ctx, "/api/v1/runtime", &state); err != nil {
+		return RuntimeState{}, err
 	}
 	return state, nil
 }

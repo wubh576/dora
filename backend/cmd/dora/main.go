@@ -207,7 +207,7 @@ func installCommand(args []string) error {
 		return err
 	}
 	hookStatus, hookErr := installLaunchAgentCodexHooks(manager.Paths().Home, manager.Paths().Binary)
-	if _, err := fmt.Fprintf(os.Stdout, "Dora 已安装并正在运行\n菜单栏：点击 Dora 图标查看用量\n仪表盘：%s\n", launchagent.DashboardURL); err != nil {
+	if _, err := fmt.Fprintf(os.Stdout, "Dora 已安装并正在运行\n灵动岛：位于当前 Mac 屏幕顶部中央\n仪表盘：%s\n", launchagent.DashboardURL); err != nil {
 		return err
 	}
 	return writeRealtimeReminderStatus(os.Stdout, hookStatus, hookErr)
@@ -403,7 +403,8 @@ func runMenubar(args []string, defaultDBPath string) error {
 type menuRunner func(context.Context, doramenubar.Config) error
 
 func runMenubarApplication(ctx context.Context, stop context.CancelFunc, application *app.Runtime, runMenu menuRunner) error {
-	application.StartAttentionNotifications(doramenubar.SoundNotifier{})
+	notifier := doramenubar.NewSoundNotifier()
+	application.StartAttentionNotifications(notifier)
 	runtimeErr := make(chan error, 1)
 	go func() {
 		select {
@@ -414,11 +415,12 @@ func runMenubarApplication(ctx context.Context, stop context.CancelFunc, applica
 		}
 	}()
 	menuErr := runMenu(ctx, doramenubar.Config{
-		Loader:       doramenubar.NewClient(application.DashboardURL()),
-		Refresher:    application,
-		DashboardURL: application.DashboardURL(),
-		Jumper:       application,
-		Quit:         stop,
+		Loader:          doramenubar.NewClient(application.DashboardURL()),
+		Refresher:       application,
+		DashboardURL:    application.DashboardURL(),
+		Jumper:          application,
+		AttentionEvents: notifier.Events(),
+		Quit:            stop,
 	})
 	closeErr := application.Close()
 	select {

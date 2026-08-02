@@ -27,6 +27,7 @@
 | 19. 多厂商模型定价与 Claude 缓存明细 | 已完成 | `bb79c81` |
 | 20. Kimi K3 API 等价计费 | 已完成 | `11d6557` |
 | 21. Codex 实时等待提醒与精确跳转 | 已完成 | `0778965`、`c40dfce`、`6ff055f`、`e1fd056`、`0a54972`、本次提交 |
+| 22. 原生 macOS 灵动岛控制中心 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -422,3 +423,23 @@
 - 当前交付形态是 LaunchAgent 独立二进制，不具有可靠系统通知所需的稳定 App Bundle 身份；因此没有伪造原生横幅，可靠提醒路径为菜单栏红色计数与 AppKit `Glass` 声音。
 - `make verify`、`go vet ./...`、相关 `go test -race` 与 `git diff --check` 通过；前端 TypeScript/Vite production build、生产 Go 构建和 LaunchAgent 健康检查通过。
 - Code Review：Phase 1 修复路径隐私、启动 cutoff、事件重放与等待时间；Phase 2 修复 redirect 泄漏、trust 误判、稳定 hash 和 surface 误判；Phase 3 修复跳转错误生命周期、AppleScript 诊断、声音批次失败和异步菜单视图竞态。最终探针 Review 发现取消路径缺少 fixture 驱动回归测试的 P3，补充 `PermissionRequest → UserPromptSubmit` 跨 parser/SQLite 序列测试后复审通过，无剩余 P0/P1/P2/P3。
+
+## 里程碑 22：原生 macOS 灵动岛控制中心
+
+已完成：
+
+- 用原生 AppKit nonactivating `NSPanel` 替换可见菜单栏状态项；`dora menubar` 仅保留为 LaunchAgent 兼容命令名，同一进程继续持有 HTTP/API、SQLite、扫描、配额和 Web。
+- 紧凑态常驻屏幕顶部中央，展示 Dora、running/waiting 数量和今日 token；hover 展开、离开延迟收起，新 attention 自动展开约 6 秒并高亮对应会话。
+- 展开态固定展示 1D/7D/ALL token、Codex 5h/7d quota、状态和底部操作；waiting 位于 running 之前，会话增多时只滚动中部列表。
+- 增加统一 `/api/v1/runtime`，每秒一次返回 active running/waiting session；不返回 external session ID、TTY 或完整 cwd，旧 `/attention` 作为 waiting-only 兼容端点复用同一 SQLite 读模型。
+- 从当前 Codex `UserPromptSubmit.prompt` 生成去控制字符、压缩空白、最多 160 个 Unicode 字符的一行 preview；只在 runtime session 中保存，`Stop` 清除，`SessionEnd` 删除，日志不记录。
+- 保留 App/iTerm2/Terminal 精确跳转、一次性 `Glass` 声音、LaunchAgent、CLI 与 Web；点击 session 先收起面板再跳转，不解决 waiting，也不抢目标以外的应用焦点。
+- 移除 `systray` 与 D-Bus 依赖，未新增第三方 GUI 框架；刘海屏/普通屏定位、尺寸与滚动判断由纯 Go 几何模型负责。
+
+验证记录：
+
+- 自动测试覆盖 prompt 清洗与长度、migration 7、running/waiting 统一查询和排序、API 隐私、状态机去重与 timer 取消、停止后不回调、刘海/普通/小屏布局、token 单位、Controller 合并读取与精确跳转。
+- `make verify`、`go test -race ./...`、`go vet ./...`、`go mod tidy -go=1.21` 和 `git diff --check` 通过；前端 TypeScript、Vite production build 与原生 Objective-C/Go production build 通过。
+- 当前 Mac 使用临时 SQLite 和 `127.0.0.1:18083` 启动真实 production 灵动岛；WindowServer 确认面板位于顶部中央且该进程没有 `Item-0` 状态栏窗口。脱敏 Hook fixture 真实展示 1 个 waiting 和 1 个 running，会话顺序、preview、高亮、固定操作区和自动收起正常。
+- 紧凑态与 attention 展开态实际窗口截图已保存；验收后临时进程正常退出、18083 释放，临时数据库和 fixture 目录已清理。
+- Code Review：独立 Reviewer 发现 timer 旧回调竞态、raw prompt 出站、运行时间/等待原因缺失、重复抢回滚动、跳转错误不可见、runtime 失败静默、主屏自引用和 v6 migration/排序测试缺口；全部修复并复审通过，无剩余 P0/P1/P2/P3。
