@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,10 +15,41 @@ import (
 
 	"github.com/wubh576/dora/backend/internal/app"
 	"github.com/wubh576/dora/backend/internal/buildinfo"
+	"github.com/wubh576/dora/backend/internal/codexhooks"
 	"github.com/wubh576/dora/backend/internal/launchagent"
 	"github.com/wubh576/dora/backend/internal/menubar"
 	"github.com/wubh576/dora/backend/internal/settings"
 )
+
+func TestWriteCodexHooksStatus(t *testing.T) {
+	var output bytes.Buffer
+	status := codexhooks.Status{
+		Path:       "/Users/test/.codex/hooks.json",
+		Executable: "/Applications/Dora/dora",
+		Installed:  true,
+		Trust:      "untrusted",
+	}
+	if err := writeCodexHooksStatus(&output, status); err != nil {
+		t.Fatalf("writeCodexHooksStatus() 失败: %v", err)
+	}
+	for _, value := range []string{"已安装", status.Path, status.Executable, "等待 Codex 授权", "/hooks"} {
+		if !strings.Contains(output.String(), value) {
+			t.Fatalf("hooks 状态缺少 %q: %s", value, output.String())
+		}
+	}
+}
+
+type unavailableHookEmitter struct{}
+
+func (unavailableHookEmitter) Emit(context.Context, io.Reader) error {
+	return codexhooks.ErrServiceUnavailable
+}
+
+func TestEmitCodexHookSilentlyAcceptsUnavailableService(t *testing.T) {
+	if err := emitCodexHook(context.Background(), strings.NewReader("private input"), unavailableHookEmitter{}); err != nil {
+		t.Fatalf("服务不可用没有静默成功: %v", err)
+	}
+}
 
 func TestStatusUsesRunningLaunchAgentBuildInfo(t *testing.T) {
 	commandInfo := buildinfo.New("new", true, "new-time", "go1.26.5", "darwin", "arm64", "15.6")

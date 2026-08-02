@@ -11,11 +11,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/app"
 	"github.com/wubh576/dora/backend/internal/buildinfo"
+	"github.com/wubh576/dora/backend/internal/codexhooks"
 	"github.com/wubh576/dora/backend/internal/launchagent"
 	doramenubar "github.com/wubh576/dora/backend/internal/menubar"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
@@ -48,7 +50,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("用法: dora <serve|menubar|scan|quota|install|status|uninstall> [选项]")
+		return errors.New("用法: dora <serve|menubar|scan|quota|hooks|install|status|uninstall> [选项]")
 	}
 	switch args[0] {
 	case "install":
@@ -57,6 +59,8 @@ func run(args []string) error {
 		return launchAgentStatusCommand(args[1:])
 	case "uninstall":
 		return uninstallCommand(args[1:])
+	case "hooks":
+		return hooksCommand(args[1:])
 	}
 
 	defaultDBPath, err := databasePath()
@@ -74,8 +78,93 @@ func run(args []string) error {
 	case "quota":
 		return quotaCommand(args[1:], defaultDBPath)
 	default:
-		return fmt.Errorf("未知命令 %q；用法: dora <serve|menubar|scan|quota|install|status|uninstall> [选项]", args[0])
+		return fmt.Errorf("未知命令 %q；用法: dora <serve|menubar|scan|quota|hooks|install|status|uninstall> [选项]", args[0])
 	}
+}
+
+func hooksCommand(args []string) error {
+	if len(args) != 2 || args[1] != "codex" {
+		return errors.New("用法: dora hooks <install|status|uninstall|emit> codex")
+	}
+	if args[0] == "emit" {
+		ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+		defer cancel()
+		return emitCodexHook(ctx, os.Stdin, codexhooks.NewEmitter())
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("读取当前用户目录: %w", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("读取当前 Dora 可执行文件: %w", err)
+	}
+	manager, err := codexhooks.NewManager(filepath.Join(home, ".codex"), executable)
+	if err != nil {
+		return err
+	}
+	var status codexhooks.Status
+	switch args[0] {
+	case "install":
+		status, err = manager.Install()
+	case "status":
+		status, err = manager.Status()
+	case "uninstall":
+		status, err = manager.Uninstall()
+	default:
+		return errors.New("用法: dora hooks <install|status|uninstall|emit> codex")
+	}
+	if err != nil {
+		return err
+	}
+	return writeCodexHooksStatus(os.Stdout, status)
+}
+
+type codexHookEmitter interface {
+	Emit(context.Context, io.Reader) error
+}
+
+func emitCodexHook(ctx context.Context, input io.Reader, emitter codexHookEmitter) error {
+	err := emitter.Emit(ctx, input)
+	if errors.Is(err, codexhooks.ErrServiceUnavailable) {
+		return nil
+	}
+	return err
+}
+
+func writeCodexHooksStatus(output io.Writer, status codexhooks.Status) error {
+	state := "未安装"
+	if status.Installed {
+		state = "已安装"
+	}
+	if status.Broken != "" {
+		state = "配置损坏"
+	}
+	trust := map[string]string{
+		"not_installed": "不适用",
+		"untrusted":     "等待 Codex 授权",
+		"partial":       "仅部分已授权",
+		"trusted":       "已授权",
+	}[status.Trust]
+	if trust == "" {
+		trust = "未知"
+	}
+	if _, err := fmt.Fprintf(output, "Codex hooks：%s\n配置：%s\nDora：%s\n信任：%s\n", state, status.Path, status.Executable, trust); err != nil {
+		return err
+	}
+	if status.Broken != "" {
+		_, err := fmt.Fprintf(output, "问题：%s\n", status.Broken)
+		return err
+	}
+	if len(status.Missing) > 0 {
+		_, err := fmt.Fprintf(output, "缺失事件：%s\n", strings.Join(status.Missing, ", "))
+		return err
+	}
+	if status.Installed && status.Trust != "trusted" {
+		_, err := fmt.Fprintln(output, "授权方式：在 Codex 中打开 /hooks，确认并启用 Dora hooks")
+		return err
+	}
+	return nil
 }
 
 type commandExitError struct {
