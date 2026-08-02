@@ -9,6 +9,7 @@ Dora 是一个仅供个人使用、运行在 macOS 本地的 AI 编程用量管�
 - 第一期：本地 Web 仪表盘、SQLite、Codex token 使用量和订阅配额，已完成。
 - 第二期 A：单进程生产运行、macOS 菜单栏和 LaunchAgent，已完成。
 - 第二期 B：Claude Code 本地 token 使用量；不持久化或管理 session。
+- 第三期：Codex 实时等待提醒和精确回到前台；只保存当前运行态所需的最小 session 定位信息，不提供 session 管理。
 
 详细设计见：
 
@@ -38,7 +39,7 @@ Dora 是一个仅供个人使用、运行在 macOS 本地的 AI 编程用量管�
 - 增量扫描去重；
 - 已有用户数据。
 
-Session 只用于扫描期间的临时关联、去重和聚合计数。Dora 不持久化 session ID、父子关系或完整项目路径，也不提供 session 浏览、恢复或控制功能。
+Usage 扫描中的 session 只用于临时关联、去重和聚合计数，不持久化 session ID、父子关系或完整项目路径。Codex 实时提醒可以在 session 存活期间保存原始 external session ID、cwd basename、surface 与精确跳转目标；`SessionEnd` 或确认目标消失后立即移除 runtime session。Dora 仍不提供 session 浏览、恢复、迁移或控制功能。
 
 ## 编码风格
 

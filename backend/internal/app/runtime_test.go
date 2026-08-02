@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/domain"
+	"github.com/wubh576/dora/backend/internal/jump"
 	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
@@ -115,6 +117,130 @@ func TestRuntimeBindFailureDoesNotMarkAttentionNotified(t *testing.T) {
 	}
 	if len(requests) != 1 {
 		t.Fatalf("端口冲突修改了提醒状态: %+v", requests)
+	}
+}
+
+type recordingAttentionStore struct {
+	requests []domain.AttentionRequest
+	marked   map[int64]bool
+}
+
+func (store *recordingAttentionStore) ClaimUnnotifiedAttention(_ context.Context, _ time.Time) ([]domain.AttentionRequest, error) {
+	result := make([]domain.AttentionRequest, 0, len(store.requests))
+	for _, request := range store.requests {
+		if !store.marked[request.ID] {
+			result = append(result, request)
+			store.marked[request.ID] = true
+		}
+	}
+	return result, nil
+}
+
+type recordingNotifier struct{ ids []int64 }
+
+func (notifier *recordingNotifier) Notify(_ context.Context, request domain.AttentionRequest) error {
+	notifier.ids = append(notifier.ids, request.ID)
+	return nil
+}
+
+type failingNotifier struct {
+	ids    []int64
+	failID int64
+}
+
+func (notifier *failingNotifier) Notify(_ context.Context, request domain.AttentionRequest) error {
+	notifier.ids = append(notifier.ids, request.ID)
+	if request.ID == notifier.failID {
+		return errors.New("sound unavailable")
+	}
+	return nil
+}
+
+func TestNotifyAttentionOnceSoundsOncePerNewRequest(t *testing.T) {
+	store := &recordingAttentionStore{
+		requests: []domain.AttentionRequest{{ID: 1}, {ID: 2}},
+		marked:   make(map[int64]bool),
+	}
+	notifier := &recordingNotifier{}
+	if err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(notifier.ids, []int64{1, 2}) {
+		t.Fatalf("提醒次数错误: %+v", notifier.ids)
+	}
+}
+
+func TestNotifyFailureDoesNotReplayClaimedSound(t *testing.T) {
+	store := &recordingAttentionStore{
+		requests: []domain.AttentionRequest{{ID: 1}, {ID: 2}},
+		marked:   make(map[int64]bool),
+	}
+	notifier := &failingNotifier{failID: 1}
+	if err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err == nil {
+		t.Fatal("首次声音失败未返回错误")
+	}
+	if err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err != nil {
+		t.Fatalf("第二次 claim 失败: %v", err)
+	}
+	if !reflect.DeepEqual(notifier.ids, []int64{1, 2}) {
+		t.Fatalf("失败后未继续尝试同批提醒，或已 claim 请求被重放: %+v", notifier.ids)
+	}
+}
+
+type configurableJumpRunner struct {
+	output []byte
+	err    error
+}
+
+func (runner configurableJumpRunner) Run(context.Context, string, ...string) ([]byte, error) {
+	return runner.output, runner.err
+}
+
+func TestJumpAttentionSessionOnlyResolvesGoneTarget(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		runnerOutput []byte
+		runnerError  error
+		wantWaiting  int
+	}{
+		{name: "successful click keeps waiting", wantWaiting: 1},
+		{name: "gone terminal reconciles", runnerOutput: []byte("DORA_TARGET_GONE\n"), wantWaiting: 0},
+		{name: "execution error keeps waiting", runnerError: errors.New("permission denied"), wantWaiting: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			event := domain.CodexHookEvent{
+				ExternalSessionID: "jump-session", EventName: "PermissionRequest", TurnID: "turn",
+				CWDBasename: "dora", Surface: domain.CodexSurfaceCLI, TerminalKind: domain.TerminalTerminal,
+				TTY: "/dev/ttys009", ToolName: "Bash", EventKey: "codex:jump", ReceivedAt: time.Now().UTC(),
+			}
+			if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+			runtime := &Runtime{store: store, jump: jump.New(configurableJumpRunner{output: test.runnerOutput, err: test.runnerError})}
+			err = runtime.JumpAttentionSession(ctx, 1)
+			if test.runnerError == nil && len(test.runnerOutput) == 0 && err != nil {
+				t.Fatalf("跳转成功意外报错: %v", err)
+			}
+			if len(test.runnerOutput) > 0 && !errors.Is(err, jump.ErrTargetGone) {
+				t.Fatalf("目标消失错误 = %v", err)
+			}
+			if test.runnerError != nil && (err == nil || errors.Is(err, jump.ErrTargetGone)) {
+				t.Fatalf("执行错误被误判为目标消失: %v", err)
+			}
+			waiting, loadErr := store.WaitingSessions(ctx)
+			if loadErr != nil || len(waiting) != test.wantWaiting {
+				t.Fatalf("点击后的等待状态 = %+v, %v", waiting, loadErr)
+			}
+		})
 	}
 }
 

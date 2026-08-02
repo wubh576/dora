@@ -8,16 +8,22 @@ import (
 )
 
 type View struct {
-	Title      string
-	Header     string
-	Today      string
-	SevenDays  string
-	AllTime    string
-	TopModel   string
-	FiveHour   string
-	SevenDay   string
-	Status     string
-	Refreshing bool
+	Title           string
+	Header          string
+	AttentionHeader string
+	Waiting         []WaitingRow
+	Today           string
+	SevenDays       string
+	AllTime         string
+	FiveHour        string
+	SevenDay        string
+	Status          string
+	Refreshing      bool
+}
+
+type WaitingRow struct {
+	SessionID int64
+	Title     string
 }
 
 func BuildView(state *State, now time.Time, refreshing bool, statusOverride string) View {
@@ -27,7 +33,6 @@ func BuildView(state *State, now time.Time, refreshing bool, statusOverride stri
 		Today:      "今日：—",
 		SevenDays:  "7 日：—",
 		AllTime:    "全部：—",
-		TopModel:   "模型：暂无数据",
 		FiveHour:   "Codex 5 小时配额：暂无数据",
 		SevenDay:   "Codex 7 日配额：暂无数据",
 		Status:     "状态：正在连接本地服务",
@@ -38,8 +43,10 @@ func BuildView(state *State, now time.Time, refreshing bool, statusOverride stri
 		view.Today = tokenRow("今日", state.Snapshot.Usage.TodayTokens)
 		view.SevenDays = tokenRow("7 日", state.Snapshot.Usage.SevenDayTokens)
 		view.AllTime = tokenRow("全部", state.Snapshot.Usage.AllTimeTokens)
-		if state.Snapshot.Usage.TopModel != "" {
-			view.TopModel = "模型：" + state.Snapshot.Usage.TopModel
+		view.Waiting = waitingRows(state.Attention)
+		if len(view.Waiting) > 0 {
+			view.Title = fmt.Sprintf("🔴 %d", state.Attention.WaitingCount)
+			view.AttentionHeader = fmt.Sprintf("需要关注：%d 个 Codex 会话", state.Attention.WaitingCount)
 		}
 		view.FiveHour = quotaRow("Codex 5 小时配额", "five_hour", state.Quota, now)
 		view.SevenDay = quotaRow("Codex 7 日配额", "seven_day", state.Quota, now)
@@ -52,6 +59,52 @@ func BuildView(state *State, now time.Time, refreshing bool, statusOverride stri
 		view.Status = "状态：" + statusOverride
 	}
 	return view
+}
+
+func waitingRows(attention AttentionState) []WaitingRow {
+	rows := make([]WaitingRow, 0, len(attention.Sessions))
+	for _, session := range attention.Sessions {
+		surface := "未知来源"
+		switch session.Surface {
+		case "codex_app":
+			surface = "App"
+		case "codex_cli":
+			switch session.TerminalKind {
+			case "iterm2":
+				surface = "iTerm2"
+			case "terminal":
+				surface = "Terminal"
+			default:
+				surface = "CLI"
+			}
+		}
+		cwd := session.CWDBasename
+		if cwd == "" {
+			cwd = "未知目录"
+		}
+		requests := fmt.Sprintf("%d 个请求", session.RequestCount)
+		rows = append(rows, WaitingRow{
+			SessionID: session.ID,
+			Title: fmt.Sprintf("Codex %s · %s · %s · %s · %s",
+				surface, cwd, session.Summary, waitLabel(session.WaitSeconds), requests,
+			),
+		})
+	}
+	return rows
+}
+
+func waitLabel(seconds int64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	switch {
+	case seconds < 60:
+		return fmt.Sprintf("等待 %d 秒", seconds)
+	case seconds < 3600:
+		return fmt.Sprintf("等待 %d 分钟", seconds/60)
+	default:
+		return fmt.Sprintf("等待 %d 小时 %d 分钟", seconds/3600, seconds%3600/60)
+	}
 }
 
 func tokenRow(label string, tokens int64) string {

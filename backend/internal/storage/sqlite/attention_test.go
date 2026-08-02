@@ -182,6 +182,33 @@ func TestWaitingSessionUsesOldestActiveRequestTime(t *testing.T) {
 	}
 }
 
+func TestClaimUnnotifiedAttentionIsOneShot(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	for index, key := range []string{"codex:claim-1", "codex:claim-2"} {
+		event := attentionEvent("PermissionRequest", now.Add(time.Duration(index)*time.Second))
+		event.TurnID = "turn-claim"
+		event.ToolName = "Bash"
+		event.EventKey = key
+		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimed, err := store.ClaimUnnotifiedAttention(ctx, now.Add(time.Minute))
+	if err != nil || len(claimed) != 2 {
+		t.Fatalf("首次 claim = %+v, %v", claimed, err)
+	}
+	claimed, err = store.ClaimUnnotifiedAttention(ctx, now.Add(2*time.Minute))
+	if err != nil || len(claimed) != 0 {
+		t.Fatalf("重复 claim = %+v, %v", claimed, err)
+	}
+}
+
 func attentionEvent(name string, at time.Time) domain.CodexHookEvent {
 	return domain.CodexHookEvent{
 		ExternalSessionID: "019-test-session",

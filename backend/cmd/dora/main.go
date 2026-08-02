@@ -315,6 +315,7 @@ func runMenubar(args []string, defaultDBPath string) error {
 type menuRunner func(context.Context, doramenubar.Config) error
 
 func runMenubarApplication(ctx context.Context, stop context.CancelFunc, application *app.Runtime, runMenu menuRunner) error {
+	application.StartAttentionNotifications(doramenubar.SoundNotifier{})
 	runtimeErr := make(chan error, 1)
 	go func() {
 		select {
@@ -328,6 +329,7 @@ func runMenubarApplication(ctx context.Context, stop context.CancelFunc, applica
 		Loader:       doramenubar.NewClient(application.DashboardURL()),
 		Refresher:    application,
 		DashboardURL: application.DashboardURL(),
+		Jumper:       application,
 		Quit:         stop,
 	})
 	closeErr := application.Close()

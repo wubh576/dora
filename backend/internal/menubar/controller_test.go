@@ -3,6 +3,7 @@ package menubar
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -133,6 +134,157 @@ func TestOpenDashboardUsesActualAddressAsArgument(t *testing.T) {
 	}
 }
 
+func TestAttentionLoadsIndependentlyAndJumpsBySessionID(t *testing.T) {
+	loader := &fakeLoader{state: State{Attention: AttentionState{
+		WaitingCount: 1,
+		Sessions:     []AttentionSession{{ID: 42, Surface: "codex_app", CWDBasename: "dora", Summary: "Codex 等待授权", RequestCount: 1}},
+	}}}
+	views := make(chan View, 2)
+	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
+	jumper := &recordingJumper{ids: make(chan int64, 1)}
+	controller.SetSessionJumper(jumper)
+	if !controller.LoadAttentionAsync(context.Background()) {
+		t.Fatal("独立 attention 加载未启动")
+	}
+	view := waitForView(t, views, func(view View) bool { return len(view.Waiting) == 1 })
+	if view.Title != "🔴 1" || view.Waiting[0].SessionID != 42 {
+		t.Fatalf("独立 attention view 错误: %+v", view)
+	}
+	if !controller.JumpAttentionSessionAsync(context.Background(), 42) {
+		t.Fatal("JumpAttentionSessionAsync() 未启动")
+	}
+	select {
+	case id := <-jumper.ids:
+		if id != 42 {
+			t.Fatalf("跳转 session ID = %d", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("等待异步跳转超时")
+	}
+}
+
+func TestFullLoadNeverOverwritesIndependentAttention(t *testing.T) {
+	loader := &splitLoader{
+		state: State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 500}}},
+		attention: AttentionState{WaitingCount: 1, Sessions: []AttentionSession{
+			{ID: 9, Surface: "codex_app", Summary: "Codex 等待授权", RequestCount: 1},
+		}},
+	}
+	views := make(chan View, 4)
+	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
+	controller.LoadAttentionAsync(context.Background())
+	waitForView(t, views, func(view View) bool { return len(view.Waiting) == 1 })
+	controller.LoadAsync(context.Background())
+	view := waitForView(t, views, func(view View) bool { return view.Today == "今日：500 tokens" })
+	if len(view.Waiting) != 1 || view.Waiting[0].SessionID != 9 {
+		t.Fatalf("完整 Load 覆盖了独立 attention: %+v", view)
+	}
+}
+
+func TestStaleFullLoadViewCannotPublishAfterNewAttentionView(t *testing.T) {
+	loader := &splitLoader{
+		state: State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 500}}},
+		attention: AttentionState{WaitingCount: 1, Sessions: []AttentionSession{
+			{ID: 2, Surface: "codex_app", Summary: "新请求", RequestCount: 1},
+		}},
+	}
+	views := make(chan View, 4)
+	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
+	controller.last = &State{Attention: AttentionState{WaitingCount: 1, Sessions: []AttentionSession{
+		{ID: 1, Surface: "codex_app", Summary: "旧请求", RequestCount: 1},
+	}}}
+	controller.presentMu.Lock()
+	controller.LoadAsync(context.Background())
+	waitForController(t, controller, func() bool {
+		return !controller.loading && controller.last.Snapshot.Usage.TodayTokens == 500
+	})
+	controller.LoadAttentionAsync(context.Background())
+	waitForController(t, controller, func() bool {
+		return !controller.attentionLoading && controller.last.Attention.Sessions[0].ID == 2
+	})
+	controller.presentMu.Unlock()
+	view := waitForView(t, views, func(view View) bool { return len(view.Waiting) > 0 })
+	if view.Waiting[0].SessionID != 2 {
+		t.Fatalf("旧完整加载视图覆盖了新 attention: %+v", view)
+	}
+	select {
+	case stale := <-views:
+		if len(stale.Waiting) > 0 && stale.Waiting[0].SessionID == 1 {
+			t.Fatalf("新 attention 后发布了旧视图: %+v", stale)
+		}
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestAttentionLoadFailureDoesNotDiscardPendingFullView(t *testing.T) {
+	loader := &splitLoader{
+		state:        State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 500}}},
+		attentionErr: errors.New("attention unavailable"),
+	}
+	views := make(chan View, 2)
+	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
+	controller.presentMu.Lock()
+	controller.LoadAsync(context.Background())
+	waitForController(t, controller, func() bool {
+		return !controller.loading && controller.last.Snapshot.Usage.TodayTokens == 500
+	})
+	controller.LoadAttentionAsync(context.Background())
+	waitForController(t, controller, func() bool { return !controller.attentionLoading })
+	controller.presentMu.Unlock()
+	view := waitForView(t, views, func(View) bool { return true })
+	if view.Today != "今日：500 tokens" {
+		t.Fatalf("attention 失败吞掉了等待发布的完整视图: %+v", view)
+	}
+}
+
+func TestJumpErrorIsAsyncAndSurvivesAttentionPoll(t *testing.T) {
+	loader := &fakeLoader{state: State{Attention: AttentionState{WaitingCount: 1}}}
+	views := make(chan View, 8)
+	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
+	jumper := &recordingJumper{ids: make(chan int64, 1), err: errors.New("Automation 权限被拒绝")}
+	controller.SetSessionJumper(jumper)
+	if !controller.JumpAttentionSessionAsync(context.Background(), 7) {
+		t.Fatal("异步跳转未启动")
+	}
+	select {
+	case <-jumper.ids:
+	case <-time.After(time.Second):
+		t.Fatal("同步菜单线程被跳转阻塞")
+	}
+	errorView := waitForView(t, views, func(view View) bool { return strings.Contains(view.Status, "Automation 权限被拒绝") })
+	if errorView.Status == "" {
+		t.Fatal("跳转错误未展示")
+	}
+	controller.LoadAttentionAsync(context.Background())
+	retained := waitForView(t, views, func(view View) bool { return strings.Contains(view.Status, "Automation 权限被拒绝") })
+	if retained.Status != errorView.Status {
+		t.Fatalf("attention 轮询覆盖了跳转错误: before=%q after=%q", errorView.Status, retained.Status)
+	}
+}
+
+func TestSuccessfulJumpClearsPreviousJumpError(t *testing.T) {
+	loader := &fakeLoader{state: State{Attention: AttentionState{WaitingCount: 1}}}
+	views := make(chan View, 8)
+	controller := NewController(loader, staticRefresher{}, "http://127.0.0.1:8080", func(view View) { views <- view })
+	jumper := &sequenceJumper{ids: make(chan int64, 2), errs: []error{errors.New("Automation 权限被拒绝"), nil}}
+	controller.SetSessionJumper(jumper)
+	controller.JumpAttentionSessionAsync(context.Background(), 7)
+	<-jumper.ids
+	waitForView(t, views, func(view View) bool { return strings.Contains(view.Status, "Automation 权限被拒绝") })
+	waitForController(t, controller, func() bool { return !controller.jumping && !controller.attentionLoading })
+	for len(views) > 0 {
+		<-views
+	}
+	if !controller.JumpAttentionSessionAsync(context.Background(), 7) {
+		t.Fatal("错误后的成功重试未启动")
+	}
+	<-jumper.ids
+	view := waitForView(t, views, func(view View) bool { return !strings.Contains(view.Status, "Automation 权限被拒绝") })
+	if strings.Contains(view.Status, "跳转 Codex 会话失败") {
+		t.Fatalf("成功重试仍显示旧错误: %+v", view)
+	}
+}
+
 type fakeLoader struct {
 	mu    sync.Mutex
 	state State
@@ -143,6 +295,12 @@ func (f *fakeLoader) Load(context.Context) (State, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.state, f.err
+}
+
+func (f *fakeLoader) LoadAttention(context.Context) (AttentionState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state.Attention, f.err
 }
 
 type staticRefresher struct{ usageErr, quotaErr error }
@@ -164,6 +322,43 @@ func (f *blockingRefresher) Refresh(context.Context) (error, error) {
 type recordingRunner struct {
 	name string
 	args []string
+}
+
+type recordingJumper struct {
+	ids chan int64
+	err error
+}
+
+type sequenceJumper struct {
+	mu   sync.Mutex
+	ids  chan int64
+	errs []error
+}
+
+func (jumper *sequenceJumper) JumpAttentionSession(_ context.Context, id int64) error {
+	jumper.mu.Lock()
+	err := jumper.errs[0]
+	jumper.errs = jumper.errs[1:]
+	jumper.mu.Unlock()
+	jumper.ids <- id
+	return err
+}
+
+func (jumper *recordingJumper) JumpAttentionSession(_ context.Context, id int64) error {
+	jumper.ids <- id
+	return jumper.err
+}
+
+type splitLoader struct {
+	state        State
+	attention    AttentionState
+	attentionErr error
+}
+
+func (loader *splitLoader) Load(context.Context) (State, error) { return loader.state, nil }
+
+func (loader *splitLoader) LoadAttention(context.Context) (AttentionState, error) {
+	return loader.attention, loader.attentionErr
 }
 
 func (r *recordingRunner) Run(name string, args ...string) error {
@@ -188,4 +383,19 @@ func waitForView(t *testing.T, views <-chan View, match func(View) bool) View {
 			t.Fatal("等待菜单 view 超时")
 		}
 	}
+}
+
+func waitForController(t *testing.T, controller *Controller, match func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		controller.mu.Lock()
+		matched := match()
+		controller.mu.Unlock()
+		if matched {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("等待 controller 状态超时")
 }

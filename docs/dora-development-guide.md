@@ -1,8 +1,8 @@
 # Dora：个人 AI Coding 用量 Demo 开发指南
 
-> 状态：第一期、第二期 A 与第二期 B 已完成
+> 状态：第一期、第二期 A、第二期 B 与 Codex 实时提醒已完成
 > 目标平台：macOS，本地单用户
-> 范围：第一期 Codex 本地 Web 仪表盘；第二期 A macOS 菜单栏；第二期 B Claude Code 本地用量
+> 范围：第一期 Codex 本地 Web 仪表盘；第二期 A macOS 菜单栏；第二期 B Claude Code 本地用量；Codex 实时等待提醒与精确跳转
 > 不在本文范围：多 Agent session 管理、团队协作、排行榜、云端同步
 
 ## 1. 最终目标
@@ -15,7 +15,7 @@
 - Web 页面只监听 `127.0.0.1`，由同一个 Go 核心进程提供 API 和静态资源。
 - 第二期 A 增加原生 macOS 菜单栏；第二期 B 接入 Claude Code 的实际用量。
 - 不保存 prompt、回复正文、工具参数或完整 transcript 副本。
-- 不持久化 session ID、父子关系或完整项目路径；session 元数据只在扫描期间用于去重和聚合计数。
+- Usage session ID、父子关系和完整项目路径只在扫描期间用于去重和聚合计数。Codex 实时提醒仅在运行态保存精确跳转所需的 external session ID，不扩展为 session 管理。
 
 推荐的两期产品形态如下：
 
@@ -449,7 +449,9 @@ CREATE TABLE provider_state (
 
 不要保存原始 JSON 行。`source_files` 只保存增量扫描必需的 transcript 文件 checkpoint，`usage_events` 只保存统计元数据。每个 provider 独立完成 generation 切换；一个 provider 失败不得清空另一个 provider 的最后成功数据。
 
-不建立 session 数据表。Codex 和 Claude Code 的 session ID、父子关系与项目完整路径只允许在 parser/去重过程的内存中短暂存在，不得进入 SQLite、日志或 API。Diagnostics 只暴露聚合后的 session 数。
+Usage 数据不建立 session 表。Codex 和 Claude Code 的 usage session ID、父子关系与项目完整路径只允许在 parser/去重过程的内存中短暂存在，不得进入 usage SQLite、日志或 Diagnostics API；Diagnostics 只暴露聚合后的 session 数。
+
+Codex 实时提醒是独立边界：`runtime_sessions` 只保存仍在运行的 Codex external session ID、cwd basename、model、surface、受支持终端的 exact TTY、state 和 last seen；`attention_requests` 保存稳定事件 key、等待类型、精简摘要、提醒和解决时间。不得保存 prompt、回复、完整命令、工具输入、环境变量、transcript 路径或完整 cwd。`SessionEnd` 与确认跳转目标消失会删除 runtime session，历史 attention 只保留解决审计所需的最小字段。
 
 ## 8. 时间窗口必须统一
 
@@ -850,7 +852,9 @@ input / 1M × input price
 | GET | `/breakdown?range=30D&dimension=provider_model` | 保留 Provider 归属的模型分布 |
 | GET | `/quotas` | 最新 quota 与 stale 状态 |
 | GET | `/snapshot` | 菜单栏使用的紧凑快照，与 Web dashboard 保持相同统计口径 |
+| GET | `/attention` | 菜单栏使用的 waiting session 脱敏快照，不返回 external session ID 或 TTY |
 | GET | `/diagnostics` | 数据源、扫描状态、错误 |
+| POST | `/hooks/codex` | 仅供本机 helper 写入结构化脱敏 Codex 事件 |
 | POST | `/scan` | 手动触发扫描 |
 | POST | `/quota/refresh` | 手动刷新 quota |
 | GET/PUT | `/settings` | 本地设置 |
@@ -859,9 +863,9 @@ input / 1M × input price
 
 - 只监听 `127.0.0.1`，不监听 `0.0.0.0`。
 - 前后端同源，不开放 CORS。
-- 写接口验证 `Origin`。
-- 启动时生成随机 control token，写接口要求 header。
-- API 不返回 session、session ID、完整项目路径、`source_files.path`、access token 或原始错误 body。
+- 浏览器写接口验证 `Origin`；启动时生成随机 control token，并要求对应 header。
+- Codex hook 写接口不接受浏览器控制操作，只接受 loopback、`application/json`、64 KiB 以内的脱敏事件；helper 禁止 redirect 且不包含 prompt、回复、完整命令、工具输入、环境变量、完整 cwd 或 external URL。
+- Usage、Diagnostics 与 attention API 不返回 external session ID、TTY、完整项目路径、`source_files.path`、access token 或原始错误 body；attention 只返回点击跳转所需的临时内部 runtime ID。
 - JSON 错误包含 provider、操作和可行动建议。
 
 ## 16. Web 仪表盘
@@ -1062,7 +1066,6 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 菜单：
 
 - 1D / 7D / ALL token。
-- top model。
 - Codex 5h/7d quota。
 - 最后扫描和刷新时间。
 - “立即刷新”。
@@ -1363,9 +1366,42 @@ DORA_CLAUDE_OAUTH_TOKEN
 - 任一 provider 失败不影响另一 provider。
 - Web 与菜单栏的 snapshot 数值一致。
 
-## 25. 日志与隐私
+## 25. Codex 实时提醒与精确跳转
 
-### 25.1 可以记录
+### 25.1 结构化事件和状态机
+
+- 只使用 Codex 官方 `~/.codex/hooks.json` 生命周期事件，不轮询 transcript 猜测前台状态。
+- `SessionStart`、`UserPromptSubmit` 进入 running；`PermissionRequest` 与 `request_user_input` 的 `PreToolUse` 进入 waiting；对应后续事件回到 running；`Stop` 进入 idle；`SessionEnd` 移除 runtime session。
+- waiting 数量按 session 计算，不按 request 叠加；同一 session 可以显示 active request 数。
+- attention event key 必须稳定去重。PermissionRequest 在缺少 tool use ID 时使用规范化 JSON 的输入 hash，只存 hash，不存输入正文。
+- notified 与 resolved 分开记录。一次新 request 只发一次声音；点击菜单只跳转，不解决 request；重启不重放历史声音。
+
+### 25.2 Hook 生命周期与安全
+
+```text
+dora hooks install codex
+dora hooks status codex
+dora hooks uninstall codex
+dora hooks emit codex
+```
+
+- install 原子合并 `~/.codex/hooks.json`，保留非 Dora 配置，重复安装幂等并更新稳定二进制路径。
+- status 报告配置损坏、路径、缺失事件和 Codex trust；Dora 只读 `~/.codex/config.toml` 中的 trust hash，不写入或绕过 Codex trust 状态，用户必须在 Codex `/hooks` 明确授权。
+- emit 限制 stdin 大小，只提取最小字段，并以短超时 POST 到固定 loopback endpoint；禁止 redirect，Dora 未运行时静默成功，不阻塞 Codex。
+- surface 依据受控字段、进程 executable/ancestry、TTY 和终端类型识别。只有实际 App ancestry 才标记 Codex App；CLI 只支持 iTerm2 与 Terminal exact TTY。
+
+### 25.3 菜单栏和跳转
+
+- 无 waiting 时标题显示今日 token；有 waiting 时显示 `🔴 N`，顶部“需要关注”区域的子菜单中每个 waiting session 一行。
+- 行内容包括 Codex surface、cwd basename、精简摘要、等待时长和 active request 数；实时轮询独立于 usage scan。
+- Codex App 使用参数化 `codex://threads/<external_session_id>` deep link 并前台激活。
+- iTerm2 与 Terminal 使用 AppleScript 精确匹配 TTY；TTY 只能通过 `osascript` argv 传入，不插值进源码，并负责取消最小化和激活窗口。
+- 不使用窗口标题、cwd 或“最近窗口”模糊匹配。目标消失时给出明确错误并解决对应 runtime 状态。
+- Claude Code 实时提醒、系统通知和屏幕刘海 UI 不在当前范围。
+
+## 26. 日志与隐私
+
+### 26.1 可以记录
 
 - provider ID。
 - scan run ID。
@@ -1380,7 +1416,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 
 LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，各覆盖一个 `.1` 备份。阈值按单个活动文件计算，不按两个日志合计；磁盘占用评估必须同时计入两个活动文件和两个备份。轮转失败只记录单行原因并在下个周期重试，不影响 Web、菜单栏、扫描或配额服务；uninstall 不删除活动日志或备份。
 
-### 25.2 禁止记录
+### 26.2 禁止记录
 
 - prompt、response、thinking 内容。
 - JSONL 原始行。
@@ -1390,7 +1426,7 @@ LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，�
 - 完整 cwd。
 - Claude tool input。
 
-### 25.3 数据导出
+### 26.3 数据导出
 
 如提供 CSV/JSON 导出，只导出：
 
@@ -1404,7 +1440,7 @@ LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，�
 
 不提供 transcript 导出。
 
-## 26. 推荐实施顺序
+## 27. 推荐实施顺序
 
 ### 第一期
 
@@ -1434,11 +1470,19 @@ LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，�
 8. 在 Web 和菜单栏接入 Claude，并保留 provider 归属。
 9. 完成第二期验收测试。
 
-## 27. 最终边界
+### Codex 实时提醒
 
-本文只交付以下两期：
+1. 建立 runtime session 与 attention request migration、状态机和 loopback API。
+2. 实现 Codex hooks install/status/uninstall/emit，完成官方 hooks/list 兼容性探测。
+3. 接入一次性声音、菜单栏 waiting 区域和 App/iTerm2/Terminal 精确跳转。
+4. 完成重启去重、隐私、跳转和真实 macOS 验收。
+
+## 28. 最终边界
+
+本文交付边界：
 
 - 第一期：本地 Web 仪表盘 + SQLite + Codex usage + Codex quota。
 - 第二期：macOS 菜单栏 + Claude Code usage；订阅 quota 仍只支持 Codex。
+- Codex 实时提醒：只观察等待状态并回到原位置，不提供 session 管理。
 
 不同 Agent 之间的 session 浏览、恢复、迁移、启动和上下文管理不在本文设计或验收范围内。

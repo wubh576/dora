@@ -213,6 +213,61 @@ func (s *Store) MarkAttentionNotified(ctx context.Context, id int64, at time.Tim
 	return nil
 }
 
+func (s *Store) ClaimUnnotifiedAttention(ctx context.Context, at time.Time) ([]domain.AttentionRequest, error) {
+	if at.IsZero() {
+		return nil, errors.New("Codex 提醒 claim 时间无效")
+	}
+	claimed := make([]domain.AttentionRequest, 0)
+	err := s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
+		rows, err := conn.QueryContext(ctx, `
+			SELECT id, runtime_session_id, event_key, kind, summary, turn_id, created_at_ms
+			FROM attention_requests
+			WHERE resolved_at_ms IS NULL AND notified_at_ms IS NULL
+			ORDER BY created_at_ms ASC, id ASC
+		`)
+		if err != nil {
+			return fmt.Errorf("读取待 claim 的 Codex 请求: %w", err)
+		}
+		for rows.Next() {
+			var request domain.AttentionRequest
+			var createdAt int64
+			if err := rows.Scan(
+				&request.ID, &request.RuntimeSessionID, &request.EventKey,
+				&request.Kind, &request.Summary, &request.TurnID, &createdAt,
+			); err != nil {
+				rows.Close()
+				return fmt.Errorf("解析待 claim 的 Codex 请求: %w", err)
+			}
+			request.CreatedAt = time.UnixMilli(createdAt).UTC()
+			claimed = append(claimed, request)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("关闭 Codex claim 查询: %w", err)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("遍历待 claim 的 Codex 请求: %w", err)
+		}
+		for _, request := range claimed {
+			result, err := conn.ExecContext(ctx, `
+				UPDATE attention_requests SET notified_at_ms = ?
+				WHERE id = ? AND resolved_at_ms IS NULL AND notified_at_ms IS NULL
+			`, at.UTC().UnixMilli(), request.ID)
+			if err != nil {
+				return fmt.Errorf("claim Codex 请求提醒: %w", err)
+			}
+			affected, err := result.RowsAffected()
+			if err != nil || affected != 1 {
+				return fmt.Errorf("检查 Codex 请求 claim 结果: affected=%d, err=%v", affected, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claimed, nil
+}
+
 func (s *Store) RuntimeSession(ctx context.Context, id int64) (domain.RuntimeSession, error) {
 	var session domain.RuntimeSession
 	var lastSeen int64

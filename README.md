@@ -77,7 +77,7 @@ open http://127.0.0.1:8080
 
 `status` 输出短 commit 构建标识、完整 commit、`dirty/clean`、构建时间、Go 版本、`GOOS/GOARCH`、macOS 版本和构建来源。LaunchAgent 正常时这些字段来自运行中的服务，避免与尚未安装的新构建混淆。`serve` 与 `menubar` 每次启动都会把相同信息写入日志，但不会记录用户名、设备序列号、OAuth token 或其他凭证。
 
-菜单栏标题显示今日 token；点开后可查看今日、7 日、全部 token、最高用量模型、Codex 5 小时/7 日配额和最近状态。菜单支持异步刷新、打开真实 loopback 仪表盘和正常退出。退出会关闭 HTTP 服务并释放端口。
+菜单栏标题通常显示今日 token；Codex 有等待授权、危险命令确认或用户问题时切换为 `🔴 N`。顶部“需要关注”子菜单会按 waiting session 展示 Codex App/iTerm2/Terminal、项目 basename、等待原因、时长和请求数，点击可精确回到对应 thread 或 TTY；点击不会把请求标记为已处理。菜单继续展示今日、7 日、全部 token、Codex 5 小时/7 日配额和最近状态，并支持异步刷新、打开真实 loopback 仪表盘和正常退出。退出会关闭 HTTP 服务并释放端口。
 
 不需要菜单栏时，也可以继续手动启动同一套运行时：
 
@@ -133,6 +133,27 @@ open http://127.0.0.1:8080
 
 `go run ./cmd/dora install` 等开发构建不包含生产 Web 资源，会被拒绝。请始终先执行 `make build`，再运行 `./bin/dora install`。
 
+### Codex 实时提醒
+
+生产二进制安装到稳定路径后，为 Codex 安装结构化生命周期 hooks：
+
+```bash
+"$HOME/Library/Application Support/Dora/bin/dora" hooks install codex
+"$HOME/Library/Application Support/Dora/bin/dora" hooks status codex
+```
+
+安装会原子合并 `~/.codex/hooks.json`，保留其他工具和用户已有的 hooks；重复执行会更新 Dora 可执行文件路径，不产生重复 handler。Codex 自己的 hook 信任机制不会被绕过：首次安装或 Dora 路径变化后，在 Codex 中打开 `/hooks`，检查命令与配置来源后明确授权。状态命令会报告配置路径、Dora 路径、缺失/损坏事件和信任状态。
+
+卸载只移除带 Dora 标记的 handler：
+
+```bash
+"$HOME/Library/Application Support/Dora/bin/dora" hooks uninstall codex
+```
+
+Hook helper 只向固定的 `127.0.0.1:8080` 发送有界、脱敏 JSON，不跟随重定向。Dora 不保存 prompt、回复、完整命令、工具参数、环境变量、transcript 路径或完整 cwd；SQLite 只在实时 session 存活期间保存 external session ID、cwd basename、模型、App/CLI surface、受支持终端的精确 TTY 和等待状态。`SessionEnd` 或跳转确认目标已消失时会移除 runtime session；重启后保留尚未结束的 waiting 展示，但不会对历史请求重复发声。
+
+当前跳转支持 Codex App deep link、iTerm2 exact TTY 和 macOS Terminal exact TTY。未知终端不会使用窗口标题或 cwd 猜测目标；这类 session 仍可显示提醒，但会明确提示不能精确跳转。Claude Code 实时提醒不在本次范围内。
+
 ### 日志与排障
 
 LaunchAgent 的日志位于：
@@ -187,7 +208,7 @@ GET http://127.0.0.1:8080/api/v1/diagnostics
 
 页面使用的手动扫描接口为 `POST /api/v1/scan`。该写接口同时校验本次后端启动生成的 control token 和本地页面 `Origin`。
 
-Dora 只保存 token 统计元数据、脱敏项目名和扫描 checkpoint，不保存 session、session ID、父子关系、完整项目路径、prompt、回复正文、工具参数或 JSONL 原始行。Codex 原始文件和 Dora SQLite 数据库都不会提交到 Git。
+Dora 的用量扫描只保存 token 统计元数据、脱敏项目名和扫描 checkpoint，不保存 usage session、session ID、父子关系、完整项目路径、prompt、回复正文、工具参数或 JSONL 原始行。Codex 原始文件和 Dora SQLite 数据库都不会提交到 Git。
 
 ## Claude Code 本地用量扫描
 
@@ -264,6 +285,7 @@ GET /api/v1/breakdown?range=30D&dimension=provider
 GET /api/v1/breakdown?range=30D&dimension=provider_model
 GET /api/v1/dashboard?range=7D
 GET /api/v1/snapshot
+GET /api/v1/attention
 ```
 
 这些 API 的总量默认合并 Codex 与 Claude Code；`providers` 和 `provider_model` 保留来源归属，即使两个 provider 报告同名模型也能区分。`/api/v1/dashboard` 是 Web 页面使用的统一快照，保证标题总量、每日趋势和分布复用同一个时间窗口。`/api/v1/snapshot` 提供合并后的今日、7 日、全部 token、最高用量模型、provider 总量和扫描新鲜度，供菜单栏复用；其中订阅配额仍明确只属于 Codex。

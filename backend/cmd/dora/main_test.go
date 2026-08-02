@@ -331,6 +331,37 @@ func TestMenubarSignalAndQuitUseGracefulRuntimeClose(t *testing.T) {
 	}
 }
 
+func TestMenubarRunnerErrorStillClosesRuntime(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	application, err := app.Start(ctx, app.Config{
+		Address:      "127.0.0.1:0",
+		DBPath:       filepath.Join(t.TempDir(), "dora.db"),
+		CodexHomes:   []string{t.TempDir()},
+		ScanInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("启动测试 runtime 失败: %v", err)
+	}
+	address := application.Address()
+	menuFailure := errors.New("menu loop failed")
+	done := make(chan error, 1)
+	go func() {
+		done <- runMenubarApplication(ctx, stop, application, func(context.Context, menubar.Config) error {
+			return menuFailure
+		})
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, menuFailure) {
+			t.Fatalf("菜单错误未保留: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("菜单 runner 异常返回后 Runtime.Close 卡住")
+	}
+	assertAddressReleased(t, address)
+}
+
 func assertAddressReleased(t *testing.T, address string) {
 	t.Helper()
 	listener, err := net.Listen("tcp", address)

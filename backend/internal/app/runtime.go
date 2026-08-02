@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -10,13 +11,16 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/buildinfo"
+	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/httpapi"
+	"github.com/wubh576/dora/backend/internal/jump"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
 	"github.com/wubh576/dora/backend/internal/quota"
 	"github.com/wubh576/dora/backend/internal/scan"
@@ -29,6 +33,7 @@ const (
 	DefaultScanInterval = 5 * time.Minute
 	FrontendOrigin      = "http://127.0.0.1:5173"
 	loopbackHost        = "127.0.0.1"
+	attentionInterval   = time.Second
 )
 
 type Logger interface {
@@ -51,6 +56,7 @@ type Config struct {
 	Logger        Logger
 	BuildInfo     buildinfo.Info
 	LogRotator    LogRotator
+	JumpRunner    jump.Runner
 }
 
 // Runtime 统一持有 HTTP、SQLite、扫描器和配额服务，serve 与 menubar 共用它。
@@ -62,11 +68,14 @@ type Runtime struct {
 	store         *dorasqlite.Store
 	scanner       *scan.Scanner
 	quota         *quota.Service
+	jump          *jump.Service
 	logger        Logger
+	ctx           context.Context
 	cancel        context.CancelFunc
 	errors        chan error
 	wg            sync.WaitGroup
 	closeOnce     sync.Once
+	attentionOnce sync.Once
 	closeErr      error
 }
 
@@ -105,6 +114,10 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 	}
 	settingsStore := settings.New(filepath.Join(filepath.Dir(config.DBPath), "settings.json"))
 	quotaService := quota.NewService(codex.NewQuotaClient(config.CodexHomes), store, settingsStore)
+	jumpRunner := config.JumpRunner
+	if jumpRunner == nil {
+		jumpRunner = osCommandRunner{}
+	}
 	controlToken, err := newControlToken()
 	if err != nil {
 		cleanup()
@@ -149,7 +162,9 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		store:         store,
 		scanner:       scanner,
 		quota:         quotaService,
+		jump:          jump.New(jumpRunner),
 		logger:        config.Logger,
+		ctx:           ctx,
 		cancel:        cancel,
 		errors:        make(chan error, 1),
 	}
@@ -177,6 +192,39 @@ func (r *Runtime) DashboardURL() string { return "http://" + r.address }
 func (r *Runtime) InitializedAt() time.Time { return r.initializedAt }
 
 func (r *Runtime) Errors() <-chan error { return r.errors }
+
+type AttentionNotifier interface {
+	Notify(context.Context, domain.AttentionRequest) error
+}
+
+func (r *Runtime) StartAttentionNotifications(notifier AttentionNotifier) {
+	if notifier == nil {
+		return
+	}
+	r.attentionOnce.Do(func() {
+		r.wg.Add(1)
+		go r.attentionLoop(r.ctx, notifier)
+	})
+}
+
+func (r *Runtime) JumpAttentionSession(ctx context.Context, sessionID int64) error {
+	session, err := r.store.RuntimeSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("这个 Codex 会话已经结束")
+		}
+		return err
+	}
+	if err := r.jump.Jump(ctx, session); err != nil {
+		if errors.Is(err, jump.ErrTargetGone) {
+			if resolveErr := r.store.ResolveRuntimeSession(ctx, sessionID, time.Now().UTC(), "target_gone"); resolveErr != nil {
+				return errors.Join(err, resolveErr)
+			}
+		}
+		return err
+	}
+	return nil
+}
 
 // Refresh 先更新本地 token，再刷新配额；配额失败不会回滚已完成的扫描。
 func (r *Runtime) Refresh(ctx context.Context) (usageErr, quotaErr error) {
@@ -241,6 +289,46 @@ func (r *Runtime) quotaLoop(ctx context.Context, interval time.Duration) {
 func (r *Runtime) logRotationLoop(ctx context.Context, rotator LogRotator) {
 	defer r.wg.Done()
 	rotator.Run(ctx)
+}
+
+func (r *Runtime) attentionLoop(ctx context.Context, notifier AttentionNotifier) {
+	defer r.wg.Done()
+	ticker := time.NewTicker(attentionInterval)
+	defer ticker.Stop()
+	for {
+		if err := notifyAttentionOnce(ctx, r.store, notifier, time.Now().UTC()); err != nil && !backgroundStopped(ctx, err) {
+			r.logger.Printf("Codex 实时提醒失败: %s", singleLineError(err))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+type attentionStore interface {
+	ClaimUnnotifiedAttention(context.Context, time.Time) ([]domain.AttentionRequest, error)
+}
+
+func notifyAttentionOnce(ctx context.Context, store attentionStore, notifier AttentionNotifier, at time.Time) error {
+	requests, err := store.ClaimUnnotifiedAttention(ctx, at)
+	if err != nil {
+		return err
+	}
+	var notifyErrors []error
+	for _, request := range requests {
+		if err := notifier.Notify(ctx, request); err != nil {
+			notifyErrors = append(notifyErrors, err)
+		}
+	}
+	return errors.Join(notifyErrors...)
+}
+
+type osCommandRunner struct{}
+
+func (osCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func logUsageScanResult(ctx context.Context, logger Logger, report scan.Report, err error) {

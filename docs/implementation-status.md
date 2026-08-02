@@ -25,7 +25,8 @@
 | 17. 多 Provider 统一展示 | 已完成 | `ed41bf8`、`a950d69` |
 | 18. 统一统计起始日 | 已完成 | `5a26c1e` |
 | 19. 多厂商模型定价与 Claude 缓存明细 | 已完成 | `bb79c81` |
-| 20. Kimi K3 API 等价计费 | 已完成 | 本次提交 |
+| 20. Kimi K3 API 等价计费 | 已完成 | `11d6557` |
+| 21. Codex 实时等待提醒与精确跳转 | 已完成 | `216ee52`、`76b4c09`、本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -394,3 +395,23 @@
 - 临时生产服务的 Dashboard API 和桌面页面均显示 Claude Code 的 `kimi-k3` 用量与 Kimi 官方定价来源，浏览器无 warning/error。
 - `make verify`、`go vet ./...`、`go test -race ./...`、前端 TypeScript/Vite production build 和 `git diff --check` 通过；临时服务已关闭，18082 端口和 SQLite 副本均已清理。
 - Code Review：独立 Reviewer 确认精确模型匹配、跨 Agent 计费、cache 口径、金额测试和已有数据安全均正确，无 P0/P1/P2/P3。
+
+## 里程碑 21：Codex 实时等待提醒与精确跳转
+
+已完成：
+
+- SQLite migration 增加最小 `runtime_sessions` 与 `attention_requests`，实现 running/waiting/idle、稳定去重、notified/resolved 分离、`SessionEnd` 清理和重启不重复提醒。
+- 增加 attention snapshot 与 Codex hook loopback API；只接收有界脱敏字段，不保存 prompt、回复、完整命令、工具输入、环境变量、transcript 路径或完整 cwd。
+- 增加 `dora hooks install/status/uninstall/emit codex`，原子合并并保留用户已有 hooks，支持幂等更新路径、损坏保护和官方信任状态；不绕过 Codex `/hooks` 授权。
+- 菜单栏 waiting 时显示 `🔴 N`，顶部按 session 展示 App/CLI、项目 basename、等待原因、时长与请求数；新 request 每条只发一次声音。
+- 点击使用 Codex App deep link 或 iTerm2/Terminal exact TTY 跳转，不解决等待；目标消失时清理 runtime 状态，不使用标题、cwd 或最近窗口猜测。
+- 移除菜单栏低价值的 top model 行，保留 token、Codex quota、刷新、仪表盘和退出。
+
+验证记录：
+
+- 当前 Codex App `0.146.0-alpha.9.2` 的官方 `hooks/list` 真实识别全部 7 个 Dora handlers，matcher、timeout、source path 与 current hash 和 Dora 计算结果一致；初始状态保持 untrusted，等待用户显式授权。
+- 自动测试覆盖事件转换、SQLite transition/dedup/restart、API 边界、hooks merge/idempotence/uninstall/broken config/path/trust、redirect 隐私、稳定 JSON hash、surface/TTY 检测、声音去重、菜单实时视图和精确跳转参数。
+- 当前用户 LaunchAgent 安装后运行正常；真实 loopback 事件让菜单栏从普通 token 标题切换为 3 个等待提示，AppKit `Glass` 声音链路被触发，发送 `SessionEnd` 后 Attention API 和菜单计数恢复为 0。
+- 当前 Codex App task 已用 `codex://threads/<thread-id>` deep link 和前台激活完成真实跳转；iTerm2 `/dev/ttys000` 与 Terminal `/dev/ttys002` 均使用 exact TTY AppleScript 定位成功，没有使用标题、cwd 或最近窗口回退。
+- `make verify`、`go vet ./...`、相关 `go test -race` 与 `git diff --check` 通过；前端 TypeScript/Vite production build、生产 Go 构建和 LaunchAgent 健康检查通过。
+- Code Review：Phase 1 修复路径隐私、启动 cutoff、事件重放与等待时间；Phase 2 修复 redirect 泄漏、trust 误判、稳定 hash 和 surface 误判；Phase 3 修复跳转错误生命周期、AppleScript 诊断、声音批次失败和异步菜单视图竞态。独立 Reviewer 最终确认无剩余 P0/P1/P2/P3。

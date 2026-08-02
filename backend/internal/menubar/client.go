@@ -46,12 +46,37 @@ type QuotaItem struct {
 }
 
 type State struct {
-	Snapshot Snapshot
-	Quota    QuotaState
+	Snapshot  Snapshot
+	Quota     QuotaState
+	Attention AttentionState
+}
+
+type AttentionState struct {
+	GeneratedAt  string             `json:"generatedAt"`
+	WaitingCount int                `json:"waitingCount"`
+	Sessions     []AttentionSession `json:"sessions"`
+}
+
+type AttentionSession struct {
+	ID           int64  `json:"id"`
+	Provider     string `json:"provider"`
+	Surface      string `json:"surface"`
+	TerminalKind string `json:"terminalKind"`
+	CWDBasename  string `json:"cwdBasename"`
+	Model        string `json:"model"`
+	Summary      string `json:"summary"`
+	Kind         string `json:"kind"`
+	WaitingSince string `json:"waitingSince"`
+	WaitSeconds  int64  `json:"waitSeconds"`
+	RequestCount int    `json:"requestCount"`
 }
 
 type Loader interface {
 	Load(context.Context) (State, error)
+}
+
+type AttentionLoader interface {
+	LoadAttention(context.Context) (AttentionState, error)
 }
 
 type Client struct {
@@ -71,6 +96,14 @@ func (c *Client) Load(ctx context.Context) (State, error) {
 	// 配额端点异常不能丢弃已经读取到的 token 快照。
 	if err := c.getJSON(ctx, "/api/v1/quotas", &state.Quota); err != nil {
 		state.Quota = QuotaState{Enabled: true, Status: "error", Message: "Codex 配额状态读取失败"}
+	}
+	return state, nil
+}
+
+func (c *Client) LoadAttention(ctx context.Context) (AttentionState, error) {
+	var state AttentionState
+	if err := c.getJSON(ctx, "/api/v1/attention", &state); err != nil {
+		return AttentionState{}, err
 	}
 	return state, nil
 }

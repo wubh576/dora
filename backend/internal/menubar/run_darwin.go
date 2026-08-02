@@ -10,6 +10,11 @@ static void doraSetAccessoryPolicy(void) {
 	[NSApplication sharedApplication];
 	[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 }
+static void doraPlayAttentionSound(void) {
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[[NSSound soundNamed:@"Glass"] play];
+	});
+}
 */
 import "C"
 
@@ -20,9 +25,13 @@ import (
 	"time"
 
 	"fyne.io/systray"
+	"github.com/wubh576/dora/backend/internal/domain"
 )
 
-const menuReloadInterval = time.Minute
+const (
+	menuReloadInterval      = time.Minute
+	attentionReloadInterval = time.Second
+)
 
 //go:embed icon-template.png
 var templateIcon []byte
@@ -31,7 +40,15 @@ type Config struct {
 	Loader       Loader
 	Refresher    Refresher
 	DashboardURL string
+	Jumper       SessionJumper
 	Quit         func()
+}
+
+type SoundNotifier struct{}
+
+func (SoundNotifier) Notify(context.Context, domain.AttentionRequest) error {
+	C.doraPlayAttentionSound()
+	return nil
 }
 
 // Run 必须由已经锁定到 macOS 主线程的 main goroutine 调用。
@@ -52,8 +69,10 @@ func Run(ctx context.Context, config Config) error {
 		systray.SetRemovalAllowed(false)
 		items := newMenuItems()
 		controller = NewController(config.Loader, config.Refresher, config.DashboardURL, items.present)
+		controller.SetSessionJumper(config.Jumper)
 		go handleMenuEvents(ctx, controller, items, config.Quit)
 		controller.LoadAsync(ctx)
+		controller.LoadAttentionAsync(ctx)
 		readyOnce.Do(func() { close(ready) })
 	}, func() {
 		if controller != nil {
@@ -68,19 +87,26 @@ func Run(ctx context.Context, config Config) error {
 }
 
 type menuItems struct {
-	header, today, sevenDays, allTime, topModel *systray.MenuItem
-	fiveHour, sevenDay, status                  *systray.MenuItem
-	refresh, open, quit                         *systray.MenuItem
+	attentionHeader                   *systray.MenuItem
+	waiting                           map[int64]*waitingMenuItem
+	waitingClicks                     chan int64
+	header, today, sevenDays, allTime *systray.MenuItem
+	fiveHour, sevenDay, status        *systray.MenuItem
+	refresh, open, quit               *systray.MenuItem
+}
+
+type waitingMenuItem struct {
+	item *systray.MenuItem
 }
 
 func newMenuItems() *menuItems {
-	items := &menuItems{
-		header:    systray.AddMenuItem("Dora", ""),
-		today:     systray.AddMenuItem("今日：—", ""),
-		sevenDays: systray.AddMenuItem("7 日：—", ""),
-		allTime:   systray.AddMenuItem("全部：—", ""),
-		topModel:  systray.AddMenuItem("模型：暂无数据", ""),
-	}
+	items := &menuItems{waiting: make(map[int64]*waitingMenuItem), waitingClicks: make(chan int64, 64)}
+	items.attentionHeader = systray.AddMenuItem("需要关注", "Codex 正在等待你的操作")
+	items.attentionHeader.Hide()
+	items.header = systray.AddMenuItem("Dora", "")
+	items.today = systray.AddMenuItem("今日：—", "")
+	items.sevenDays = systray.AddMenuItem("7 日：—", "")
+	items.allTime = systray.AddMenuItem("全部：—", "")
 	systray.AddSeparator()
 	items.fiveHour = systray.AddMenuItem("Codex 5 小时配额：暂无数据", "")
 	items.sevenDay = systray.AddMenuItem("Codex 7 日配额：暂无数据", "")
@@ -89,7 +115,7 @@ func newMenuItems() *menuItems {
 	items.refresh = systray.AddMenuItem("刷新数据", "重新扫描 token 并刷新配额")
 	items.open = systray.AddMenuItem("打开仪表盘", "使用默认浏览器打开 Dora")
 	items.quit = systray.AddMenuItem("退出 Dora", "停止 Dora")
-	for _, item := range []*systray.MenuItem{items.header, items.today, items.sevenDays, items.allTime, items.topModel, items.fiveHour, items.sevenDay, items.status} {
+	for _, item := range []*systray.MenuItem{items.header, items.today, items.sevenDays, items.allTime, items.fiveHour, items.sevenDay, items.status} {
 		item.Disable()
 	}
 	return items
@@ -98,10 +124,38 @@ func newMenuItems() *menuItems {
 func (items *menuItems) present(view View) {
 	systray.SetTitle(view.Title)
 	items.header.SetTitle(view.Header)
+	if len(view.Waiting) > 0 {
+		items.attentionHeader.SetTitle(view.AttentionHeader)
+		items.attentionHeader.Show()
+	} else {
+		items.attentionHeader.Hide()
+	}
+	active := make(map[int64]struct{}, len(view.Waiting))
+	for _, row := range view.Waiting {
+		active[row.SessionID] = struct{}{}
+		slot := items.waiting[row.SessionID]
+		if slot == nil {
+			slot = &waitingMenuItem{item: items.attentionHeader.AddSubMenuItem(row.Title, "跳转到对应 Codex 会话")}
+			items.waiting[row.SessionID] = slot
+			go func(sessionID int64, item *systray.MenuItem) {
+				for range item.ClickedCh {
+					items.waitingClicks <- sessionID
+				}
+			}(row.SessionID, slot.item)
+		} else {
+			slot.item.SetTitle(row.Title)
+			slot.item.Show()
+		}
+	}
+	for sessionID, slot := range items.waiting {
+		if _, ok := active[sessionID]; !ok {
+			slot.item.Remove()
+			delete(items.waiting, sessionID)
+		}
+	}
 	items.today.SetTitle(view.Today)
 	items.sevenDays.SetTitle(view.SevenDays)
 	items.allTime.SetTitle(view.AllTime)
-	items.topModel.SetTitle(view.TopModel)
 	items.fiveHour.SetTitle(view.FiveHour)
 	items.sevenDay.SetTitle(view.SevenDay)
 	items.status.SetTitle(view.Status)
@@ -117,6 +171,8 @@ func (items *menuItems) present(view View) {
 func handleMenuEvents(ctx context.Context, controller *Controller, items *menuItems, quit func()) {
 	ticker := time.NewTicker(menuReloadInterval)
 	defer ticker.Stop()
+	attentionTicker := time.NewTicker(attentionReloadInterval)
+	defer attentionTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -126,6 +182,10 @@ func handleMenuEvents(ctx context.Context, controller *Controller, items *menuIt
 			controller.LoadAsync(ctx)
 		case <-ticker.C:
 			controller.LoadAsync(ctx)
+		case <-attentionTicker.C:
+			controller.LoadAttentionAsync(ctx)
+		case sessionID := <-items.waitingClicks:
+			controller.JumpAttentionSessionAsync(ctx, sessionID)
 		case <-items.refresh.ClickedCh:
 			controller.RefreshAsync(ctx)
 		case <-items.open.ClickedCh:

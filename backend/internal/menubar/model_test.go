@@ -35,8 +35,25 @@ func TestBuildViewFormatsUsageAndEmptyModel(t *testing.T) {
 	if view.Title != "12.3K" || view.Today != "今日：12.3K tokens" || view.SevenDays != "7 日：84.5K tokens" || view.AllTime != "全部：1.2M tokens" {
 		t.Fatalf("用量菜单格式错误: %+v", view)
 	}
-	if view.TopModel != "模型：暂无数据" {
-		t.Fatalf("空 top model 文案 = %q", view.TopModel)
+}
+
+func TestBuildViewPrioritizesWaitingCodexSessions(t *testing.T) {
+	state := State{
+		Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 12_345}},
+		Attention: AttentionState{WaitingCount: 2, Sessions: []AttentionSession{
+			{ID: 3, Provider: "provider.codex", Surface: "codex_app", CWDBasename: "dora", Summary: "Codex 等待授权", WaitSeconds: 75, RequestCount: 2},
+			{ID: 4, Provider: "provider.codex", Surface: "codex_cli", TerminalKind: "iterm2", CWDBasename: "api", Summary: "Codex 等待回答", WaitSeconds: 5, RequestCount: 1},
+		}},
+	}
+	view := BuildView(&state, time.Now(), false, "")
+	if view.Title != "🔴 2" || view.AttentionHeader != "需要关注：2 个 Codex 会话" || len(view.Waiting) != 2 {
+		t.Fatalf("等待菜单摘要错误: %+v", view)
+	}
+	if view.Waiting[0].SessionID != 3 || !strings.Contains(view.Waiting[0].Title, "Codex App · dora · Codex 等待授权 · 等待 1 分钟 · 2 个请求") {
+		t.Fatalf("App waiting 行错误: %+v", view.Waiting[0])
+	}
+	if !strings.Contains(view.Waiting[1].Title, "Codex iTerm2 · api · Codex 等待回答 · 等待 5 秒 · 1 个请求") {
+		t.Fatalf("CLI waiting 行错误: %+v", view.Waiting[1])
 	}
 }
 
