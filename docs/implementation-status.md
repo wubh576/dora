@@ -450,7 +450,7 @@
 已完成：
 
 - compact 与 expanded 共用一个持久 `NSPanel`，顶边精确贴合主屏幕顶部，上角保持直角、下角保留圆角；compact 固定为 `360 × 40pt`，只显示 Dora 与今日 token。
-- hover intent 为 120ms，离开后延迟 450ms 收起；收起和 attention timer 到期时都会在 AppKit 主线程按当前 panel frame 复查鼠标位置，attention、hover、交互和异步操作可同时保持展开。
+- AppKit 主线程每 50ms 比较鼠标与当前 panel frame，只在内外状态变化时通知状态机；配合 100ms hover intent，进入后最迟约 150ms 展开。展开后只要鼠标仍在整个区域内就保持展开；离开后延迟 450ms 收起，收起和 attention timer 到期时仍会复查鼠标位置。
 - AppKit 视图树和 session 行按稳定 ID 增量更新，保留滚动位置；每秒 runtime 刷新不再反复重建子视图、调用 `orderFrontRegardless` 或为相同 frame 启动动画。
 - `SessionStart` 只注册 idle，`UserPromptSubmit` 才进入 running；`PostToolUse` 不会复活已结束 turn，`Stop` 清理 preview 并回到 idle，`SessionEnd` 删除记录。启动时将旧 running 恢复为 idle，同时保留 waiting。
 - `/runtime` 返回脱敏的 `jumpable` 与 `jumpReason`。App 需要 thread ID，iTerm2/Terminal 需要 exact TTY；其他可监控但不可精确跳转的会话仍显示为禁用行，并在底部说明原因。
@@ -461,5 +461,6 @@
 - `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check` 通过；前端 TypeScript/Vite 与原生 Objective-C/Go production build 通过。
 - 当前 Mac 的真实 LaunchAgent 已覆盖本次构建；WindowServer 实测 compact 为 `360 × 40pt`、expanded 为 `760 × 520pt`，两种状态的顶边均为屏幕 `Y=0`。真实截图确认上角直角、下角圆角和连续深色容器。
 - 使用同一 production 二进制的临时 App bundle 完成辅助功能交互验收：panel 内持续操作超过 90 秒没有误收起或闪烁，列表滚动值完成 `0 → 1 → 0`，在多次每秒 runtime 刷新后保持原滚动位置；不可跳转行、底部刷新和真实 Codex App 行点击均返回可读结果。验收后进程、18083 端口、临时数据库和 App bundle 已清理。
+- 修复贴顶 compact 偶发收不到 tracking-area enter 的回归：新增基于真实 `NSEvent.mouseLocation` 的 50ms 边界采样；自动测试、Objective-C production build 与真实 LaunchAgent 启动均通过。
 - 本机异常记录来自一次 Codex App Server 探针：收到了 `SessionStart` 与 `UserPromptSubmit`，但探针退出时缺少 `Stop`/`SessionEnd`，旧版本将其永久保留为 running。其 App surface 与 thread ID 形状正常，点击 deep link 只能说明系统接受 URL，已结束的临时 thread 实际无法恢复。启动恢复现在将这类旧 running 立即归零，而不是等 7 天。
-- Code Review：分离自审修复了交互结束依赖 tracking-area enter、滚轮重复排入 interaction start、不可跳转原因错误色和 failure hold 提前清除问题；复审未发现剩余 P0/P1/P2/P3。
+- Code Review：分离自审修复了交互结束依赖 tracking-area enter、滚轮重复排入 interaction start、不可跳转原因错误色和 failure hold 提前清除问题；本次回归复审确认采样只在内外状态变化时通知状态机，不会触发周期性重绘，复审未发现剩余 P0/P1/P2/P3。

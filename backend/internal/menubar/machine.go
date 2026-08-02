@@ -15,7 +15,7 @@ const (
 )
 
 const (
-	hoverIntentDelay   = 120 * time.Millisecond
+	hoverIntentDelay   = 100 * time.Millisecond
 	hoverCollapseDelay = 450 * time.Millisecond
 	attentionDuration  = 6 * time.Second
 )

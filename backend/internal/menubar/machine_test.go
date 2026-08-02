@@ -42,6 +42,9 @@ func TestMachineHoverIntentLeaveDelayAndReentry(t *testing.T) {
 	if state := machine.State(); state.Mode != ModeCompact || len(scheduler.timers) != 1 || scheduler.timers[0].delay != hoverIntentDelay {
 		t.Fatalf("hover intent 前状态错误: state=%+v timers=%+v", state, scheduler.timers)
 	}
+	if hoverIntentDelay < 100*time.Millisecond || hoverIntentDelay > 150*time.Millisecond {
+		t.Fatalf("hover intent 延迟超出 100–150ms: %s", hoverIntentDelay)
+	}
 	scheduler.timers[0].fire()
 	if state := machine.State(); state.Mode != ModeHover {
 		t.Fatalf("hover intent 到期未展开: %+v", state)

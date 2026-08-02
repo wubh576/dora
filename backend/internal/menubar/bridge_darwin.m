@@ -9,7 +9,15 @@ extern void doraIslandOnScreen(double x, double y, double width, double height,
 static DoraIslandPanel *doraPanel;
 static id doraScreenObserver;
 static NSViewAnimation *doraFrameAnimation;
+static NSTimer *doraPointerTimer;
 static long long doraLastScrolledRequestID;
+static BOOL doraPointerKnown;
+static BOOL doraPointerInside;
+static const NSTimeInterval doraPointerSampleInterval = 0.05;
+
+static BOOL doraCurrentPointerInside(void);
+static void doraPublishPointerState(BOOL inside);
+static void doraSamplePointer(void);
 
 static NSColor *doraColor(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha) {
     return [NSColor colorWithSRGBRed:red green:green blue:blue alpha:alpha];
@@ -277,8 +285,8 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
         owner:self userInfo:nil];
     [self addTrackingArea:self.doraTrackingArea];
 }
-- (void)mouseEntered:(NSEvent *)event { doraIslandOnEvent(1, 0); }
-- (void)mouseExited:(NSEvent *)event { doraIslandOnEvent(2, 0); }
+- (void)mouseEntered:(NSEvent *)event { doraPublishPointerState(YES); }
+- (void)mouseExited:(NSEvent *)event { doraPublishPointerState(NO); }
 - (void)layout {
     [super layout];
     CGFloat width = self.bounds.size.width;
@@ -408,6 +416,23 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 - (void)doraUnavailableSession:(NSButton *)sender { doraIslandOnEvent(9, (long long)sender.tag); }
 @end
 
+static BOOL doraCurrentPointerInside(void) {
+    if (doraPanel == nil) return NO;
+    // 包含屏幕顶边的鼠标热点，避免 NSPointInRect 的 maxY 排他边界误判。
+    return NSPointInRect(NSEvent.mouseLocation, NSInsetRect(doraPanel.frame, -1, -1));
+}
+
+static void doraPublishPointerState(BOOL inside) {
+    if (doraPointerKnown && doraPointerInside == inside) return;
+    doraPointerKnown = YES;
+    doraPointerInside = inside;
+    doraIslandOnEvent(inside ? 1 : 2, 0);
+}
+
+static void doraSamplePointer(void) {
+    doraPublishPointerState(doraCurrentPointerInside());
+}
+
 static void doraSendScreen(void) {
     // screens 首项始终是当前承载菜单栏的主屏，不能沿用 panel 的旧 screen。
     NSScreen *screen = NSScreen.screens.firstObject ?: NSScreen.mainScreen;
@@ -479,6 +504,12 @@ void doraIslandStart(void) {
         addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue
         usingBlock:^(NSNotification *note) { doraSendScreen(); }];
     [doraPanel orderFrontRegardless];
+    doraPointerKnown = NO;
+    doraPointerTimer = [NSTimer timerWithTimeInterval:doraPointerSampleInterval repeats:YES block:^(NSTimer *timer) {
+        doraSamplePointer();
+    }];
+    [NSRunLoop.mainRunLoop addTimer:doraPointerTimer forMode:NSRunLoopCommonModes];
+    doraSamplePointer();
     doraSendScreen();
     [NSApp run];
 }
@@ -486,7 +517,7 @@ void doraIslandStart(void) {
 int doraIslandPointerInside(void) {
     __block BOOL inside = NO;
     void (^check)(void) = ^{
-        if (doraPanel != nil) inside = NSPointInRect(NSEvent.mouseLocation, doraPanel.frame);
+        inside = doraCurrentPointerInside();
     };
     if (NSThread.isMainThread) check(); else dispatch_sync(dispatch_get_main_queue(), check);
     return inside ? 1 : 0;
@@ -516,6 +547,9 @@ void doraIslandStop(void) {
             [doraFrameAnimation stopAnimation];
             doraFrameAnimation = nil;
         }
+        [doraPointerTimer invalidate];
+        doraPointerTimer = nil;
+        doraPointerKnown = NO;
         [doraPanel close];
         doraPanel = nil;
         [NSApp stop:nil];
