@@ -14,12 +14,16 @@ func TestEventDomainKeepsOnlySafeRuntimeLabels(t *testing.T) {
 		CWDBasename:  "/Users/private/work/project",
 		Surface:      domain.CodexSurfaceCLI,
 		TerminalKind: domain.TerminalITerm2,
+		ToolName:     "  Bash\nforged-log  ",
 	}).Domain(time.Now())
 	if err != nil {
 		t.Fatalf("Domain() 失败: %v", err)
 	}
 	if event.CWDBasename != "project" {
 		t.Fatalf("cwd 标签 = %q，期望只保留 basename", event.CWDBasename)
+	}
+	if event.ToolName != "Bash forged-log" {
+		t.Fatalf("tool 标签未压缩为单行: %q", event.ToolName)
 	}
 
 	for _, invalid := range []Event{

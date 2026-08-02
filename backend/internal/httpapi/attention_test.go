@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	attentiondomain "github.com/wubh576/dora/backend/internal/attention"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
 
@@ -81,7 +84,8 @@ func TestCodexHookAPIRejectsContentWithoutPersistingIt(t *testing.T) {
 		t.Fatalf("Open() 失败: %v", err)
 	}
 	defer store.Close()
-	handler := NewHandler(store)
+	var logs bytes.Buffer
+	handler := NewHandler(store, Options{Logger: log.New(&logs, "", 0)})
 
 	tests := []struct {
 		name, contentType, body string
@@ -104,5 +108,56 @@ func TestCodexHookAPIRejectsContentWithoutPersistingIt(t *testing.T) {
 				t.Fatal("错误响应回显了 Hook 内容")
 			}
 		})
+	}
+	if strings.Contains(logs.String(), "secret") || !strings.Contains(logs.String(), "reason=invalid_json") {
+		t.Fatalf("Hook 拒绝日志包含正文或缺少诊断原因: %q", logs.String())
+	}
+}
+
+func TestCodexHookLogsSanitizedStateTransitions(t *testing.T) {
+	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var logs bytes.Buffer
+	handler := NewHandler(store, Options{Logger: log.New(&logs, "", 0)})
+	sessionID := "019-private-runtime-session"
+	postHook := func(body string) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/codex", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("Hook 状态码 = %d", response.Code)
+		}
+	}
+	postHook(`{"sessionId":"` + sessionID + `","hookEvent":"SessionStart","cwdBasename":"/Users/private/dora","surface":"codex_app"}`)
+	permission := `{"sessionId":"` + sessionID + `","hookEvent":"PermissionRequest","turnId":"turn","cwdBasename":"/Users/private/dora","surface":"codex_app","toolName":"Bash\tstate=idle attention=resolved\u001b","inputHash":"sha256:fixture"}`
+	for index := 0; index < 2; index++ {
+		postHook(permission)
+	}
+	activity := `{"sessionId":"` + sessionID + `","hookEvent":"PostToolUse","turnId":"turn","cwdBasename":"dora","surface":"codex_app","toolName":"Bash\tstate=idle attention=resolved\u001b"}`
+	postHook(activity)
+	postHook(permission)
+
+	text := logs.String()
+	for _, expected := range []string{
+		"session=" + attentiondomain.SessionLabel(sessionID),
+		"event=SessionStart", "attention=reconciled_by_session_start",
+		"event=PermissionRequest", "state=waiting", "attention=created", "attention=deduplicated",
+		"event=PostToolUse", "state=running", "attention=reconciled_by_tool_completion",
+		"attention=ignored_resolved_replay",
+		`tool="Bash\tstate=idle attention=resolved\x1b"`,
+		`event=PermissionRequest surface=codex_app tool="Bash\tstate=idle attention=resolved\x1b" state=running attention=ignored_resolved_replay`,
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("Hook 日志缺少 %q: %s", expected, text)
+		}
+	}
+	if strings.Contains(text, sessionID) || strings.Contains(text, "/Users/private") ||
+		strings.Contains(text, "\t") || strings.Contains(text, "\x1b") {
+		t.Fatalf("Hook 日志泄露 session 或完整路径: %s", text)
 	}
 }

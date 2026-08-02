@@ -405,6 +405,7 @@
 - 增加 `dora hooks install/status/uninstall/emit codex`，原子合并并保留用户已有 hooks，支持幂等更新路径、损坏保护和官方信任状态；不绕过 Codex `/hooks` 授权。
 - 菜单栏 waiting 时显示 `🔴 N`，顶部按 session 展示 App/CLI、项目 basename、等待原因、时长与请求数；新 request 每条只发一次声音。
 - 点击使用 Codex App deep link 或 iTerm2/Terminal exact TTY 跳转，不解决等待；目标消失时清理 runtime 状态，不使用标题、cwd 或最近窗口猜测。
+- 运行日志以不可逆 session 短哈希记录 Hook 状态、attention 创建/去重/解除、提醒和回跳结果；7 天无结构化活动的异常残留由启动和每小时 stale reconciliation 清理。
 - 移除菜单栏低价值的 top model 行，保留 token、Codex quota、刷新、仪表盘和退出。
 
 验证记录：
@@ -413,5 +414,6 @@
 - 自动测试覆盖事件转换、SQLite transition/dedup/restart、API 边界、hooks merge/idempotence/uninstall/broken config/path/trust、redirect 隐私、稳定 JSON hash、surface/TTY 检测、声音去重、菜单实时视图和精确跳转参数。
 - 当前用户 LaunchAgent 安装后运行正常；真实 loopback 事件让菜单栏从普通 token 标题切换为 3 个等待提示，AppKit `Glass` 声音链路被触发，发送 `SessionEnd` 后 Attention API 和菜单计数恢复为 0。
 - 当前 Codex App task 已用 `codex://threads/<thread-id>` deep link 和前台激活完成真实跳转；iTerm2 `/dev/ttys000` 与 Terminal `/dev/ttys002` 均使用 exact TTY AppleScript 定位成功，没有使用标题、cwd 或最近窗口回退。
+- 当前交付形态是 LaunchAgent 独立二进制，不具有可靠系统通知所需的稳定 App Bundle 身份；因此没有伪造原生横幅，可靠提醒路径为菜单栏红色计数与 AppKit `Glass` 声音。
 - `make verify`、`go vet ./...`、相关 `go test -race` 与 `git diff --check` 通过；前端 TypeScript/Vite production build、生产 Go 构建和 LaunchAgent 健康检查通过。
 - Code Review：Phase 1 修复路径隐私、启动 cutoff、事件重放与等待时间；Phase 2 修复 redirect 泄漏、trust 误判、稳定 hash 和 surface 误判；Phase 3 修复跳转错误生命周期、AppleScript 诊断、声音批次失败和异步菜单视图竞态。独立 Reviewer 最终确认无剩余 P0/P1/P2/P3。

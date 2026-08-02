@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"net/http"
 	"strings"
@@ -33,6 +35,11 @@ type server struct {
 	quotaService   *quota.Service
 	settings       *settings.Store
 	buildInfo      buildinfo.Info
+	logger         Logger
+}
+
+type Logger interface {
+	Printf(string, ...any)
 }
 
 type healthResponse struct {
@@ -53,6 +60,7 @@ type Options struct {
 	Settings       *settings.Store
 	StaticFS       fs.FS
 	BuildInfo      buildinfo.Info
+	Logger         Logger
 }
 
 type scanResponse struct {
@@ -189,6 +197,7 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 		allowedOrigins: make(map[string]struct{}),
 		location:       time.Local,
 		now:            time.Now,
+		logger:         log.Default(),
 	}
 	if len(options) > 0 {
 		s.scanner = options[0].Scanner
@@ -205,6 +214,9 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 		s.quotaService = options[0].QuotaService
 		s.settings = options[0].Settings
 		s.buildInfo = options[0].BuildInfo
+		if options[0].Logger != nil {
+			s.logger = options[0].Logger
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/health", s.health)
@@ -271,6 +283,7 @@ func (s *server) codexHook(w http.ResponseWriter, r *http.Request) {
 	}
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
+		s.logCodexHookRejected("content_type")
 		writeAPIError(w, http.StatusUnsupportedMediaType, domain.CodexSource, "接收实时事件", "请求必须使用 JSON")
 		return
 	}
@@ -281,27 +294,109 @@ func (s *server) codexHook(w http.ResponseWriter, r *http.Request) {
 	if err := decoder.Decode(&event); err != nil {
 		var maxBytes *http.MaxBytesError
 		if errors.As(err, &maxBytes) {
+			s.logCodexHookRejected("size_limit")
 			writeAPIError(w, http.StatusRequestEntityTooLarge, domain.CodexSource, "接收实时事件", "事件超过大小限制")
 			return
 		}
+		s.logCodexHookRejected("invalid_json")
 		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "接收实时事件", "事件格式无效")
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		s.logCodexHookRejected("trailing_content")
 		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "接收实时事件", "事件格式无效")
 		return
 	}
 	domainEvent, err := event.Domain(s.now())
 	if err != nil {
+		s.logCodexHookRejected("invalid_fields")
 		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "接收实时事件", "事件字段无效")
 		return
 	}
-	if _, err := s.store.ApplyCodexHookEvent(r.Context(), domainEvent); err != nil {
+	created, err := s.store.ApplyCodexHookEvent(r.Context(), domainEvent)
+	if err != nil {
+		s.logger.Printf(
+			"Codex Hook 失败: provider=%s session=%s event=%s reason=storage_error",
+			domain.CodexSource, attention.SessionLabel(domainEvent.ExternalSessionID), domainEvent.EventName,
+		)
 		writeAPIError(w, http.StatusServiceUnavailable, domain.CodexSource, "保存实时事件", "请检查本地数据库")
 		return
 	}
+	state := "ended"
+	if domainEvent.EventName != "SessionEnd" {
+		state, err = s.store.RuntimeSessionState(r.Context(), domainEvent.ExternalSessionID)
+		if errors.Is(err, sql.ErrNoRows) {
+			state, err = "absent", nil
+		}
+		if err != nil {
+			state = "unknown"
+			s.logger.Printf(
+				"Codex Hook 状态读取失败: provider=%s session=%s event=%s reason=storage_error",
+				domain.CodexSource, attention.SessionLabel(domainEvent.ExternalSessionID), domainEvent.EventName,
+			)
+		}
+	}
+	requestStatus := ""
+	if domainEvent.EventName == "PermissionRequest" || domainEvent.EventName == "PreToolUse" {
+		requestStatus, err = s.store.AttentionRequestStatus(r.Context(), domainEvent.EventKey)
+		if err != nil {
+			requestStatus = "unknown"
+			s.logger.Printf(
+				"Codex Hook 请求状态读取失败: provider=%s session=%s event=%s reason=storage_error",
+				domain.CodexSource, attention.SessionLabel(domainEvent.ExternalSessionID), domainEvent.EventName,
+			)
+		}
+	}
+	attentionResult := codexHookOutcome(domainEvent, created, requestStatus)
+	toolName := domainEvent.ToolName
+	if toolName == "" {
+		toolName = "-"
+	}
+	s.logger.Printf(
+		"Codex Hook: provider=%s session=%s event=%s surface=%s tool=%q state=%s attention=%s",
+		domain.CodexSource,
+		attention.SessionLabel(domainEvent.ExternalSessionID),
+		domainEvent.EventName,
+		domainEvent.Surface,
+		toolName,
+		state,
+		attentionResult,
+	)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) logCodexHookRejected(reason string) {
+	s.logger.Printf("Codex Hook 拒绝: provider=%s reason=%s", domain.CodexSource, reason)
+}
+
+func codexHookOutcome(event domain.CodexHookEvent, created bool, requestStatus string) string {
+	switch event.EventName {
+	case "PermissionRequest", "PreToolUse":
+		if created {
+			return "created"
+		}
+		switch requestStatus {
+		case dorasqlite.AttentionRequestActive:
+			return "deduplicated"
+		case dorasqlite.AttentionRequestResolved:
+			return "ignored_resolved_replay"
+		default:
+			return "unknown"
+		}
+	case "Stop":
+		return "resolved_by_stop"
+	case "SessionEnd":
+		return "resolved_by_session_end"
+	case "PostToolUse":
+		return "reconciled_by_tool_completion"
+	case "UserPromptSubmit":
+		return "reconciled_by_activity"
+	case "SessionStart":
+		return "reconciled_by_session_start"
+	default:
+		return "none"
+	}
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {

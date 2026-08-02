@@ -152,7 +152,11 @@ open http://127.0.0.1:8080
 
 Hook helper 只向固定的 `127.0.0.1:8080` 发送有界、脱敏 JSON，不跟随重定向。Dora 不保存 prompt、回复、完整命令、工具参数、环境变量、transcript 路径或完整 cwd；SQLite 只在实时 session 存活期间保存 external session ID、cwd basename、模型、App/CLI surface、受支持终端的精确 TTY 和等待状态。`SessionEnd` 或跳转确认目标已消失时会移除 runtime session；重启后保留尚未结束的 waiting 展示，但不会对历史请求重复发声。
 
-当前跳转支持 Codex App deep link、iTerm2 exact TTY 和 macOS Terminal exact TTY。未知终端不会使用窗口标题或 cwd 猜测目标；这类 session 仍可显示提醒，但会明确提示不能精确跳转。Claude Code 实时提醒不在本次范围内。
+PermissionRequest 不存在假想的即时 resolved 回调。Dora 在同 Session 后续出现 `PostToolUse`、`UserPromptSubmit`、`Stop` 或 `SessionEnd` 时解除 waiting；因此 Allow 后通常要等工具完成，Deny/Cancel 要等 Stop 或下一次结构化活动，菜单计数才会回落。若进程异常退出且缺失结束事件，超过 7 天没有任何 Hook 活动的 runtime session 会在启动和定时 reconciliation 中清理，避免永久残留，同时不会用几秒钟的盲目 timeout 提前解除真实 waiting。
+
+当前跳转支持 Codex App deep link、iTerm2 exact TTY 和 macOS Terminal exact TTY。首次回跳终端时，macOS 可能询问是否允许 Dora 控制 iTerm2 或 Terminal；允许后才能选择准确 Tab。未知终端不会使用窗口标题或 cwd 猜测目标；这类 session 仍可显示提醒，但会明确提示不能精确跳转。
+
+可靠主动提醒路径是菜单栏 `🔴 N` 和系统自带 `Glass` 声音。Dora 当前以 LaunchAgent 启动独立二进制，不是具有稳定 bundle identifier 的 `.app`；Apple 的通知中心 API 面向 app 或 app extension，因此当前不伪造不可靠的系统通知横幅。Claude Code 实时提醒和刘海 UI 不在本次范围内。
 
 ### 日志与排障
 
@@ -163,7 +167,7 @@ LaunchAgent 的日志位于：
 ~/Library/Logs/Dora/dora.stderr.log
 ```
 
-后台 provider 用量扫描和 Codex 配额刷新失败时，日志会在单行内记录操作、脱敏后的错误原因以及重试建议或影响范围。错误不会包含 transcript 完整路径、session ID、Authorization Header、OAuth token、control token、Cookie 或认证文件内容；Dora 主动退出产生的 context cancellation 不会记作后台失败。
+后台 provider 用量扫描和 Codex 配额刷新失败时，日志会在单行内记录操作、脱敏后的错误原因以及重试建议或影响范围。Codex 实时日志只使用 12 位不可逆 session 短哈希，记录 Hook 事件、状态结果、attention 创建/去重/解除、提醒批次和回跳结果，不记录原始 session ID。错误不会包含 transcript 完整路径、Authorization Header、OAuth token、control token、Cookie 或认证文件内容；Dora 主动退出产生的 context cancellation 不会记作后台失败。
 
 LaunchAgent 启动时检查一次日志大小，之后每 10 分钟检查一次。`dora.stdout.log` 和 `dora.stderr.log` 分别以 `200 MiB（200 * 1024 * 1024 bytes）` 为活动文件阈值，不是两个文件合计 200 MiB。达到阈值后，Dora 将当前内容保存到同名 `.1` 文件并清空原活动文件；下一次轮转覆盖旧 `.1`，不会生成 `.2` 或无限历史。备份后采用 truncate 原文件，因此 launchd 已打开的文件描述符会继续写入原活动路径。
 

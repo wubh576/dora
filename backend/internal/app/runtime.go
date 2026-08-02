@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wubh576/dora/backend/internal/attention"
 	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/domain"
 	"github.com/wubh576/dora/backend/internal/httpapi"
@@ -34,6 +35,8 @@ const (
 	FrontendOrigin      = "http://127.0.0.1:5173"
 	loopbackHost        = "127.0.0.1"
 	attentionInterval   = time.Second
+	staleCheckInterval  = time.Hour
+	runtimeSessionStale = 7 * 24 * time.Hour
 )
 
 type Logger interface {
@@ -134,6 +137,15 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		cleanup()
 		return nil, fmt.Errorf("监听 HTTP 地址 %s: %w", config.Address, err)
 	}
+	resolvedStale, err := store.ResolveStaleRuntimeSessions(ctx, startedAt.Add(-runtimeSessionStale), time.Now().UTC())
+	if err != nil {
+		_ = listener.Close()
+		cleanup()
+		return nil, fmt.Errorf("清理过期 Codex 实时状态: %w", err)
+	}
+	if resolvedStale > 0 {
+		config.Logger.Printf("Codex stale reconciliation: sessions=%d reason=stale_session", resolvedStale)
+	}
 	// 进程启动前遗留的 waiting 仍展示，但不作为本次启动的新提醒再次发声。
 	if err := store.MarkHistoricalAttentionNotified(ctx, startedAt, time.Now().UTC()); err != nil {
 		_ = listener.Close()
@@ -151,6 +163,7 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 			Settings:       settingsStore,
 			StaticFS:       config.StaticFS,
 			BuildInfo:      config.BuildInfo,
+			Logger:         config.Logger,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -172,10 +185,11 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 	if config.LogRotator != nil {
 		config.LogRotator.Check()
 	}
-	runtime.wg.Add(3)
+	runtime.wg.Add(4)
 	go runtime.serve()
 	go runtime.scanLoop(ctx, config.ScanInterval)
 	go runtime.quotaLoop(ctx, config.ScanInterval)
+	go runtime.staleReconciliationLoop(ctx)
 	if config.LogRotator != nil {
 		runtime.wg.Add(1)
 		go runtime.logRotationLoop(ctx, config.LogRotator)
@@ -210,19 +224,34 @@ func (r *Runtime) StartAttentionNotifications(notifier AttentionNotifier) {
 func (r *Runtime) JumpAttentionSession(ctx context.Context, sessionID int64) error {
 	session, err := r.store.RuntimeSession(ctx, sessionID)
 	if err != nil {
+		r.logf("Codex 回跳失败: session=unknown reason=session_unavailable")
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("这个 Codex 会话已经结束")
 		}
 		return err
 	}
+	label := attention.SessionLabel(session.ExternalSessionID)
+	r.logf(
+		"Codex 回跳开始: provider=%s session=%s surface=%s terminal=%s",
+		session.Provider, label, session.Surface, terminalLabel(session.TerminalKind),
+	)
 	if err := r.jump.Jump(ctx, session); err != nil {
 		if errors.Is(err, jump.ErrTargetGone) {
 			if resolveErr := r.store.ResolveRuntimeSession(ctx, sessionID, time.Now().UTC(), "target_gone"); resolveErr != nil {
+				r.logf("Codex 回跳失败: provider=%s session=%s reason=target_gone_reconcile_failed", session.Provider, label)
 				return errors.Join(err, resolveErr)
 			}
 		}
+		r.logf(
+			"Codex 回跳失败: provider=%s session=%s surface=%s terminal=%s reason=%s",
+			session.Provider, label, session.Surface, terminalLabel(session.TerminalKind), jumpFailureReason(err),
+		)
 		return err
 	}
+	r.logf(
+		"Codex 回跳完成: provider=%s session=%s surface=%s terminal=%s result=success",
+		session.Provider, label, session.Surface, terminalLabel(session.TerminalKind),
+	)
 	return nil
 }
 
@@ -293,16 +322,42 @@ func (r *Runtime) logRotationLoop(ctx context.Context, rotator LogRotator) {
 
 func (r *Runtime) attentionLoop(ctx context.Context, notifier AttentionNotifier) {
 	defer r.wg.Done()
-	ticker := time.NewTicker(attentionInterval)
-	defer ticker.Stop()
-	for {
-		if err := notifyAttentionOnce(ctx, r.store, notifier, time.Now().UTC()); err != nil && !backgroundStopped(ctx, err) {
-			r.logger.Printf("Codex 实时提醒失败: %s", singleLineError(err))
+	attentionTicker := time.NewTicker(attentionInterval)
+	defer attentionTicker.Stop()
+	notify := func() {
+		attempted, err := notifyAttentionOnce(ctx, r.store, notifier, time.Now().UTC())
+		if err != nil && !backgroundStopped(ctx, err) {
+			r.logger.Printf("Codex 实时提醒失败: requests=%d reason=%s", attempted, singleLineError(err))
+		} else if attempted > 0 {
+			r.logger.Printf("Codex 实时提醒完成: requests=%d result=success", attempted)
 		}
+	}
+	notify()
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-attentionTicker.C:
+			notify()
+		}
+	}
+}
+
+func (r *Runtime) staleReconciliationLoop(ctx context.Context) {
+	defer r.wg.Done()
+	ticker := time.NewTicker(staleCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case at := <-ticker.C:
+			resolved, err := r.store.ResolveStaleRuntimeSessions(ctx, at.Add(-runtimeSessionStale), at.UTC())
+			if err != nil && !backgroundStopped(ctx, err) {
+				r.logger.Printf("Codex stale reconciliation 失败: reason=%s", singleLineError(err))
+			} else if resolved > 0 {
+				r.logger.Printf("Codex stale reconciliation: sessions=%d reason=stale_session", resolved)
+			}
 		}
 	}
 }
@@ -311,10 +366,10 @@ type attentionStore interface {
 	ClaimUnnotifiedAttention(context.Context, time.Time) ([]domain.AttentionRequest, error)
 }
 
-func notifyAttentionOnce(ctx context.Context, store attentionStore, notifier AttentionNotifier, at time.Time) error {
+func notifyAttentionOnce(ctx context.Context, store attentionStore, notifier AttentionNotifier, at time.Time) (int, error) {
 	requests, err := store.ClaimUnnotifiedAttention(ctx, at)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var notifyErrors []error
 	for _, request := range requests {
@@ -322,7 +377,33 @@ func notifyAttentionOnce(ctx context.Context, store attentionStore, notifier Att
 			notifyErrors = append(notifyErrors, err)
 		}
 	}
-	return errors.Join(notifyErrors...)
+	return len(requests), errors.Join(notifyErrors...)
+}
+
+func (r *Runtime) logf(format string, args ...any) {
+	if r.logger != nil {
+		r.logger.Printf(format, args...)
+	}
+}
+
+func terminalLabel(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+func jumpFailureReason(err error) string {
+	switch {
+	case errors.Is(err, jump.ErrTargetGone):
+		return "target_gone"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "execution_error"
+	}
 }
 
 type osCommandRunner struct{}

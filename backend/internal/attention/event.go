@@ -28,7 +28,7 @@ type Event struct {
 func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 	event.SessionID = strings.TrimSpace(event.SessionID)
 	event.TurnID = strings.TrimSpace(event.TurnID)
-	event.ToolName = strings.TrimSpace(event.ToolName)
+	event.ToolName = cleanLabel(event.ToolName, 80)
 	if event.SessionID == "" || event.HookEvent == "" {
 		return domain.CodexHookEvent{}, errors.New("事件缺少 sessionId 或 hookEvent")
 	}

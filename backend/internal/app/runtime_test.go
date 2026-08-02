@@ -81,7 +81,7 @@ func TestRuntimeBindFailureDoesNotMarkAttentionNotified(t *testing.T) {
 		Surface:           domain.CodexSurfaceApp,
 		ToolName:          "apply_patch",
 		EventKey:          "codex:runtime-bind-failure",
-		ReceivedAt:        time.Now().UTC().Add(-time.Minute),
+		ReceivedAt:        time.Now().UTC().Add(-8 * 24 * time.Hour),
 	}
 	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
 		t.Fatalf("保存历史等待请求失败: %v", err)
@@ -117,6 +117,52 @@ func TestRuntimeBindFailureDoesNotMarkAttentionNotified(t *testing.T) {
 	}
 	if len(requests) != 1 {
 		t.Fatalf("端口冲突修改了提醒状态: %+v", requests)
+	}
+	if state, err := store.RuntimeSessionState(ctx, "runtime-bind-failure"); err != nil || state != domain.RuntimeStateWaiting {
+		t.Fatalf("端口冲突清理了 runtime session: state=%q, err=%v", state, err)
+	}
+}
+
+func TestRuntimeReconcilesSevenDayStaleAttention(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "dora.db")
+	store, err := dorasqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, fixture := range []struct {
+		sessionID string
+		at        time.Time
+		key       string
+	}{
+		{sessionID: "stale-runtime", at: now.Add(-8 * 24 * time.Hour), key: "codex:stale-runtime"},
+		{sessionID: "recent-runtime", at: now.Add(-time.Hour), key: "codex:recent-runtime"},
+	} {
+		event := domain.CodexHookEvent{
+			ExternalSessionID: fixture.sessionID, EventName: "PermissionRequest", TurnID: "turn",
+			CWDBasename: "dora", Surface: domain.CodexSurfaceApp, ToolName: "Bash",
+			EventKey: fixture.key, ReceivedAt: fixture.at,
+		}
+		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := Start(ctx, Config{
+		Address: "127.0.0.1:0", DBPath: dbPath,
+		CodexHomes: []string{filepath.Join(t.TempDir(), "codex")}, ScanInterval: time.Hour,
+		Logger: log.New(io.Discard, "", 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	waiting, err := runtime.store.WaitingSessions(ctx)
+	if err != nil || len(waiting) != 1 || waiting[0].Session.ExternalSessionID != "recent-runtime" {
+		t.Fatalf("启动 stale reconciliation 结果 = %+v, %v", waiting, err)
 	}
 }
 
@@ -162,10 +208,10 @@ func TestNotifyAttentionOnceSoundsOncePerNewRequest(t *testing.T) {
 		marked:   make(map[int64]bool),
 	}
 	notifier := &recordingNotifier{}
-	if err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err != nil {
+	if _, err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err != nil {
+	if _, err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(notifier.ids, []int64{1, 2}) {
@@ -179,10 +225,10 @@ func TestNotifyFailureDoesNotReplayClaimedSound(t *testing.T) {
 		marked:   make(map[int64]bool),
 	}
 	notifier := &failingNotifier{failID: 1}
-	if err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err == nil {
+	if attempted, err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err == nil || attempted != 2 {
 		t.Fatal("首次声音失败未返回错误")
 	}
-	if err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err != nil {
+	if attempted, err := notifyAttentionOnce(context.Background(), store, notifier, time.Now().UTC()); err != nil || attempted != 0 {
 		t.Fatalf("第二次 claim 失败: %v", err)
 	}
 	if !reflect.DeepEqual(notifier.ids, []int64{1, 2}) {
@@ -225,7 +271,11 @@ func TestJumpAttentionSessionOnlyResolvesGoneTarget(t *testing.T) {
 			if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
 				t.Fatal(err)
 			}
-			runtime := &Runtime{store: store, jump: jump.New(configurableJumpRunner{output: test.runnerOutput, err: test.runnerError})}
+			var logs bytes.Buffer
+			runtime := &Runtime{
+				store: store, jump: jump.New(configurableJumpRunner{output: test.runnerOutput, err: test.runnerError}),
+				logger: log.New(&logs, "", 0),
+			}
 			err = runtime.JumpAttentionSession(ctx, 1)
 			if test.runnerError == nil && len(test.runnerOutput) == 0 && err != nil {
 				t.Fatalf("跳转成功意外报错: %v", err)
@@ -239,6 +289,12 @@ func TestJumpAttentionSessionOnlyResolvesGoneTarget(t *testing.T) {
 			waiting, loadErr := store.WaitingSessions(ctx)
 			if loadErr != nil || len(waiting) != test.wantWaiting {
 				t.Fatalf("点击后的等待状态 = %+v, %v", waiting, loadErr)
+			}
+			if strings.Contains(logs.String(), "jump-session") || !strings.Contains(logs.String(), "session=") {
+				t.Fatalf("回跳日志泄露原始 session 或缺少安全标识: %s", logs.String())
+			}
+			if test.runnerError == nil && len(test.runnerOutput) == 0 && !strings.Contains(logs.String(), "result=success") {
+				t.Fatalf("成功回跳日志缺少结果: %s", logs.String())
 			}
 		})
 	}

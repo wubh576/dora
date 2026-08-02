@@ -209,6 +209,97 @@ func TestClaimUnnotifiedAttentionIsOneShot(t *testing.T) {
 	}
 }
 
+func TestResolveStaleRuntimeSessionsKeepsRecentWaiting(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	old := attentionEvent("PermissionRequest", now.Add(-8*24*time.Hour))
+	old.ExternalSessionID, old.EventKey = "old-session", "codex:old-stale"
+	recent := attentionEvent("PermissionRequest", now.Add(-time.Hour))
+	recent.ExternalSessionID, recent.EventKey = "recent-session", "codex:recent"
+	for _, event := range []domain.CodexHookEvent{old, recent} {
+		event.TurnID, event.ToolName = "turn", "Bash"
+		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved, err := store.ResolveStaleRuntimeSessions(ctx, now.Add(-7*24*time.Hour), now)
+	if err != nil || resolved != 1 {
+		t.Fatalf("ResolveStaleRuntimeSessions() = %d, %v", resolved, err)
+	}
+	waiting, err := store.WaitingSessions(ctx)
+	if err != nil || len(waiting) != 1 || waiting[0].Session.ExternalSessionID != "recent-session" {
+		t.Fatalf("stale 清理破坏近期 waiting: %+v, %v", waiting, err)
+	}
+	var reason string
+	if err := store.readDB.QueryRowContext(ctx, `
+		SELECT resolution_reason FROM attention_requests WHERE event_key = 'codex:old-stale'
+	`).Scan(&reason); err != nil || reason != "stale_session" {
+		t.Fatalf("过期请求解决原因 = %q, %v", reason, err)
+	}
+}
+
+func TestPostToolUseOnlyResolvesMatchingRequestKindAndTurn(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 2, 11, 0, 0, 0, time.UTC)
+
+	permissionTurn1 := attentionEvent("PermissionRequest", now)
+	permissionTurn1.TurnID, permissionTurn1.ToolName, permissionTurn1.EventKey = "turn-1", "Bash", "codex:permission-turn-1"
+	permissionTurn2 := attentionEvent("PermissionRequest", now.Add(time.Second))
+	permissionTurn2.TurnID, permissionTurn2.ToolName, permissionTurn2.EventKey = "turn-2", "Bash", "codex:permission-turn-2"
+	questionTurn1 := attentionEvent("PreToolUse", now.Add(2*time.Second))
+	questionTurn1.TurnID, questionTurn1.ToolName, questionTurn1.EventKey = "turn-1", "request_user_input", "codex:question-turn-1"
+	for _, event := range []domain.CodexHookEvent{permissionTurn1, permissionTurn2, questionTurn1} {
+		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	completedPermission := attentionEvent("PostToolUse", now.Add(3*time.Second))
+	completedPermission.TurnID, completedPermission.ToolName = "turn-1", "Bash"
+	if _, err := store.ApplyCodexHookEvent(ctx, completedPermission); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		permissionTurn1.EventKey: AttentionRequestResolved,
+		permissionTurn2.EventKey: AttentionRequestActive,
+		questionTurn1.EventKey:   AttentionRequestActive,
+	} {
+		if got, err := store.AttentionRequestStatus(ctx, key); err != nil || got != want {
+			t.Fatalf("AttentionRequestStatus(%s) = %q, %v; 期望 %q", key, got, err, want)
+		}
+	}
+
+	completedQuestion := attentionEvent("PostToolUse", now.Add(4*time.Second))
+	completedQuestion.TurnID, completedQuestion.ToolName = "turn-1", "request_user_input"
+	if _, err := store.ApplyCodexHookEvent(ctx, completedQuestion); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := store.AttentionRequestStatus(ctx, questionTurn1.EventKey); err != nil || status != AttentionRequestResolved {
+		t.Fatalf("问题请求状态 = %q, %v", status, err)
+	}
+	if state, err := store.RuntimeSessionState(ctx, permissionTurn1.ExternalSessionID); err != nil || state != domain.RuntimeStateWaiting {
+		t.Fatalf("仍有其他 turn 请求时 state = %q, %v", state, err)
+	}
+
+	completedPermission.TurnID, completedPermission.ReceivedAt = "turn-2", now.Add(5*time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, completedPermission); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := store.RuntimeSessionState(ctx, permissionTurn1.ExternalSessionID); err != nil || state != domain.RuntimeStateRunning {
+		t.Fatalf("所有等待解决后 state = %q, %v", state, err)
+	}
+}
+
 func attentionEvent(name string, at time.Time) domain.CodexHookEvent {
 	return domain.CodexHookEvent{
 		ExternalSessionID: "019-test-session",

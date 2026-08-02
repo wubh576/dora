@@ -1375,6 +1375,8 @@ DORA_CLAUDE_OAUTH_TOKEN
 - waiting 数量按 session 计算，不按 request 叠加；同一 session 可以显示 active request 数。
 - attention event key 必须稳定去重。PermissionRequest 在缺少 tool use ID 时使用规范化 JSON 的输入 hash，只存 hash，不存输入正文。
 - notified 与 resolved 分开记录。一次新 request 只发一次声音；点击菜单只跳转，不解决 request；重启不重放历史声音。
+- PermissionRequest 没有单独假设 resolved Hook：`PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。
+- 不能用几秒钟 timeout 盲目解除 waiting。缺失 `SessionEnd` 的异常残留以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。
 
 ### 25.2 Hook 生命周期与安全
 
@@ -1397,7 +1399,9 @@ dora hooks emit codex
 - Codex App 使用参数化 `codex://threads/<external_session_id>` deep link 并前台激活。
 - iTerm2 与 Terminal 使用 AppleScript 精确匹配 TTY；TTY 只能通过 `osascript` argv 传入，不插值进源码，并负责取消最小化和激活窗口。
 - 不使用窗口标题、cwd 或“最近窗口”模糊匹配。目标消失时给出明确错误并解决对应 runtime 状态。
-- Claude Code 实时提醒、系统通知和屏幕刘海 UI 不在当前范围。
+- 首次控制 iTerm2/Terminal 时由 macOS Automation 权限保护；拒绝或未授权必须显示可行动错误，不能误判为目标已经结束。
+- 当前 LaunchAgent 运行的是无稳定 bundle identifier 的独立二进制，不是 `.app`。系统原生通知横幅无法作为可靠交付路径，因此当前只保证菜单栏红点和 AppKit 系统声音，不伪造横幅完成状态。
+- Claude Code 实时提醒和屏幕刘海 UI 不在当前范围。
 
 ## 26. 日志与隐私
 
@@ -1411,6 +1415,7 @@ dora hooks emit codex
 - HTTP status category。
 - quota source state。
 - 后台扫描或配额刷新失败的操作上下文、底层错误原因和可行动建议。
+- Codex Hook 事件名、provider、不可逆 session 短哈希、状态结果、attention 创建/去重/解除、提醒批次和回跳结果。
 
 后台失败日志必须保持单行。正常 context cancellation 或 Dora 主动退出不记录为失败；配额网络和认证错误在 provider 边界保留有价值的 error chain，但不得包含请求 Header、OAuth token、Cookie 或响应正文。
 
