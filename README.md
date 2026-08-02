@@ -77,9 +77,9 @@ open http://127.0.0.1:8080
 
 `status` 输出短 commit 构建标识、完整 commit、`dirty/clean`、构建时间、Go 版本、`GOOS/GOARCH`、macOS 版本和构建来源。LaunchAgent 正常时这些字段来自运行中的服务，避免与尚未安装的新构建混淆。`serve` 与 `menubar` 每次启动都会把相同信息写入日志，但不会记录用户名、设备序列号、OAuth token 或其他凭证。
 
-屏幕顶部中央常驻一个原生 AppKit 灵动岛，不占用 macOS 菜单栏图标位，也不创建 Dock 图标。紧凑态显示 Dora、running/waiting 会话数和今日 token；鼠标移入后展开今日、7 日、全部 token、Codex 5 小时/7 日配额、waiting/running 会话、刷新、仪表盘和退出。新 attention request 会播放一次 `Glass`、自动展开约 6 秒并高亮对应会话；点击会话会先收起面板，再精确回到对应 Codex App thread 或 iTerm2/Terminal TTY，不会把请求标记为已处理。
+屏幕顶部中央常驻一个原生 AppKit 顶部控制条，不占用 macOS 菜单栏图标位，也不创建 Dock 图标。紧凑态固定显示 `Dora` 和今日 token；鼠标停留约 120 ms 后展开今日、7 日、全部 token、Codex 5 小时/7 日配额、waiting/running 会话、刷新、仪表盘和退出。新 attention request 会播放一次 `Glass`、自动展开约 6 秒并高亮对应会话；点击可精确定位的会话后，面板会在跳转返回前保持展开，失败时在底部显示真实原因，不会把请求标记为已处理。
 
-刘海屏使用顶部安全区定位；无刘海屏使用顶部居中的悬浮形态。会话较多时只滚动中间列表，头部统计与底部操作保持可见。退出会关闭 HTTP 服务并释放端口。
+刘海屏和普通屏都让控制条顶边精确贴住主屏幕顶边，只保留下方两个圆角。鼠标离开整个 panel 约 450 ms 后才收起，timer 到期还会用当前屏幕坐标复查鼠标是否仍在面板内；会话较多时只滚动中间列表，头部统计与底部操作保持可见。退出会关闭 HTTP 服务并释放端口。
 
 不需要灵动岛时，也可以继续手动启动同一套运行时：
 
@@ -152,9 +152,9 @@ open http://127.0.0.1:8080
 "$HOME/Library/Application Support/Dora/bin/dora" hooks uninstall codex
 ```
 
-Hook helper 只向固定的 `127.0.0.1:8080` 发送有界、脱敏 JSON，不跟随重定向。Dora 不保存完整 prompt、回复、完整命令、工具参数、环境变量、transcript 路径或完整 cwd；仅对 `UserPromptSubmit` 保存去控制字符、压缩空白且最多 160 个 Unicode 字符的一行摘要，用于活跃会话展示，并在 `Stop` 或 `SessionEnd` 时清除。SQLite 的临时 runtime 记录还包含 external session ID、cwd basename、模型、App/CLI surface、受支持终端的精确 TTY 和等待状态；这些定位字段不会由运行态 API 返回。`SessionEnd` 或跳转确认目标已消失时会移除 runtime session；重启后保留尚未结束的 waiting 展示，但不会对历史请求重复发声。
+Hook helper 只向固定的 `127.0.0.1:8080` 发送有界、脱敏 JSON，不跟随重定向。Dora 不保存完整 prompt、回复、完整命令、工具参数、环境变量、transcript 路径或完整 cwd；仅对 `UserPromptSubmit` 保存去控制字符、压缩空白且最多 160 个 Unicode 字符的一行摘要，用于活跃会话展示，并在 `Stop`、新 `SessionStart` 或 `SessionEnd` 时清除。SQLite 的临时 runtime 记录还包含 external session ID、cwd basename、模型、App/CLI surface、受支持终端的精确 TTY 和等待状态；运行态 API 不返回这些原始定位值，只返回脱敏的 `jumpable` 与 `jumpReason`。`SessionEnd` 或跳转确认目标已消失时会移除 runtime session；Dora 重启时把上次遗留的 running 恢复为 idle，保留尚未解决的 waiting，但不会对历史请求重复发声。
 
-PermissionRequest 不存在假想的即时 resolved 回调。Codex CLI `0.146.0` 实测 Allow 后最早在 `PostToolUse` 解除；按 Esc 取消后没有即时完成事件，最早在下一次 `UserPromptSubmit` 解除。Dora 也会在 `Stop` 或 `SessionEnd` 清理 waiting。若进程异常退出且缺失结束事件，超过 7 天没有任何 Hook 活动的 runtime session 会在启动和定时 reconciliation 中清理，避免永久残留，同时不会用几秒钟的盲目 timeout 提前解除真实 waiting。
+PermissionRequest 不存在假想的即时 resolved 回调。Codex CLI `0.146.0` 实测 Allow 后最早在 `PostToolUse` 解除；按 Esc 取消后没有即时完成事件，最早在下一次 `UserPromptSubmit` 解除。Dora 也会在 `Stop` 或 `SessionEnd` 清理 waiting。进程异常退出时，瞬时 running 不跨重启延续；未解决的 waiting 继续展示，超过 7 天没有任何 Hook 活动后由最终 stale reconciliation 清理，不会用几秒钟的盲目 timeout 提前解除真实等待。
 
 当前跳转支持 Codex App deep link、iTerm2 exact TTY 和 macOS Terminal exact TTY。首次回跳终端时，macOS 可能询问是否允许 Dora 控制 iTerm2 或 Terminal；允许后才能选择准确 Tab。未知终端不会使用窗口标题或 cwd 猜测目标；这类 session 仍可显示提醒，但会明确提示不能精确跳转。
 
@@ -294,7 +294,7 @@ GET /api/v1/snapshot
 GET /api/v1/attention
 ```
 
-这些 API 的总量默认合并 Codex 与 Claude Code；`providers` 和 `provider_model` 保留来源归属，即使两个 provider 报告同名模型也能区分。`/api/v1/dashboard` 是 Web 页面使用的统一快照，保证标题总量、每日趋势和分布复用同一个时间窗口。`/api/v1/snapshot` 提供合并后的今日、7 日、全部 token、最高用量模型、provider 总量和扫描新鲜度，供灵动岛复用；其中订阅配额仍明确只属于 Codex。`/api/v1/runtime` 每秒提供 active running/waiting 会话的脱敏统一快照，不返回 external session ID、TTY 或完整 cwd。
+这些 API 的总量默认合并 Codex 与 Claude Code；`providers` 和 `provider_model` 保留来源归属，即使两个 provider 报告同名模型也能区分。`/api/v1/dashboard` 是 Web 页面使用的统一快照，保证标题总量、每日趋势和分布复用同一个时间窗口。`/api/v1/snapshot` 提供合并后的今日、7 日、全部 token、最高用量模型、provider 总量和扫描新鲜度，供顶部控制条复用；其中订阅配额仍明确只属于 Codex。`/api/v1/runtime` 每秒提供 active running/waiting 会话的脱敏统一快照，并返回 `jumpable` 与脱敏后的 `jumpReason`；不会返回 external session ID、TTY 或完整 cwd。
 
 定价更新流程：
 

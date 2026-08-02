@@ -133,3 +133,32 @@ func TestJumpRejectsFuzzyFallbackTargets(t *testing.T) {
 		}
 	}
 }
+
+func TestCapabilityExplainsOnlySanitizedLocatorRequirements(t *testing.T) {
+	tests := []struct {
+		name    string
+		session domain.RuntimeSession
+		ok      bool
+		reason  string
+	}{
+		{name: "app", session: domain.RuntimeSession{Surface: domain.CodexSurfaceApp, ExternalSessionID: "private-thread"}, ok: true},
+		{name: "app missing thread", session: domain.RuntimeSession{Surface: domain.CodexSurfaceApp}, reason: "Codex App 会话缺少 thread ID"},
+		{name: "cli", session: domain.RuntimeSession{Surface: domain.CodexSurfaceCLI, TerminalKind: domain.TerminalITerm2, TTY: "/dev/ttys009"}, ok: true},
+		{name: "cli missing tty", session: domain.RuntimeSession{Surface: domain.CodexSurfaceCLI, TerminalKind: domain.TerminalTerminal}, reason: "Codex CLI 会话缺少精确 TTY"},
+		{name: "unknown", session: domain.RuntimeSession{Surface: domain.CodexSurfaceUnknown}, reason: "无法识别 Codex 会话来源"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ok, reason := Capability(test.session)
+			if ok != test.ok || reason != test.reason {
+				t.Fatalf("Capability() = %t, %q", ok, reason)
+			}
+			if test.session.ExternalSessionID != "" && strings.Contains(reason, test.session.ExternalSessionID) {
+				t.Fatalf("能力说明泄露 thread ID: %q", reason)
+			}
+			if test.session.TTY != "" && strings.Contains(reason, test.session.TTY) {
+				t.Fatalf("能力说明泄露 TTY: %q", reason)
+			}
+		})
+	}
+}

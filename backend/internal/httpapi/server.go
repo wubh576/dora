@@ -16,6 +16,7 @@ import (
 	"github.com/wubh576/dora/backend/internal/attention"
 	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/domain"
+	"github.com/wubh576/dora/backend/internal/jump"
 	"github.com/wubh576/dora/backend/internal/pricing"
 	"github.com/wubh576/dora/backend/internal/provider/claudecode"
 	"github.com/wubh576/dora/backend/internal/provider/codex"
@@ -215,6 +216,8 @@ type runtimeSessionResponse struct {
 	WaitingSince  string `json:"waitingSince,omitempty"`
 	WaitSeconds   int64  `json:"waitSeconds,omitempty"`
 	RequestCount  int    `json:"requestCount,omitempty"`
+	Jumpable      bool   `json:"jumpable"`
+	JumpReason    string `json:"jumpReason,omitempty"`
 }
 
 func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
@@ -287,6 +290,7 @@ func (s *server) runtimeSessions(w http.ResponseWriter, r *http.Request) {
 			CWDBasename: item.Session.CWDBasename, SessionName: name, Model: item.Session.Model,
 			PromptPreview: item.Session.PromptPreview, LastSeenAt: item.Session.LastSeenAt.Format(time.RFC3339Nano),
 		}
+		value.Jumpable, value.JumpReason = jump.Capability(item.Session)
 		if item.Session.State == domain.RuntimeStateWaiting && item.Latest != nil {
 			value.RequestID = item.Latest.ID
 			value.Summary = item.Latest.Summary

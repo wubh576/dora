@@ -146,6 +146,15 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 	if resolvedStale > 0 {
 		config.Logger.Printf("Codex stale reconciliation: sessions=%d reason=stale_session", resolvedStale)
 	}
+	restoredRunning, err := store.RestoreRunningSessions(ctx)
+	if err != nil {
+		_ = listener.Close()
+		cleanup()
+		return nil, fmt.Errorf("恢复 Codex 历史运行态: %w", err)
+	}
+	if restoredRunning > 0 {
+		config.Logger.Printf("Codex runtime recovery: sessions=%d state=idle", restoredRunning)
+	}
 	// 进程启动前遗留的 waiting 仍展示，但不作为本次启动的新提醒再次发声。
 	if err := store.MarkHistoricalAttentionNotified(ctx, startedAt, time.Now().UTC()); err != nil {
 		_ = listener.Close()

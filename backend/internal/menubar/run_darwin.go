@@ -10,6 +10,7 @@ void doraIslandStart(void);
 void doraIslandStop(void);
 void doraIslandPresent(const char *payload);
 void doraIslandPlayAttentionSound(void);
+int doraIslandPointerInside(void);
 */
 import "C"
 
@@ -97,6 +98,7 @@ func Run(ctx context.Context, config Config) error {
 	}
 	controller := NewController(config.Loader, config.Refresher, config.DashboardURL, present)
 	controller.SetSessionJumper(config.Jumper)
+	controller.SetPointerChecker(func() bool { return C.doraIslandPointerInside() != 0 })
 	done := make(chan struct{})
 	go func() {
 		runIslandEvents(ctx, controller, config, events)
@@ -151,6 +153,12 @@ func runIslandEvents(ctx context.Context, controller *Controller, config Config,
 				return
 			case 6:
 				controller.JumpSessionAsync(ctx, event.value)
+			case 7:
+				controller.UIInteraction(true)
+			case 8:
+				controller.UIInteraction(false)
+			case 9:
+				controller.ExplainSession(event.value)
 			}
 		}
 	}

@@ -112,13 +112,46 @@ func TestRuntimeAPICombinesRunningAndWaitingWithoutPrivateIdentifiers(t *testing
 	if payload.WaitingCount != 1 || payload.RunningCount != 1 || len(payload.Sessions) != 2 {
 		t.Fatalf("Runtime API 计数错误: %+v", payload)
 	}
-	if payload.Sessions[0].State != "waiting" || payload.Sessions[0].RequestID <= 0 || payload.Sessions[1].PromptPreview != "实现 灵动岛" {
+	if payload.Sessions[0].State != "waiting" || payload.Sessions[0].RequestID <= 0 || !payload.Sessions[0].Jumpable ||
+		payload.Sessions[1].PromptPreview != "实现 灵动岛" || !payload.Sessions[1].Jumpable {
 		t.Fatalf("Runtime API session 错误: %+v", payload.Sessions)
 	}
 	for _, private := range []string{"private-running", "private-waiting", "/Users/private", "/dev/ttys999"} {
 		if strings.Contains(serialized, private) {
 			t.Fatalf("Runtime API 泄露 %q: %s", private, serialized)
 		}
+	}
+}
+
+func TestRuntimeAPIMarksUnjumpableSessionWithoutPrivateLocator(t *testing.T) {
+	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	event := attentiondomain.Event{
+		SessionID: "private-unknown", HookEvent: "UserPromptSubmit", CWDBasename: "dora",
+		Surface: "unknown", PromptPreview: "检查跳转能力",
+	}
+	domainEvent, err := event.Domain(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplyCodexHookEvent(context.Background(), domainEvent); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(store)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
+	var payload runtimeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Sessions) != 1 || payload.Sessions[0].Jumpable || payload.Sessions[0].JumpReason != "无法识别 Codex 会话来源" {
+		t.Fatalf("不可跳转结论错误: %+v", payload.Sessions)
+	}
+	if strings.Contains(response.Body.String(), "private-unknown") {
+		t.Fatalf("Runtime API 泄露 external session ID: %s", response.Body.String())
 	}
 }
 

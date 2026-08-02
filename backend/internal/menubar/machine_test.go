@@ -7,6 +7,7 @@ import (
 
 type manualTimer struct {
 	callback func()
+	delay    time.Duration
 	stopped  bool
 }
 
@@ -27,114 +28,153 @@ func (timer *manualTimer) forceFire() { timer.callback() }
 
 type manualScheduler struct{ timers []*manualTimer }
 
-func (scheduler *manualScheduler) AfterFunc(_ time.Duration, callback func()) timer {
-	timer := &manualTimer{callback: callback}
+func (scheduler *manualScheduler) AfterFunc(delay time.Duration, callback func()) timer {
+	timer := &manualTimer{callback: callback, delay: delay}
 	scheduler.timers = append(scheduler.timers, timer)
 	return timer
 }
 
-func TestMachineHoverAndAttentionLifecycle(t *testing.T) {
+func TestMachineHoverIntentLeaveDelayAndReentry(t *testing.T) {
 	scheduler := &manualScheduler{}
-	var changes []MachineState
-	machine := newMachine(scheduler, func(state MachineState) { changes = append(changes, state) })
+	pointerInside := true
+	machine := newMachine(scheduler, func() bool { return pointerInside }, nil)
 	machine.Hover(true)
-	if state := machine.State(); state.Mode != ModeHover {
-		t.Fatalf("hover state = %+v", state)
+	if state := machine.State(); state.Mode != ModeCompact || len(scheduler.timers) != 1 || scheduler.timers[0].delay != hoverIntentDelay {
+		t.Fatalf("hover intent 前状态错误: state=%+v timers=%+v", state, scheduler.timers)
 	}
-	machine.Hover(false)
-	if state := machine.State(); state.Mode != ModeHover || len(scheduler.timers) != 1 {
-		t.Fatalf("hover exit 未延迟: %+v", state)
-	}
-	machine.Hover(true)
 	scheduler.timers[0].fire()
+	if state := machine.State(); state.Mode != ModeHover {
+		t.Fatalf("hover intent 到期未展开: %+v", state)
+	}
+
+	pointerInside = false
+	machine.Hover(false)
+	oldCollapse := scheduler.timers[1]
+	if state := machine.State(); state.Mode != ModeHover || oldCollapse.delay != hoverCollapseDelay {
+		t.Fatalf("离开未延迟收起: %+v", state)
+	}
+	pointerInside = true
+	machine.Hover(true)
+	oldCollapse.forceFire()
 	if state := machine.State(); state.Mode != ModeHover {
 		t.Fatalf("重新进入后被旧 timer 收起: %+v", state)
 	}
+
+	pointerInside = false
+	machine.Hover(false)
+	scheduler.timers[2].fire()
+	if state := machine.State(); state.Mode != ModeCompact {
+		t.Fatalf("真正离开后未收起: %+v", state)
+	}
+}
+
+func TestMachineCollapseRechecksCurrentPanelPointer(t *testing.T) {
+	scheduler := &manualScheduler{}
+	pointerInside := true
+	machine := newMachine(scheduler, func() bool { return pointerInside }, nil)
+	machine.Hover(true)
+	scheduler.timers[0].fire()
+	pointerInside = false
+	machine.Hover(false)
+	collapse := scheduler.timers[1]
+
+	// tracking area 因窗口动画发出假 mouseExited，但 timer 到期时鼠标仍在新 panel frame 内。
+	pointerInside = true
+	collapse.fire()
+	if state := machine.State(); state.Mode != ModeHover {
+		t.Fatalf("鼠标仍在 panel 内却被收起: %+v", state)
+	}
+}
+
+func TestMachineAttentionExpiryKeepsHoverAndDeduplicatesRequest(t *testing.T) {
+	scheduler := &manualScheduler{}
+	pointerInside := false
+	machine := newMachine(scheduler, func() bool { return pointerInside }, nil)
 	if !machine.Attention(11, 7) || machine.Attention(11, 7) {
 		t.Fatal("attention request 去重错误")
 	}
-	if state := machine.State(); state.Mode != ModeAttention || state.HighlightSessionID != 7 || state.HighlightRequestID != 11 {
+	attention := scheduler.timers[0]
+	if state := machine.State(); state.Mode != ModeAttention || state.HighlightSessionID != 7 {
 		t.Fatalf("attention state = %+v", state)
 	}
-	machine.Hover(false)
-	scheduler.timers[len(scheduler.timers)-1].fire()
-	if state := machine.State(); state.Mode != ModeCompact || state.HighlightSessionID != 0 || state.HighlightRequestID != 0 {
-		t.Fatalf("attention 自动收起错误: %+v", state)
+	pointerInside = true
+	attention.fire()
+	if state := machine.State(); state.Mode != ModeHover || state.HighlightRequestID != 0 {
+		t.Fatalf("attention 到期时鼠标仍在却未保持展开: %+v", state)
 	}
-	if len(changes) == 0 {
-		t.Fatal("状态变化未发布")
+	if !machine.Attention(12, 7) {
+		t.Fatal("同一 session 的新 request 未重新提醒")
 	}
 }
 
-func TestMachineClickAndStopCancelCallbacks(t *testing.T) {
+func TestMachineInteractionAndFailureAreIndependentExpansionReasons(t *testing.T) {
 	scheduler := &manualScheduler{}
+	pointerInside := false
+	machine := newMachine(scheduler, func() bool { return pointerInside }, nil)
+	machine.UIInteraction(true)
+	if state := machine.State(); state.Mode != ModeInteraction {
+		t.Fatalf("UI interaction 未展开: %+v", state)
+	}
+	machine.UIInteraction(false)
+	if state := machine.State(); state.Mode != ModeCompact {
+		t.Fatalf("UI interaction 结束后状态错误: %+v", state)
+	}
+	machine.OperationStart()
+	machine.OperationEnd(false)
+	if state := machine.State(); state.Mode != ModeInteraction {
+		t.Fatalf("失败后未保持展开: %+v", state)
+	}
+	pointerInside = true
+	machine.Hover(true)
+	if state := machine.State(); state.Mode != ModeInteraction {
+		t.Fatalf("失败后重新进入错误清除了 failure hold: %+v", state)
+	}
+	pointerInside = false
+	machine.Hover(false)
+	scheduler.timers[len(scheduler.timers)-1].fire()
+	if state := machine.State(); state.Mode != ModeCompact {
+		t.Fatalf("失败提示在真正离开后未收起: %+v", state)
+	}
+}
+
+func TestMachineInteractionEndRechecksPointerInsidePanel(t *testing.T) {
+	scheduler := &manualScheduler{}
+	pointerInside := false
+	machine := newMachine(scheduler, func() bool { return pointerInside }, nil)
+	machine.UIInteraction(true)
+	pointerInside = true
+	machine.UIInteraction(false)
+	if state := machine.State(); state.Mode != ModeHover {
+		t.Fatalf("交互结束时鼠标仍在 panel 内却被收起: %+v", state)
+	}
+
+	pointerInside = false
+	machine.Hover(false)
+	scheduler.timers[len(scheduler.timers)-1].fire()
+	if state := machine.State(); state.Mode != ModeCompact {
+		t.Fatalf("鼠标真正离开后未收起: %+v", state)
+	}
+}
+
+func TestMachineIgnoresLateTimersAndStop(t *testing.T) {
+	scheduler := &manualScheduler{}
+	pointerInside := false
 	changes := 0
-	machine := newMachine(scheduler, func(MachineState) { changes++ })
-	machine.Attention(1, 2)
-	machine.ClickSession()
-	before := changes
-	scheduler.timers[0].fire()
-	if machine.State().Mode != ModeCompact || changes != before {
-		t.Fatal("点击后 attention timer 仍发布")
-	}
-	machine.Hover(true)
-	machine.Hover(false)
-	machine.Stop()
-	before = changes
-	scheduler.timers[len(scheduler.timers)-1].fire()
-	machine.Hover(true)
-	if changes != before || machine.State().Mode != ModeHover {
-		t.Fatalf("Stop 后状态或回调改变: state=%+v changes=%d->%d", machine.State(), before, changes)
-	}
-}
-
-func TestMachineIgnoresLateCallbacksFromReplacedTimers(t *testing.T) {
-	scheduler := &manualScheduler{}
-	machine := newMachine(scheduler, nil)
+	machine := newMachine(scheduler, func() bool { return pointerInside }, func(MachineState) { changes++ })
 	machine.Attention(1, 7)
 	oldAttention := scheduler.timers[0]
 	machine.Attention(2, 8)
-	newAttention := scheduler.timers[1]
 	oldAttention.forceFire()
-	if state := machine.State(); state.Mode != ModeAttention || state.HighlightSessionID != 8 || state.HighlightRequestID != 2 {
-		t.Fatalf("旧 attention callback 提前结束新提示: %+v", state)
+	if state := machine.State(); state.Mode != ModeAttention || state.HighlightSessionID != 8 {
+		t.Fatalf("旧 attention timer 改变新状态: %+v", state)
 	}
-	newAttention.fire()
-	if state := machine.State(); state.Mode != ModeCompact {
-		t.Fatalf("新 attention callback 未正常收起: %+v", state)
-	}
-
-	machine.Hover(true)
-	machine.Hover(false)
-	oldCollapse := scheduler.timers[2]
-	machine.Hover(true)
-	machine.Hover(false)
-	newCollapse := scheduler.timers[3]
-	oldCollapse.forceFire()
-	if state := machine.State(); state.Mode != ModeHover {
-		t.Fatalf("旧 hover callback 提前收起新 hover: %+v", state)
-	}
-	newCollapse.fire()
-	if state := machine.State(); state.Mode != ModeCompact {
-		t.Fatalf("新 hover callback 未正常收起: %+v", state)
-	}
-}
-
-func TestMachineAttentionEndsIntoHoverAndNewRequestReopensSameSession(t *testing.T) {
-	scheduler := &manualScheduler{}
-	machine := newMachine(scheduler, nil)
-	if !machine.Attention(1, 7) {
-		t.Fatal("首次 attention 未展开")
+	machine.Stop()
+	before := changes
+	for _, timer := range scheduler.timers {
+		timer.forceFire()
 	}
 	machine.Hover(true)
-	scheduler.timers[0].fire()
-	if state := machine.State(); state.Mode != ModeHover || state.HighlightRequestID != 0 {
-		t.Fatalf("attention 到期时鼠标仍在却未保留 hover: %+v", state)
-	}
-	if !machine.Attention(2, 7) {
-		t.Fatal("同一 session 的新 request 未再次展开")
-	}
-	if state := machine.State(); state.Mode != ModeAttention || state.HighlightSessionID != 7 || state.HighlightRequestID != 2 {
-		t.Fatalf("同 session 新 request 状态错误: %+v", state)
+	if changes != before || machine.State().HighlightSessionID != 8 {
+		t.Fatalf("Stop 后迟到 callback 改变状态: state=%+v changes=%d->%d", machine.State(), before, changes)
 	}
 }

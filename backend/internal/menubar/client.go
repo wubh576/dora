@@ -69,6 +69,8 @@ type RuntimeSession struct {
 	WaitingSince  string `json:"waitingSince"`
 	WaitSeconds   int64  `json:"waitSeconds"`
 	RequestCount  int    `json:"requestCount"`
+	Jumpable      bool   `json:"jumpable"`
+	JumpReason    string `json:"jumpReason"`
 }
 
 type State struct {

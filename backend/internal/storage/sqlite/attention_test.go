@@ -137,7 +137,7 @@ func TestRuntimeSessionsCombineRunningAndWaitingWithSafePreview(t *testing.T) {
 		t.Fatalf("running 状态或 preview 错误: %+v", active[1])
 	}
 
-	// 非 prompt Hook 不能覆盖用户最后一次提交的安全摘要。
+	// 新 SessionStart 只注册定位信息，并清除上一次 turn 的瞬时摘要。
 	running.EventName = "SessionStart"
 	running.PromptPreview = "不应覆盖"
 	running.ReceivedAt = now.Add(2 * time.Second)
@@ -145,8 +145,8 @@ func TestRuntimeSessionsCombineRunningAndWaitingWithSafePreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, err := store.RuntimeSession(ctx, active[1].Session.ID)
-	if err != nil || session.PromptPreview != "实现灵动岛" {
-		t.Fatalf("非 prompt Hook 覆盖了 preview: %+v, %v", session, err)
+	if err != nil || session.PromptPreview != "" || session.State != domain.RuntimeStateIdle {
+		t.Fatalf("SessionStart 未恢复为 idle 或清除 preview: %+v, %v", session, err)
 	}
 	running.EventName = "Stop"
 	running.ReceivedAt = now.Add(3 * time.Second)
@@ -156,6 +156,88 @@ func TestRuntimeSessionsCombineRunningAndWaitingWithSafePreview(t *testing.T) {
 	session, err = store.RuntimeSession(ctx, active[1].Session.ID)
 	if err != nil || session.PromptPreview != "" || session.State != domain.RuntimeStateIdle {
 		t.Fatalf("Stop 未清除 runtime preview: %+v, %v", session, err)
+	}
+}
+
+func TestRuntimeLifecycleOnlyShowsActiveTurns(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 2, 9, 0, 0, 0, time.UTC)
+	event := attentionEvent("SessionStart", now)
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := store.RuntimeSessions(ctx); err != nil || len(active) != 0 {
+		t.Fatalf("单独 SessionStart 出现在活跃列表: %+v, %v", active, err)
+	}
+	if state, err := store.RuntimeSessionState(ctx, event.ExternalSessionID); err != nil || state != domain.RuntimeStateIdle {
+		t.Fatalf("SessionStart state = %q, %v", state, err)
+	}
+	event.EventName, event.ToolName, event.ReceivedAt = "PostToolUse", "Bash", now.Add(500*time.Millisecond)
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := store.RuntimeSessions(ctx); err != nil || len(active) != 0 {
+		t.Fatalf("没有进行中 turn 的 PostToolUse 错误恢复 running: %+v, %v", active, err)
+	}
+
+	event.EventName, event.PromptPreview, event.ReceivedAt = "UserPromptSubmit", "继续修补", now.Add(time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := store.RuntimeSessions(ctx); err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateRunning {
+		t.Fatalf("UserPromptSubmit 未进入 running: %+v, %v", active, err)
+	}
+
+	event.EventName, event.ReceivedAt = "Stop", now.Add(2*time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := store.RuntimeSessions(ctx); err != nil || len(active) != 0 {
+		t.Fatalf("Stop 后仍在活跃列表: %+v, %v", active, err)
+	}
+
+	event.EventName, event.ReceivedAt = "SessionEnd", now.Add(3*time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RuntimeSession(ctx, 1); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("SessionEnd 未删除 runtime session: %v", err)
+	}
+}
+
+func TestRestoreRunningSessionsPreservesWaiting(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 2, 9, 15, 0, 0, time.UTC)
+	running := attentionEvent("UserPromptSubmit", now)
+	running.ExternalSessionID, running.PromptPreview = "running-before-restart", "不会跨重启保留"
+	waiting := attentionEvent("PermissionRequest", now.Add(time.Second))
+	waiting.ExternalSessionID, waiting.ToolName, waiting.EventKey = "waiting-before-restart", "Bash", "codex:restart-waiting"
+	for _, event := range []domain.CodexHookEvent{running, waiting} {
+		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restored, err := store.RestoreRunningSessions(ctx)
+	if err != nil || restored != 1 {
+		t.Fatalf("RestoreRunningSessions() = %d, %v", restored, err)
+	}
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.ExternalSessionID != "waiting-before-restart" || active[0].Session.State != domain.RuntimeStateWaiting {
+		t.Fatalf("启动恢复破坏 waiting 或保留 running: %+v, %v", active, err)
+	}
+	session, err := store.RuntimeSession(ctx, 1)
+	if err != nil || session.State != domain.RuntimeStateIdle || session.PromptPreview != "" {
+		t.Fatalf("历史 running 恢复结果错误: %+v, %v", session, err)
 	}
 }
 

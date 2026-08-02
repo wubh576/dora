@@ -148,6 +148,14 @@ func TestRuntimeReconcilesSevenDayStaleAttention(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	running := domain.CodexHookEvent{
+		ExternalSessionID: "running-before-restart", EventName: "UserPromptSubmit",
+		CWDBasename: "probe", Surface: domain.CodexSurfaceApp,
+		PromptPreview: "不应跨重启显示", ReceivedAt: now.Add(-time.Minute),
+	}
+	if _, err := store.ApplyCodexHookEvent(ctx, running); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +171,10 @@ func TestRuntimeReconcilesSevenDayStaleAttention(t *testing.T) {
 	waiting, err := runtime.store.WaitingSessions(ctx)
 	if err != nil || len(waiting) != 1 || waiting[0].Session.ExternalSessionID != "recent-runtime" {
 		t.Fatalf("启动 stale reconciliation 结果 = %+v, %v", waiting, err)
+	}
+	restored, err := runtime.store.RuntimeSession(ctx, 3)
+	if err != nil || restored.State != domain.RuntimeStateIdle || restored.PromptPreview != "" {
+		t.Fatalf("启动未恢复历史 running: %+v, %v", restored, err)
 	}
 }
 

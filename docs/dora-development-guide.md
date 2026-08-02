@@ -967,13 +967,14 @@ cache read / (input + cache read + cache creation)
       "summary": "Codex 等待授权",
       "waitingSince": "2026-08-02T11:59:56Z",
       "waitSeconds": 4,
-      "requestCount": 1
+      "requestCount": 1,
+      "jumpable": true
     }
   ]
 }
 ```
 
-会话名优先使用 Hook 可用的真实名称；当前 Codex Hook 没有提供独立 session title，因此回退为 cwd basename，再回退为“未命名会话”。不得读取 Codex 私有 cache 或用 AI 猜测名称。
+会话名优先使用 Hook 可用的真实名称；当前 Codex Hook 没有提供独立 session title，因此回退为 cwd basename，再回退为“未命名会话”。不得读取 Codex 私有 cache 或用 AI 猜测名称。`jumpable` 由服务端根据 App thread ID 或受支持终端的 exact TTY 判断；不可跳转时返回不包含原始 thread ID/TTY 的 `jumpReason`，API 仍不得暴露这些定位值。
 
 ## 17. 第一期运行方式
 
@@ -1088,11 +1089,13 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 
 ### 20.1 功能与状态
 
-- 紧凑态常驻当前屏幕顶部中央，展示 Dora、running/waiting 数量和今日 token；waiting 使用红色优先级，running 使用蓝色状态。
-- 鼠标进入立即切换 `expanded_by_hover`，离开后约 320 ms 收起；新 attention request 进入 `expanded_by_attention`，高亮对应会话并在约 6 秒后按 hover 状态回落。
+- 同一个持久 `NSPanel` 常驻当前屏幕顶部中央，顶边精确锚定主屏幕顶边；上方两角为直角，只保留下方两个圆角。
+- 紧凑态宽约 360 pt、高 40 pt，固定只显示左侧 `Dora` 和右侧今日 token，不用运行数、等待数或错误替换这两个位置。
+- 鼠标进入约 120 ms hover intent 后展开；离开整个 panel 约 450 ms 后才尝试收起，并在 timer 到期时于 AppKit 主线程按当前 `panel.frame` 复查鼠标位置。
+- hover、attention 和面板内 interaction 是可同时存在的展开原因；新 attention 高亮对应会话约 6 秒，倒计时结束时只要鼠标仍在 panel 内就继续展开。
 - 展开态展示 1D / 7D / ALL token、Codex 5h/7d quota、状态、waiting/running 会话、刷新、仪表盘和退出。
 - waiting 始终排在 running 之前；中部会话列表独立滚动，固定头部和底部操作不滚动，无水平滚动。
-- 点击任一会话立即收起，再用临时内部 runtime ID 精确跳转；点击不解决 waiting。
+- 点击会话后在跳转结果返回前保持展开；失败或不可跳转时在底部显示脱敏原因，点击仍不解决 waiting。
 - 不创建 `NSStatusItem`、状态栏图标占位或 Dock 图标；panel 不抢应用焦点，只有精确跳转成功时目标 App/终端被激活。
 
 当前灵动岛使用统一 snapshot 展示 Codex + Claude Code 用量，并单独展示 Codex 5h/7d quota。它不实现复杂趋势图、项目表格或设置页面。
@@ -1100,6 +1103,7 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 ### 20.2 刷新
 
 - 启动与每分钟读取 snapshot；每秒只读取一次统一 `/runtime`，不再分别轮询 running 与 attention。扫描与配额后台周期仍由共享 runtime 统一管理。
+- 每秒 runtime 更新只复用并更新稳定 session ID 对应的已有行，保留 tracking area 与滚动位置；相同目标 frame 不启动动画，也不重复 `orderFrontRegardless`。
 - 手动刷新在后台 goroutine 中先扫描 token，再按用户授权刷新配额，不能并发触发，也不能阻塞 AppKit 事件循环。
 - 配额刷新失败不能回滚新的 token 数据；刷新结束后重新读取 snapshot。
 - 灵动岛复用 loopback API DTO，不自行解析文件、查询 SQLite 或实现另一套统计。
@@ -1397,12 +1401,12 @@ DORA_CLAUDE_OAUTH_TOKEN
 ### 25.1 结构化事件和状态机
 
 - 只使用 Codex 官方 `~/.codex/hooks.json` 生命周期事件，不轮询 transcript 猜测前台状态。
-- `SessionStart`、`UserPromptSubmit` 进入 running；`PermissionRequest` 与 `request_user_input` 的 `PreToolUse` 进入 waiting；对应后续事件回到 running；`Stop` 进入 idle；`SessionEnd` 移除 runtime session。
+- `SessionStart` 只注册为 idle，不进入活跃列表；`UserPromptSubmit` 进入 running；`PermissionRequest` 与 `request_user_input` 的 `PreToolUse` 进入 waiting；`PostToolUse` 仅在当前 turn 已处于 running/waiting 时回到 running；`Stop` 进入 idle；`SessionEnd` 移除 runtime session。
 - waiting 数量按 session 计算，不按 request 叠加；同一 session 可以显示 active request 数。
 - attention event key 必须稳定去重。PermissionRequest 在缺少 tool use ID 时使用规范化 JSON 的输入 hash，只存 hash，不存输入正文。
 - notified 与 resolved 分开记录。一次新 request 只发一次声音并自动展开灵动岛；点击会话只跳转，不解决 request；重启不重放历史声音。
 - PermissionRequest 没有单独假设 resolved Hook：`PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。
-- 不能用几秒钟 timeout 盲目解除 waiting。缺失 `SessionEnd` 的异常残留以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。
+- 不能用几秒钟 timeout 盲目解除 waiting。Dora 启动时把上一进程遗留的 running 恢复为 idle，同时保留真正尚未解决的 waiting；缺失 `SessionEnd` 的 waiting 以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。
 - Codex App `0.146.0-alpha.9.2` 实机探针确认全局 Hook 会产生 `SessionStart → UserPromptSubmit → Stop → SessionEnd`，且无 TTY 的 App 进程祖先会稳定识别为 `codex_app`；原始 thread ID 可直接用于 deep link。
 - Codex CLI `0.146.0` 实机探针确认：Allow 的事件顺序为 `PermissionRequest → PostToolUse → Stop`；TUI 按 Esc 取消后没有即时 resolved Hook，下一次 `UserPromptSubmit` 才解除 waiting；启用当前 CLI 的结构化提问能力后，顺序为 `PreToolUse(request_user_input) → PostToolUse(request_user_input) → Stop`。这三条真实边界作为状态机依据，不能用 UI 文案或自然语言猜测补齐事件。
 
@@ -1424,11 +1428,12 @@ dora hooks emit codex
 
 ### 25.3 灵动岛和跳转
 
-- 紧凑态同时表达今日 token、running 与 waiting；新 waiting 通过红色、高亮、自动展开和一次性声音获得最高视觉优先级。
+- 紧凑态固定表达 Dora 与今日 token；running/waiting 数量仅在展开态显示，新 waiting 通过高亮、自动展开和一次性声音获得最高视觉优先级。
 - 展开态按 session 展示 Codex surface、会话名回退、清洗后的 prompt 摘要、等待时长和 active request 数；实时轮询独立于 usage scan。
 - Codex App 使用参数化 `codex://threads/<external_session_id>` deep link 并前台激活。
 - iTerm2 与 Terminal 使用 AppleScript 精确匹配 TTY；TTY 只能通过 `osascript` argv 传入，不插值进源码，并负责取消最小化和激活窗口。
 - 不使用窗口标题、cwd 或“最近窗口”模糊匹配。目标消失时给出明确错误并解决对应 runtime 状态。
+- runtime API 对每行返回脱敏的 `jumpable/jumpReason`。不可精确定位的活跃行仍可监控，但使用弱化样式并在 tooltip/底部说明原因，不能表现成点击后无反馈。
 - 首次控制 iTerm2/Terminal 时由 macOS Automation 权限保护；拒绝或未授权必须显示可行动错误，不能误判为目标已经结束。
 - 当前 LaunchAgent 运行的是无稳定 bundle identifier 的独立二进制，不是 `.app`。系统原生通知横幅无法作为可靠交付路径，因此当前保证灵动岛自动展开、高亮和 AppKit 系统声音，不伪造横幅完成状态。
 - Claude Code 实时提醒不在当前范围。

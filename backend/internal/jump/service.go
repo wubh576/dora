@@ -24,9 +24,33 @@ func New(runner Runner) *Service {
 	return &Service{runner: runner}
 }
 
+// Capability 只返回可向 UI 暴露的定位结论，不包含 thread ID 或原始 TTY。
+func Capability(session domain.RuntimeSession) (bool, string) {
+	switch session.Surface {
+	case domain.CodexSurfaceApp:
+		if strings.TrimSpace(session.ExternalSessionID) == "" {
+			return false, "Codex App 会话缺少 thread ID"
+		}
+		return true, ""
+	case domain.CodexSurfaceCLI:
+		if session.TerminalKind != domain.TerminalITerm2 && session.TerminalKind != domain.TerminalTerminal {
+			return false, "当前终端不支持精确跳转"
+		}
+		if strings.TrimSpace(session.TTY) == "" {
+			return false, "Codex CLI 会话缺少精确 TTY"
+		}
+		return true, ""
+	default:
+		return false, "无法识别 Codex 会话来源"
+	}
+}
+
 func (service *Service) Jump(ctx context.Context, session domain.RuntimeSession) error {
 	if service == nil || service.runner == nil {
 		return errors.New("Codex 跳转服务未配置")
+	}
+	if jumpable, reason := Capability(session); !jumpable {
+		return errors.New(reason)
 	}
 	switch session.Surface {
 	case domain.CodexSurfaceApp:

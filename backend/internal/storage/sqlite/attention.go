@@ -64,7 +64,7 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 			}
 			return markWaitingIfActive(ctx, conn, sessionID, event.EventKey, event.ReceivedAt)
 		case "SessionStart":
-			return resolveSessionRequests(ctx, conn, sessionID, event.ReceivedAt, "session_started", domain.RuntimeStateRunning)
+			return resolveSessionRequests(ctx, conn, sessionID, event.ReceivedAt, "session_started", domain.RuntimeStateIdle)
 		case "UserPromptSubmit":
 			return resolveSessionRequests(ctx, conn, sessionID, event.ReceivedAt, "new_prompt", domain.RuntimeStateRunning)
 		case "PostToolUse":
@@ -425,6 +425,23 @@ func (s *Store) ResolveStaleRuntimeSessions(ctx context.Context, cutoff, at time
 	return resolved, nil
 }
 
+// RestoreRunningSessions 把上一次进程遗留的瞬时 running 恢复为 idle；未解决的 waiting 必须保留。
+func (s *Store) RestoreRunningSessions(ctx context.Context) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE runtime_sessions
+		SET state = ?, prompt_preview = ''
+		WHERE state = ?
+	`, domain.RuntimeStateIdle, domain.RuntimeStateRunning)
+	if err != nil {
+		return 0, fmt.Errorf("恢复 Codex 历史运行态: %w", err)
+	}
+	restored, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("检查 Codex 历史运行态恢复结果: %w", err)
+	}
+	return restored, nil
+}
+
 func validateCodexHookEvent(event domain.CodexHookEvent) error {
 	if event.ExternalSessionID == "" || event.ReceivedAt.IsZero() {
 		return errors.New("Codex Hook 事件缺少 session 或时间")
@@ -468,11 +485,10 @@ func attentionRequestState(ctx context.Context, conn *sql.Conn, eventKey string)
 }
 
 func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.CodexHookEvent) (int64, error) {
-	state := domain.RuntimeStateRunning
+	state := domain.RuntimeStateIdle
 	promptPreview := ""
-	if event.EventName == "Stop" {
-		state = domain.RuntimeStateIdle
-	} else if event.EventName == "UserPromptSubmit" {
+	if event.EventName == "UserPromptSubmit" {
+		state = domain.RuntimeStateRunning
 		promptPreview = event.PromptPreview
 	}
 	if _, err := conn.ExecContext(ctx, `
@@ -486,13 +502,16 @@ func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.Code
 			surface = CASE WHEN excluded.surface != 'unknown' THEN excluded.surface ELSE runtime_sessions.surface END,
 			terminal_kind = CASE WHEN excluded.terminal_kind != '' THEN excluded.terminal_kind ELSE runtime_sessions.terminal_kind END,
 			tty = CASE WHEN excluded.tty != '' THEN excluded.tty ELSE runtime_sessions.tty END,
-			prompt_preview = CASE
-				WHEN ? = 'UserPromptSubmit' THEN excluded.prompt_preview
-				WHEN ? = 'Stop' THEN ''
-				ELSE runtime_sessions.prompt_preview
-			END,
-			state = excluded.state,
-			last_seen_at_ms = excluded.last_seen_at_ms
+				prompt_preview = CASE
+					WHEN ? = 'UserPromptSubmit' THEN excluded.prompt_preview
+					WHEN ? IN ('Stop', 'SessionStart') THEN ''
+					ELSE runtime_sessions.prompt_preview
+				END,
+				state = CASE
+					WHEN ? IN ('UserPromptSubmit', 'Stop', 'SessionStart') THEN excluded.state
+					ELSE runtime_sessions.state
+				END,
+				last_seen_at_ms = excluded.last_seen_at_ms
 	`,
 		domain.CodexSource,
 		event.ExternalSessionID,
@@ -504,6 +523,7 @@ func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.Code
 		state,
 		promptPreview,
 		event.ReceivedAt.UTC().UnixMilli(),
+		event.EventName,
 		event.EventName,
 		event.EventName,
 	); err != nil {
@@ -587,6 +607,10 @@ func resolveSessionRequests(
 }
 
 func resolveCompletedToolRequests(ctx context.Context, conn *sql.Conn, sessionID int64, event domain.CodexHookEvent) error {
+	var previousState string
+	if err := conn.QueryRowContext(ctx, "SELECT state FROM runtime_sessions WHERE id = ?", sessionID).Scan(&previousState); err != nil {
+		return fmt.Errorf("读取 Codex 工具完成前的 session 状态: %w", err)
+	}
 	firstKind, secondKind := domain.AttentionPermission, domain.AttentionDangerousCommand
 	reason := "tool_completed"
 	if event.ToolName == "request_user_input" {
@@ -614,9 +638,11 @@ func resolveCompletedToolRequests(ctx context.Context, conn *sql.Conn, sessionID
 	`, sessionID).Scan(&waiting); err != nil {
 		return fmt.Errorf("检查 Codex session 剩余等待请求: %w", err)
 	}
-	state := domain.RuntimeStateRunning
+	state := previousState
 	if waiting {
 		state = domain.RuntimeStateWaiting
+	} else if previousState == domain.RuntimeStateRunning || previousState == domain.RuntimeStateWaiting {
+		state = domain.RuntimeStateRunning
 	}
 	if _, err := conn.ExecContext(ctx, `
 		UPDATE runtime_sessions SET state = ?, last_seen_at_ms = ? WHERE id = ?

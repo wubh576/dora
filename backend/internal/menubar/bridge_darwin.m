@@ -5,52 +5,10 @@ extern void doraIslandOnScreen(double x, double y, double width, double height,
                                double visibleX, double visibleY, double visibleWidth, double visibleHeight,
                                double safeTop);
 
-@interface DoraIslandDocumentView : NSView
-@end
-
-@implementation DoraIslandDocumentView
-- (BOOL)isFlipped { return YES; }
-@end
-
-@interface DoraIslandContentView : NSView
-@property(nonatomic, strong) NSTrackingArea *doraTrackingArea;
-@end
-
-@implementation DoraIslandContentView
-- (void)updateTrackingAreas {
-    [super updateTrackingAreas];
-    if (self.doraTrackingArea != nil) {
-        [self removeTrackingArea:self.doraTrackingArea];
-    }
-    self.doraTrackingArea = [[NSTrackingArea alloc]
-        initWithRect:NSZeroRect
-        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
-        owner:self userInfo:nil];
-    [self addTrackingArea:self.doraTrackingArea];
-}
-- (void)mouseEntered:(NSEvent *)event { doraIslandOnEvent(1, 0); }
-- (void)mouseExited:(NSEvent *)event { doraIslandOnEvent(2, 0); }
-@end
-
-@interface DoraIslandPanel : NSPanel
-@property(nonatomic, strong) DoraIslandContentView *islandContent;
-@property(nonatomic) BOOL hasPresented;
-@end
-
-@implementation DoraIslandPanel
-- (BOOL)canBecomeKeyWindow { return NO; }
-- (BOOL)canBecomeMainWindow { return NO; }
-@end
-
-@interface DoraIslandPanel (Actions)
-- (void)doraRefresh:(id)sender;
-- (void)doraOpen:(id)sender;
-- (void)doraQuit:(id)sender;
-- (void)doraSession:(NSButton *)sender;
-@end
-
+@class DoraIslandPanel;
 static DoraIslandPanel *doraPanel;
 static id doraScreenObserver;
+static NSViewAnimation *doraFrameAnimation;
 static long long doraLastScrolledRequestID;
 
 static NSColor *doraColor(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha) {
@@ -66,28 +24,396 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     return label;
 }
 
-static NSButton *doraButton(NSString *title, NSString *tooltip, SEL action) {
-    NSButton *button = [NSButton buttonWithTitle:title target:doraPanel action:action];
-    button.bezelStyle = NSBezelStyleTexturedRounded;
-    button.controlSize = NSControlSizeSmall;
-    button.toolTip = tooltip;
-    return button;
-}
+@interface DoraIslandDocumentView : NSView
+@end
 
-static void doraAddLabel(NSView *view, NSString *text, NSRect frame, CGFloat size, NSFontWeight weight, NSColor *color) {
-    NSTextField *label = doraLabel(text, size, weight, color);
-    label.frame = frame;
-    [view addSubview:label];
+@implementation DoraIslandDocumentView
+- (BOOL)isFlipped { return YES; }
+@end
+
+@interface DoraActionButton : NSButton
+@property(nonatomic, strong) NSTrackingArea *doraTrackingArea;
+@property(nonatomic) BOOL doraHovered;
+@end
+
+@implementation DoraActionButton
+- (instancetype)initWithTitle:(NSString *)title toolTip:(NSString *)toolTip action:(SEL)action {
+    self = [super initWithFrame:NSZeroRect];
+    if (self != nil) {
+        self.title = title;
+        self.toolTip = toolTip;
+        self.target = doraPanel;
+        self.action = action;
+        self.bordered = NO;
+        self.font = [NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
+        self.contentTintColor = doraColor(0.72, 0.74, 0.79, 1.0);
+        self.wantsLayer = YES;
+        self.layer.cornerRadius = 7;
+        self.layer.borderWidth = 0.7;
+        self.layer.borderColor = doraColor(0.25, 0.27, 0.32, 0.8).CGColor;
+    }
+    return self;
 }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.doraTrackingArea != nil) [self removeTrackingArea:self.doraTrackingArea];
+    self.doraTrackingArea = [[NSTrackingArea alloc]
+        initWithRect:NSZeroRect options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        owner:self userInfo:nil];
+    [self addTrackingArea:self.doraTrackingArea];
+}
+- (void)mouseEntered:(NSEvent *)event {
+    self.doraHovered = YES;
+    self.layer.backgroundColor = doraColor(0.16, 0.17, 0.21, 0.9).CGColor;
+}
+- (void)mouseExited:(NSEvent *)event {
+    self.doraHovered = NO;
+    self.layer.backgroundColor = NSColor.clearColor.CGColor;
+}
+@end
+
+@interface DoraIslandScrollView : NSScrollView
+@property(nonatomic) BOOL doraScrolling;
+@end
+
+@implementation DoraIslandScrollView
+- (void)scrollWheel:(NSEvent *)event {
+    if (!self.doraScrolling) {
+        self.doraScrolling = YES;
+        doraIslandOnEvent(7, 0);
+    }
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(doraEndScroll) object:nil];
+    [super scrollWheel:event];
+    [self performSelector:@selector(doraEndScroll) withObject:nil afterDelay:0.45];
+}
+- (void)doraEndScroll {
+    self.doraScrolling = NO;
+    doraIslandOnEvent(8, 0);
+}
+@end
+
+@interface DoraSessionRowView : NSView
+@property(nonatomic, strong) NSView *stateDot;
+@property(nonatomic, strong) NSTextField *titleLabel;
+@property(nonatomic, strong) NSTextField *subtitleLabel;
+@property(nonatomic, strong) NSTextField *metaLabel;
+@property(nonatomic, strong) NSButton *clickButton;
+@property(nonatomic, strong) NSTrackingArea *doraTrackingArea;
+@property(nonatomic) BOOL doraHovered;
+@property(nonatomic) BOOL doraHighlighted;
+@property(nonatomic) BOOL doraJumpable;
+- (void)applySession:(NSDictionary *)session;
+@end
+
+@implementation DoraSessionRowView
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self != nil) {
+        self.wantsLayer = YES;
+        self.layer.cornerRadius = 9;
+        self.stateDot = [[NSView alloc] initWithFrame:NSZeroRect];
+        self.stateDot.wantsLayer = YES;
+        self.stateDot.layer.cornerRadius = 3.5;
+        [self addSubview:self.stateDot];
+        self.titleLabel = doraLabel(@"", 12, NSFontWeightSemibold, NSColor.whiteColor);
+        self.subtitleLabel = doraLabel(@"", 10.5, NSFontWeightRegular, doraColor(0.73, 0.75, 0.79, 1.0));
+        self.metaLabel = doraLabel(@"", 9.5, NSFontWeightRegular, doraColor(0.52, 0.55, 0.61, 1.0));
+        self.metaLabel.alignment = NSTextAlignmentRight;
+        [self addSubview:self.titleLabel];
+        [self addSubview:self.subtitleLabel];
+        [self addSubview:self.metaLabel];
+        self.clickButton = [[NSButton alloc] initWithFrame:NSZeroRect];
+        self.clickButton.title = @"";
+        self.clickButton.bordered = NO;
+        self.clickButton.transparent = YES;
+        self.clickButton.target = doraPanel;
+        [self addSubview:self.clickButton];
+    }
+    return self;
+}
+- (void)layout {
+    [super layout];
+    CGFloat width = self.bounds.size.width;
+    self.stateDot.frame = NSMakeRect(8, 32, 7, 7);
+    self.titleLabel.frame = NSMakeRect(23, 25, width * 0.52, 18);
+    self.subtitleLabel.frame = NSMakeRect(23, 6, width - 34, 17);
+    self.metaLabel.frame = NSMakeRect(width * 0.48, 26, width * 0.50 - 10, 16);
+    self.clickButton.frame = self.bounds;
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.doraTrackingArea != nil) [self removeTrackingArea:self.doraTrackingArea];
+    self.doraTrackingArea = [[NSTrackingArea alloc]
+        initWithRect:NSZeroRect options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        owner:self userInfo:nil];
+    [self addTrackingArea:self.doraTrackingArea];
+}
+- (void)mouseEntered:(NSEvent *)event { self.doraHovered = YES; [self updateBackground]; }
+- (void)mouseExited:(NSEvent *)event { self.doraHovered = NO; [self updateBackground]; }
+- (void)updateBackground {
+    if (self.doraHighlighted) {
+        self.layer.backgroundColor = doraColor(0.30, 0.10, 0.12, 0.72).CGColor;
+    } else if (self.doraHovered) {
+        self.layer.backgroundColor = doraColor(0.15, 0.16, 0.19, 0.72).CGColor;
+    } else {
+        self.layer.backgroundColor = NSColor.clearColor.CGColor;
+    }
+}
+- (void)applySession:(NSDictionary *)session {
+    NSString *state = session[@"state"] ?: @"running";
+    long long sessionID = [session[@"id"] longLongValue];
+    self.doraHighlighted = [session[@"highlight"] boolValue];
+    self.doraJumpable = [session[@"jumpable"] boolValue];
+    self.titleLabel.stringValue = session[@"title"] ?: @"";
+    self.subtitleLabel.stringValue = session[@"subtitle"] ?: @"";
+    self.metaLabel.stringValue = session[@"meta"] ?: @"";
+    NSColor *activeColor = [state isEqualToString:@"waiting"] ?
+        doraColor(1.0, 0.30, 0.33, 1.0) : doraColor(0.28, 0.63, 1.0, 1.0);
+    self.stateDot.layer.backgroundColor = (self.doraJumpable ? activeColor : doraColor(0.40, 0.42, 0.47, 1.0)).CGColor;
+    self.titleLabel.textColor = self.doraJumpable ? NSColor.whiteColor : doraColor(0.58, 0.60, 0.65, 1.0);
+    self.clickButton.tag = (NSInteger)sessionID;
+    self.clickButton.action = self.doraJumpable ? @selector(doraSession:) : @selector(doraUnavailableSession:);
+    self.clickButton.toolTip = self.doraJumpable ? @"跳转到对应 Codex 会话" : (session[@"jumpReason"] ?: @"当前会话无法精确跳转");
+    [self updateBackground];
+    [self setNeedsLayout:YES];
+}
+@end
+
+@interface DoraIslandContentView : NSView
+@property(nonatomic, strong) NSTrackingArea *doraTrackingArea;
+@property(nonatomic, strong) NSView *compactView;
+@property(nonatomic, strong) NSTextField *compactTitle;
+@property(nonatomic, strong) NSTextField *compactTokens;
+@property(nonatomic, strong) NSView *expandedView;
+@property(nonatomic, strong) NSTextField *expandedTitle;
+@property(nonatomic, strong) NSTextField *countLabel;
+@property(nonatomic, strong) NSArray<NSTextField *> *tokenLabels;
+@property(nonatomic, strong) NSTextField *fiveHourLabel;
+@property(nonatomic, strong) NSTextField *sevenDayLabel;
+@property(nonatomic, strong) NSTextField *statusLabel;
+@property(nonatomic, strong) DoraActionButton *refreshButton;
+@property(nonatomic, strong) DoraActionButton *openButton;
+@property(nonatomic, strong) DoraActionButton *quitButton;
+@property(nonatomic, strong) DoraIslandScrollView *sessionScroll;
+@property(nonatomic, strong) DoraIslandDocumentView *sessionDocument;
+@property(nonatomic, strong) NSTextField *waitingHeader;
+@property(nonatomic, strong) NSTextField *runningHeader;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, DoraSessionRowView *> *sessionRows;
+@property(nonatomic, copy) NSArray<NSDictionary *> *sessions;
+@property(nonatomic) long long highlightRequestID;
+- (void)applyView:(NSDictionary *)view;
+@end
+
+@implementation DoraIslandContentView
+- (instancetype)initWithFrame:(NSRect)frame {
+    self = [super initWithFrame:frame];
+    if (self != nil) {
+        self.wantsLayer = YES;
+        self.layer.backgroundColor = doraColor(0.035, 0.038, 0.047, 0.985).CGColor;
+        self.layer.cornerRadius = 20;
+        self.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+        self.layer.masksToBounds = YES;
+        self.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self buildPersistentViews];
+    }
+    return self;
+}
+- (void)buildPersistentViews {
+    self.compactView = [[NSView alloc] initWithFrame:self.bounds];
+    self.compactTitle = doraLabel(@"Dora", 13, NSFontWeightSemibold, NSColor.whiteColor);
+    self.compactTokens = doraLabel(@"今日 token —", 12, NSFontWeightMedium, doraColor(0.72, 0.74, 0.78, 1.0));
+    self.compactTokens.alignment = NSTextAlignmentRight;
+    [self.compactView addSubview:self.compactTitle];
+    [self.compactView addSubview:self.compactTokens];
+    [self addSubview:self.compactView];
+
+    self.expandedView = [[NSView alloc] initWithFrame:self.bounds];
+    self.expandedView.hidden = YES;
+    self.expandedTitle = doraLabel(@"Dora", 16, NSFontWeightBold, NSColor.whiteColor);
+    self.countLabel = doraLabel(@"0 等待  ·  0 运行", 11, NSFontWeightMedium, doraColor(0.42, 0.70, 1.0, 1.0));
+    self.countLabel.alignment = NSTextAlignmentRight;
+    NSMutableArray *tokens = [NSMutableArray arrayWithCapacity:3];
+    for (NSInteger index = 0; index < 3; index++) {
+        NSTextField *label = doraLabel(@"", 11.5, NSFontWeightMedium, doraColor(0.86, 0.87, 0.90, 1.0));
+        [tokens addObject:label];
+        [self.expandedView addSubview:label];
+    }
+    self.tokenLabels = tokens;
+    self.fiveHourLabel = doraLabel(@"", 10.5, NSFontWeightRegular, doraColor(0.68, 0.70, 0.75, 1.0));
+    self.sevenDayLabel = doraLabel(@"", 10.5, NSFontWeightRegular, doraColor(0.68, 0.70, 0.75, 1.0));
+    self.statusLabel = doraLabel(@"", 10, NSFontWeightRegular, doraColor(0.55, 0.58, 0.64, 1.0));
+    [self.expandedView addSubview:self.expandedTitle];
+    [self.expandedView addSubview:self.countLabel];
+    [self.expandedView addSubview:self.fiveHourLabel];
+    [self.expandedView addSubview:self.sevenDayLabel];
+    [self.expandedView addSubview:self.statusLabel];
+
+    self.sessionScroll = [[DoraIslandScrollView alloc] initWithFrame:NSZeroRect];
+    self.sessionScroll.drawsBackground = NO;
+    self.sessionScroll.hasVerticalScroller = YES;
+    self.sessionScroll.autohidesScrollers = YES;
+    self.sessionDocument = [[DoraIslandDocumentView alloc] initWithFrame:NSZeroRect];
+    self.waitingHeader = doraLabel(@"", 11, NSFontWeightSemibold, doraColor(1.0, 0.38, 0.40, 1.0));
+    self.runningHeader = doraLabel(@"", 11, NSFontWeightSemibold, doraColor(0.38, 0.68, 1.0, 1.0));
+    [self.sessionDocument addSubview:self.waitingHeader];
+    [self.sessionDocument addSubview:self.runningHeader];
+    self.sessionScroll.documentView = self.sessionDocument;
+    self.sessionRows = [NSMutableDictionary dictionary];
+    [self.expandedView addSubview:self.sessionScroll];
+
+    self.refreshButton = [[DoraActionButton alloc] initWithTitle:@"刷新" toolTip:@"重新扫描 token 并刷新配额" action:@selector(doraRefresh:)];
+    self.openButton = [[DoraActionButton alloc] initWithTitle:@"仪表盘" toolTip:@"使用默认浏览器打开 Dora" action:@selector(doraOpen:)];
+    self.quitButton = [[DoraActionButton alloc] initWithTitle:@"退出" toolTip:@"退出 Dora" action:@selector(doraQuit:)];
+    [self.expandedView addSubview:self.refreshButton];
+    [self.expandedView addSubview:self.openButton];
+    [self.expandedView addSubview:self.quitButton];
+    [self addSubview:self.expandedView];
+}
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.doraTrackingArea != nil) [self removeTrackingArea:self.doraTrackingArea];
+    self.doraTrackingArea = [[NSTrackingArea alloc]
+        initWithRect:NSZeroRect options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        owner:self userInfo:nil];
+    [self addTrackingArea:self.doraTrackingArea];
+}
+- (void)mouseEntered:(NSEvent *)event { doraIslandOnEvent(1, 0); }
+- (void)mouseExited:(NSEvent *)event { doraIslandOnEvent(2, 0); }
+- (void)layout {
+    [super layout];
+    CGFloat width = self.bounds.size.width;
+    CGFloat height = self.bounds.size.height;
+    self.compactView.frame = self.bounds;
+    self.compactTitle.frame = NSMakeRect(18, 8, 110, 24);
+    self.compactTokens.frame = NSMakeRect(width - 172, 8, 154, 24);
+    self.expandedView.frame = self.bounds;
+    self.expandedTitle.frame = NSMakeRect(18, height - 37, 80, 22);
+    self.countLabel.frame = NSMakeRect(width - 210, height - 35, 190, 20);
+    CGFloat tokenWidth = (width - 36) / 3;
+    for (NSInteger index = 0; index < 3; index++) {
+        self.tokenLabels[index].frame = NSMakeRect(18 + tokenWidth * index, height - 67, tokenWidth - 8, 20);
+    }
+    self.fiveHourLabel.frame = NSMakeRect(18, height - 94, width - 36, 18);
+    self.sevenDayLabel.frame = NSMakeRect(18, height - 115, width - 36, 18);
+    self.sessionScroll.frame = NSMakeRect(16, 48, width - 32, MAX(48, height - 176));
+    self.statusLabel.frame = NSMakeRect(18, 15, width - 270, 20);
+    self.refreshButton.frame = NSMakeRect(width - 246, 11, 66, 26);
+    self.openButton.frame = NSMakeRect(width - 174, 11, 76, 26);
+    self.quitButton.frame = NSMakeRect(width - 90, 11, 72, 26);
+    [self layoutSessionRows];
+}
+- (void)layoutSessionRows {
+    CGFloat documentWidth = MAX(1, self.sessionScroll.contentSize.width);
+    CGFloat scrollHeight = MAX(1, self.sessionScroll.contentSize.height);
+    CGFloat y = 4;
+    for (NSString *state in @[@"waiting", @"running"]) {
+        NSMutableArray<NSDictionary *> *filtered = [NSMutableArray array];
+        for (NSDictionary *session in self.sessions) {
+            if ([session[@"state"] isEqualToString:state]) [filtered addObject:session];
+        }
+        NSTextField *header = [state isEqualToString:@"waiting"] ? self.waitingHeader : self.runningHeader;
+        header.hidden = filtered.count == 0;
+        if (filtered.count == 0) continue;
+        NSString *title = [state isEqualToString:@"waiting"] ? @"需要处理" : @"运行中";
+        header.stringValue = [NSString stringWithFormat:@"%@  %lu", title, (unsigned long)filtered.count];
+        header.frame = NSMakeRect(4, y, documentWidth - 8, 22);
+        y += 24;
+        for (NSDictionary *session in filtered) {
+            NSNumber *key = @([session[@"id"] longLongValue]);
+            DoraSessionRowView *row = self.sessionRows[key];
+            row.frame = NSMakeRect(0, y, documentWidth, 52);
+            [row setNeedsLayout:YES];
+            y += 56;
+        }
+    }
+    CGFloat documentHeight = MAX(scrollHeight, y + 4);
+    self.sessionDocument.frame = NSMakeRect(0, 0, documentWidth, documentHeight);
+}
+- (void)applyView:(NSDictionary *)view {
+    BOOL expanded = [view[@"expanded"] boolValue];
+    self.compactView.hidden = expanded;
+    self.expandedView.hidden = !expanded;
+    self.compactTitle.stringValue = @"Dora";
+    self.compactTokens.stringValue = view[@"compactTokens"] ?: @"今日 token —";
+    NSInteger waiting = [view[@"waitingCount"] integerValue];
+    NSInteger running = [view[@"runningCount"] integerValue];
+    self.countLabel.stringValue = [NSString stringWithFormat:@"%ld 等待  ·  %ld 运行", (long)waiting, (long)running];
+    self.countLabel.textColor = waiting > 0 ? doraColor(1.0, 0.39, 0.42, 1.0) : doraColor(0.42, 0.70, 1.0, 1.0);
+    self.tokenLabels[0].stringValue = view[@"today"] ?: @"";
+    self.tokenLabels[1].stringValue = view[@"sevenDays"] ?: @"";
+    self.tokenLabels[2].stringValue = view[@"allTime"] ?: @"";
+    self.fiveHourLabel.stringValue = view[@"fiveHour"] ?: @"";
+    self.sevenDayLabel.stringValue = view[@"sevenDay"] ?: @"";
+    self.statusLabel.stringValue = view[@"status"] ?: @"";
+    self.statusLabel.textColor = [view[@"operationError"] boolValue] ? doraColor(1.0, 0.42, 0.44, 1.0) : doraColor(0.55, 0.58, 0.64, 1.0);
+    self.refreshButton.title = [view[@"refreshing"] boolValue] ? @"刷新中" : @"刷新";
+    self.refreshButton.enabled = ![view[@"refreshing"] boolValue];
+
+    CGFloat oldScrollY = self.sessionScroll.documentVisibleRect.origin.y;
+    self.sessions = view[@"sessions"] ?: @[];
+    self.highlightRequestID = [view[@"highlightRequestId"] longLongValue];
+    if (self.highlightRequestID == 0) doraLastScrolledRequestID = 0;
+    NSMutableSet<NSNumber *> *wanted = [NSMutableSet setWithCapacity:self.sessions.count];
+    DoraSessionRowView *highlightRow = nil;
+    for (NSDictionary *session in self.sessions) {
+        NSNumber *key = @([session[@"id"] longLongValue]);
+        [wanted addObject:key];
+        DoraSessionRowView *row = self.sessionRows[key];
+        if (row == nil) {
+            row = [[DoraSessionRowView alloc] initWithFrame:NSZeroRect];
+            self.sessionRows[key] = row;
+            [self.sessionDocument addSubview:row];
+        }
+        [row applySession:session];
+        if ([session[@"highlight"] boolValue]) highlightRow = row;
+    }
+    for (NSNumber *key in self.sessionRows.allKeys.copy) {
+        if (![wanted containsObject:key]) {
+            [self.sessionRows[key] removeFromSuperview];
+            [self.sessionRows removeObjectForKey:key];
+        }
+    }
+    [self setNeedsLayout:YES];
+    [self layoutSubtreeIfNeeded];
+    if (highlightRow != nil && self.highlightRequestID > 0 && self.highlightRequestID != doraLastScrolledRequestID) {
+        [highlightRow scrollRectToVisible:highlightRow.bounds];
+        doraLastScrolledRequestID = self.highlightRequestID;
+    } else {
+        CGFloat maximum = MAX(0, self.sessionDocument.frame.size.height - self.sessionScroll.contentSize.height);
+        [self.sessionScroll.contentView scrollToPoint:NSMakePoint(0, MIN(MAX(0, oldScrollY), maximum))];
+        [self.sessionScroll reflectScrolledClipView:self.sessionScroll.contentView];
+    }
+}
+@end
+
+@interface DoraIslandPanel : NSPanel
+@property(nonatomic, strong) DoraIslandContentView *islandContent;
+@property(nonatomic) BOOL hasPresented;
+@property(nonatomic) BOOL hasTargetFrame;
+@property(nonatomic) NSRect targetFrame;
+@end
+
+@implementation DoraIslandPanel
+- (BOOL)canBecomeKeyWindow { return NO; }
+- (BOOL)canBecomeMainWindow { return NO; }
+- (void)sendEvent:(NSEvent *)event {
+    if (event.type == NSEventTypeLeftMouseDown) doraIslandOnEvent(7, 0);
+    [super sendEvent:event];
+    if (event.type == NSEventTypeLeftMouseUp) doraIslandOnEvent(8, 0);
+}
+- (void)doraRefresh:(id)sender { doraIslandOnEvent(3, 0); }
+- (void)doraOpen:(id)sender { doraIslandOnEvent(4, 0); }
+- (void)doraQuit:(id)sender { doraIslandOnEvent(5, 0); }
+- (void)doraSession:(NSButton *)sender { doraIslandOnEvent(6, (long long)sender.tag); }
+- (void)doraUnavailableSession:(NSButton *)sender { doraIslandOnEvent(9, (long long)sender.tag); }
+@end
 
 static void doraSendScreen(void) {
     // screens 首项始终是当前承载菜单栏的主屏，不能沿用 panel 的旧 screen。
     NSScreen *screen = NSScreen.screens.firstObject ?: NSScreen.mainScreen;
     if (screen == nil) return;
     NSEdgeInsets safe = NSEdgeInsetsMake(0, 0, 0, 0);
-    if (@available(macOS 12.0, *)) {
-        safe = screen.safeAreaInsets;
-    }
+    if (@available(macOS 12.0, *)) safe = screen.safeAreaInsets;
     NSRect frame = screen.frame;
     NSRect visible = screen.visibleFrame;
     doraIslandOnScreen(frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
@@ -95,195 +421,48 @@ static void doraSendScreen(void) {
                        safe.top);
 }
 
-@implementation DoraIslandPanel (Actions)
-- (void)doraRefresh:(id)sender { doraIslandOnEvent(3, 0); }
-- (void)doraOpen:(id)sender { doraIslandOnEvent(4, 0); }
-- (void)doraQuit:(id)sender { doraIslandOnEvent(5, 0); }
-- (void)doraSession:(NSButton *)sender { doraIslandOnEvent(6, (long long)sender.tag); }
-@end
-
-static void doraBuildCompact(NSDictionary *view, DoraIslandContentView *content) {
-    CGFloat width = content.bounds.size.width;
-    NSInteger waiting = [view[@"waitingCount"] integerValue];
-    NSInteger running = [view[@"runningCount"] integerValue];
-    NSString *operationStatus = view[@"operationStatus"] ?: @"";
-    BOOL hasOperationStatus = operationStatus.length > 0;
-    BOOL operationError = [view[@"operationError"] boolValue];
-    NSColor *accent = hasOperationStatus ?
-                       (operationError ? doraColor(1.0, 0.34, 0.36, 1.0) : doraColor(0.27, 0.69, 0.48, 1.0)) :
-                       (waiting > 0 ? doraColor(1.0, 0.25, 0.30, 1.0) :
-                       (running > 0 ? doraColor(0.24, 0.62, 1.0, 1.0) : doraColor(0.55, 0.57, 0.62, 1.0)));
-    NSView *dot = [[NSView alloc] initWithFrame:NSMakeRect(15, 16, 8, 8)];
-    dot.wantsLayer = YES;
-    dot.layer.cornerRadius = 4;
-    dot.layer.backgroundColor = accent.CGColor;
-    [content addSubview:dot];
-    NSString *summary = hasOperationStatus ? operationStatus : view[@"compactSummary"];
-    doraAddLabel(content, summary, NSMakeRect(31, 8, width - 130, 24), 13, NSFontWeightSemibold, NSColor.whiteColor);
-    NSTextField *tokens = doraLabel(view[@"compactTokens"], 12, NSFontWeightMedium, doraColor(0.72, 0.74, 0.78, 1.0));
-    tokens.alignment = NSTextAlignmentRight;
-    tokens.frame = NSMakeRect(width - 96, 8, 80, 24);
-    tokens.hidden = hasOperationStatus;
-    [content addSubview:tokens];
-}
-
-static CGFloat doraAddSessionSection(NSArray *sessions, NSString *state, NSString *title,
-                                     DoraIslandDocumentView *document, CGFloat y, CGFloat width,
-                                     NSInteger highlightID, NSView **highlightView) {
-    NSMutableArray *filtered = [NSMutableArray array];
-    for (NSDictionary *session in sessions) {
-        if ([session[@"state"] isEqualToString:state]) [filtered addObject:session];
-    }
-    if (filtered.count == 0) return y;
-    doraAddLabel(document, [NSString stringWithFormat:@"%@  %lu", title, (unsigned long)filtered.count],
-                 NSMakeRect(4, y, width - 8, 22), 11, NSFontWeightSemibold,
-                 [state isEqualToString:@"waiting"] ? doraColor(1.0, 0.38, 0.40, 1.0) : doraColor(0.38, 0.68, 1.0, 1.0));
-    y += 26;
-    for (NSDictionary *session in filtered) {
-        NSInteger sessionID = [session[@"id"] longLongValue];
-        BOOL highlighted = sessionID == highlightID || [session[@"highlight"] boolValue];
-        NSView *row = [[NSView alloc] initWithFrame:NSMakeRect(0, y, width, 58)];
-        row.wantsLayer = YES;
-        row.layer.cornerRadius = 11;
-        row.layer.backgroundColor = (highlighted ? doraColor(0.40, 0.16, 0.18, 0.94) : doraColor(0.11, 0.12, 0.15, 0.96)).CGColor;
-        NSView *dot = [[NSView alloc] initWithFrame:NSMakeRect(10, 39, 7, 7)];
-        dot.wantsLayer = YES;
-        dot.layer.cornerRadius = 3.5;
-        dot.layer.backgroundColor = ([state isEqualToString:@"waiting"] ? doraColor(1.0, 0.28, 0.31, 1.0) : doraColor(0.27, 0.63, 1.0, 1.0)).CGColor;
-        [row addSubview:dot];
-        doraAddLabel(row, session[@"title"], NSMakeRect(24, 31, width * 0.52, 18), 12.5, NSFontWeightSemibold, NSColor.whiteColor);
-        doraAddLabel(row, session[@"subtitle"], NSMakeRect(24, 10, width - 38, 18), 11, NSFontWeightRegular, doraColor(0.76, 0.77, 0.81, 1.0));
-        NSTextField *meta = doraLabel(session[@"meta"], 9.5, NSFontWeightRegular, doraColor(0.54, 0.57, 0.63, 1.0));
-        meta.alignment = NSTextAlignmentRight;
-        meta.frame = NSMakeRect(width * 0.48, 32, width * 0.50 - 14, 16);
-        [row addSubview:meta];
-        NSButton *click = [[NSButton alloc] initWithFrame:row.bounds];
-        click.title = @"";
-        click.bordered = NO;
-        click.transparent = YES;
-        click.target = doraPanel;
-        click.action = @selector(doraSession:);
-        click.tag = sessionID;
-        click.toolTip = @"跳转到对应 Codex 会话";
-        [row addSubview:click];
-        [document addSubview:row];
-        if (highlighted) *highlightView = row;
-        y += 64;
-    }
-    return y;
-}
-
-static void doraBuildExpanded(NSDictionary *view, DoraIslandContentView *content, CGFloat oldScrollY) {
-    CGFloat width = content.bounds.size.width;
-    CGFloat height = content.bounds.size.height;
-    NSInteger waiting = [view[@"waitingCount"] integerValue];
-    NSInteger running = [view[@"runningCount"] integerValue];
-    doraAddLabel(content, @"Dora", NSMakeRect(18, height - 37, 80, 22), 16, NSFontWeightBold, NSColor.whiteColor);
-    NSString *counts = [NSString stringWithFormat:@"%ld 等待  ·  %ld 运行", (long)waiting, (long)running];
-    NSTextField *countLabel = doraLabel(counts, 11, NSFontWeightMedium,
-        waiting > 0 ? doraColor(1.0, 0.39, 0.42, 1.0) : doraColor(0.42, 0.70, 1.0, 1.0));
-    countLabel.alignment = NSTextAlignmentRight;
-    countLabel.frame = NSMakeRect(width - 210, height - 35, 190, 20);
-    [content addSubview:countLabel];
-    NSArray *tokens = @[view[@"today"] ?: @"", view[@"sevenDays"] ?: @"", view[@"allTime"] ?: @""];
-    CGFloat tokenWidth = (width - 36) / 3;
-    for (NSInteger index = 0; index < 3; index++) {
-        doraAddLabel(content, tokens[index], NSMakeRect(18 + tokenWidth * index, height - 67, tokenWidth - 8, 20), 11.5,
-                     NSFontWeightMedium, doraColor(0.86, 0.87, 0.90, 1.0));
-    }
-    doraAddLabel(content, view[@"fiveHour"], NSMakeRect(18, height - 94, width - 36, 18), 10.5, NSFontWeightRegular, doraColor(0.68, 0.70, 0.75, 1.0));
-    doraAddLabel(content, view[@"sevenDay"], NSMakeRect(18, height - 115, width - 36, 18), 10.5, NSFontWeightRegular, doraColor(0.68, 0.70, 0.75, 1.0));
-
-    CGFloat scrollHeight = MAX(48, height - 176);
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(16, 48, width - 32, scrollHeight)];
-    scroll.drawsBackground = NO;
-    scroll.hasVerticalScroller = YES;
-    scroll.autohidesScrollers = YES;
-    NSArray *sessions = view[@"sessions"] ?: @[];
-    NSInteger highlightID = [view[@"highlightSessionId"] longLongValue];
-    long long highlightRequestID = [view[@"highlightRequestId"] longLongValue];
-    CGFloat documentWidth = width - 38;
-    CGFloat documentHeight = 8;
-    for (NSString *state in @[@"waiting", @"running"]) {
-        NSUInteger count = 0;
-        for (NSDictionary *session in sessions) if ([session[@"state"] isEqualToString:state]) count++;
-        if (count > 0) documentHeight += 26 + count * 64;
-    }
-    documentHeight = MAX(documentHeight, scrollHeight);
-    DoraIslandDocumentView *document = [[DoraIslandDocumentView alloc] initWithFrame:NSMakeRect(0, 0, documentWidth, documentHeight)];
-    NSView *highlightView = nil;
-    CGFloat y = 4;
-    y = doraAddSessionSection(sessions, @"waiting", @"需要处理", document, y, documentWidth, highlightID, &highlightView);
-    y = doraAddSessionSection(sessions, @"running", @"运行中", document, y, documentWidth, highlightID, &highlightView);
-    if (sessions.count == 0) {
-        doraAddLabel(document, @"当前没有活跃的 Codex 会话", NSMakeRect(6, 12, documentWidth - 12, 22), 11,
-                     NSFontWeightRegular, doraColor(0.50, 0.52, 0.57, 1.0));
-    }
-    scroll.documentView = document;
-    [content addSubview:scroll];
-    if (highlightView != nil && highlightRequestID > 0 && highlightRequestID != doraLastScrolledRequestID) {
-        [highlightView scrollRectToVisible:highlightView.bounds];
-        doraLastScrolledRequestID = highlightRequestID;
-    } else {
-        CGFloat maximum = MAX(0, documentHeight - scrollHeight);
-        [[scroll contentView] scrollToPoint:NSMakePoint(0, MIN(MAX(0, oldScrollY), maximum))];
-        [scroll reflectScrolledClipView:scroll.contentView];
-    }
-
-    doraAddLabel(content, view[@"status"], NSMakeRect(18, 15, width - 270, 20), 10, NSFontWeightRegular, doraColor(0.55, 0.58, 0.64, 1.0));
-    NSButton *refresh = doraButton([view[@"refreshing"] boolValue] ? @"刷新中" : @"刷新", @"重新扫描 token 并刷新配额", @selector(doraRefresh:));
-    refresh.enabled = ![view[@"refreshing"] boolValue];
-    refresh.frame = NSMakeRect(width - 246, 11, 66, 26);
-    [content addSubview:refresh];
-    NSButton *open = doraButton(@"仪表盘", @"使用默认浏览器打开 Dora", @selector(doraOpen:));
-    open.frame = NSMakeRect(width - 174, 11, 76, 26);
-    [content addSubview:open];
-    NSButton *quit = doraButton(@"退出", @"退出 Dora", @selector(doraQuit:));
-    quit.frame = NSMakeRect(width - 90, 11, 72, 26);
-    [content addSubview:quit];
-}
-
 static void doraApplyView(NSDictionary *view) {
     if (doraPanel == nil) return;
-    if ([view[@"highlightRequestId"] longLongValue] == 0) doraLastScrolledRequestID = 0;
-    NSDictionary *layout = view[@"layout"];
-    NSDictionary *frameValue = layout[@"frame"];
-    NSRect frame = NSMakeRect([frameValue[@"x"] doubleValue], [frameValue[@"y"] doubleValue],
-                              [frameValue[@"width"] doubleValue], [frameValue[@"height"] doubleValue]);
-    CGFloat oldScrollY = 0;
-    for (NSView *subview in doraPanel.islandContent.subviews) {
-        if ([subview isKindOfClass:NSScrollView.class]) {
-            oldScrollY = ((NSScrollView *)subview).documentVisibleRect.origin.y;
-            break;
-        }
+    NSDictionary *frameValue = view[@"layout"][@"frame"];
+    NSRect target = NSMakeRect([frameValue[@"x"] doubleValue], [frameValue[@"y"] doubleValue],
+                               [frameValue[@"width"] doubleValue], [frameValue[@"height"] doubleValue]);
+    BOOL targetChanged = !doraPanel.hasTargetFrame || !NSEqualRects(doraPanel.targetFrame, target);
+    doraPanel.targetFrame = target;
+    doraPanel.hasTargetFrame = YES;
+    [doraPanel.islandContent applyView:view];
+    if (!targetChanged) return;
+
+    if (doraFrameAnimation != nil) {
+        [doraFrameAnimation stopAnimation];
+        doraFrameAnimation = nil;
     }
-    void (^changes)(void) = ^{ [doraPanel setFrame:frame display:YES]; };
-    if (doraPanel.hasPresented) {
-        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-            context.duration = 0.19;
-            [[doraPanel animator] setFrame:frame display:YES];
-        } completionHandler:nil];
-    } else {
-        changes();
+    BOOL animate = doraPanel.hasPresented && [view[@"animateFrame"] boolValue];
+    if (!animate) {
+        [doraPanel setFrame:target display:YES];
         doraPanel.hasPresented = YES;
+        return;
     }
-    doraPanel.islandContent.frame = NSMakeRect(0, 0, frame.size.width, frame.size.height);
-    for (NSView *subview in doraPanel.islandContent.subviews.copy) [subview removeFromSuperview];
-    if ([view[@"expanded"] boolValue]) {
-        doraBuildExpanded(view, doraPanel.islandContent, oldScrollY);
-    } else {
-        doraBuildCompact(view, doraPanel.islandContent);
-    }
-    [doraPanel orderFrontRegardless];
+    NSDictionary *animation = @{
+        NSViewAnimationTargetKey: doraPanel,
+        NSViewAnimationStartFrameKey: [NSValue valueWithRect:doraPanel.frame],
+        NSViewAnimationEndFrameKey: [NSValue valueWithRect:target],
+    };
+    doraFrameAnimation = [[NSViewAnimation alloc] initWithViewAnimations:@[animation]];
+    doraFrameAnimation.duration = 0.20;
+    doraFrameAnimation.animationCurve = NSAnimationEaseInOut;
+    doraFrameAnimation.animationBlockingMode = NSAnimationNonblocking;
+    doraFrameAnimation.frameRate = 60;
+    [doraFrameAnimation startAnimation];
 }
 
 void doraIslandStart(void) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-    NSRect initial = NSMakeRect(0, 0, 420, 40);
+    NSScreen *screen = NSScreen.screens.firstObject ?: NSScreen.mainScreen;
+    NSRect screenFrame = screen != nil ? screen.frame : NSMakeRect(0, 0, 1512, 982);
+    NSRect initial = NSMakeRect(NSMidX(screenFrame) - 180, NSMaxY(screenFrame) - 40, 360, 40);
     doraPanel = [[DoraIslandPanel alloc]
-        initWithContentRect:initial
-        styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+        initWithContentRect:initial styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         backing:NSBackingStoreBuffered defer:NO];
     doraPanel.opaque = NO;
     doraPanel.backgroundColor = NSColor.clearColor;
@@ -294,11 +473,7 @@ void doraIslandStart(void) {
                                    NSWindowCollectionBehaviorFullScreenAuxiliary |
                                    NSWindowCollectionBehaviorStationary;
     doraPanel.becomesKeyOnlyIfNeeded = YES;
-    doraPanel.islandContent = [[DoraIslandContentView alloc] initWithFrame:initial];
-    doraPanel.islandContent.wantsLayer = YES;
-    doraPanel.islandContent.layer.backgroundColor = doraColor(0.035, 0.038, 0.047, 0.98).CGColor;
-    doraPanel.islandContent.layer.cornerRadius = 20;
-    doraPanel.islandContent.layer.masksToBounds = YES;
+    doraPanel.islandContent = [[DoraIslandContentView alloc] initWithFrame:NSMakeRect(0, 0, 360, 40)];
     doraPanel.contentView = doraPanel.islandContent;
     doraScreenObserver = [NSNotificationCenter.defaultCenter
         addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue
@@ -306,6 +481,15 @@ void doraIslandStart(void) {
     [doraPanel orderFrontRegardless];
     doraSendScreen();
     [NSApp run];
+}
+
+int doraIslandPointerInside(void) {
+    __block BOOL inside = NO;
+    void (^check)(void) = ^{
+        if (doraPanel != nil) inside = NSPointInRect(NSEvent.mouseLocation, doraPanel.frame);
+    };
+    if (NSThread.isMainThread) check(); else dispatch_sync(dispatch_get_main_queue(), check);
+    return inside ? 1 : 0;
 }
 
 void doraIslandPresent(const char *payload) {
@@ -327,6 +511,10 @@ void doraIslandStop(void) {
         if (doraScreenObserver != nil) {
             [NSNotificationCenter.defaultCenter removeObserver:doraScreenObserver];
             doraScreenObserver = nil;
+        }
+        if (doraFrameAnimation != nil) {
+            [doraFrameAnimation stopAnimation];
+            doraFrameAnimation = nil;
         }
         [doraPanel close];
         doraPanel = nil;

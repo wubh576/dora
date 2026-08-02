@@ -28,6 +28,7 @@
 | 20. Kimi K3 API 等价计费 | 已完成 | `11d6557` |
 | 21. Codex 实时等待提醒与精确跳转 | 已完成 | `0778965`、`c40dfce`、`6ff055f`、`e1fd056`、`0a54972`、本次提交 |
 | 22. 原生 macOS 灵动岛控制中心 | 已完成 | 本次提交 |
+| 23. 顶部控制条交互与状态修补 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -429,11 +430,11 @@
 已完成：
 
 - 用原生 AppKit nonactivating `NSPanel` 替换可见菜单栏状态项；`dora menubar` 仅保留为 LaunchAgent 兼容命令名，同一进程继续持有 HTTP/API、SQLite、扫描、配额和 Web。
-- 紧凑态常驻屏幕顶部中央，展示 Dora、running/waiting 数量和今日 token；hover 展开、离开延迟收起，新 attention 自动展开约 6 秒并高亮对应会话。
+- 紧凑态常驻屏幕顶部中央，展示 Dora 和今日 token；hover 展开、离开延迟收起，新 attention 自动展开约 6 秒并高亮对应会话。
 - 展开态固定展示 1D/7D/ALL token、Codex 5h/7d quota、状态和底部操作；waiting 位于 running 之前，会话增多时只滚动中部列表。
 - 增加统一 `/api/v1/runtime`，每秒一次返回 active running/waiting session；不返回 external session ID、TTY 或完整 cwd，旧 `/attention` 作为 waiting-only 兼容端点复用同一 SQLite 读模型。
 - 从当前 Codex `UserPromptSubmit.prompt` 生成去控制字符、压缩空白、最多 160 个 Unicode 字符的一行 preview；只在 runtime session 中保存，`Stop` 清除，`SessionEnd` 删除，日志不记录。
-- 保留 App/iTerm2/Terminal 精确跳转、一次性 `Glass` 声音、LaunchAgent、CLI 与 Web；点击 session 先收起面板再跳转，不解决 waiting，也不抢目标以外的应用焦点。
+- 保留 App/iTerm2/Terminal 精确跳转、一次性 `Glass` 声音、LaunchAgent、CLI 与 Web；点击 session 后等待跳转结果，成功后由目标应用接管焦点，失败时保持展开并显示原因，不解决 waiting。
 - 移除 `systray` 与 D-Bus 依赖，未新增第三方 GUI 框架；刘海屏/普通屏定位、尺寸与滚动判断由纯 Go 几何模型负责。
 
 验证记录：
@@ -443,3 +444,22 @@
 - 当前 Mac 使用临时 SQLite 和 `127.0.0.1:18083` 启动真实 production 灵动岛；WindowServer 确认面板位于顶部中央且该进程没有 `Item-0` 状态栏窗口。脱敏 Hook fixture 真实展示 1 个 waiting 和 1 个 running，会话顺序、preview、高亮、固定操作区和自动收起正常。
 - 紧凑态与 attention 展开态实际窗口截图已保存；验收后临时进程正常退出、18083 释放，临时数据库和 fixture 目录已清理。
 - Code Review：独立 Reviewer 发现 timer 旧回调竞态、raw prompt 出站、运行时间/等待原因缺失、重复抢回滚动、跳转错误不可见、runtime 失败静默、主屏自引用和 v6 migration/排序测试缺口；全部修复并复审通过，无剩余 P0/P1/P2/P3。
+
+## 里程碑 23：顶部控制条交互与状态修补
+
+已完成：
+
+- compact 与 expanded 共用一个持久 `NSPanel`，顶边精确贴合主屏幕顶部，上角保持直角、下角保留圆角；compact 固定为 `360 × 40pt`，只显示 Dora 与今日 token。
+- hover intent 为 120ms，离开后延迟 450ms 收起；收起和 attention timer 到期时都会在 AppKit 主线程按当前 panel frame 复查鼠标位置，attention、hover、交互和异步操作可同时保持展开。
+- AppKit 视图树和 session 行按稳定 ID 增量更新，保留滚动位置；每秒 runtime 刷新不再反复重建子视图、调用 `orderFrontRegardless` 或为相同 frame 启动动画。
+- `SessionStart` 只注册 idle，`UserPromptSubmit` 才进入 running；`PostToolUse` 不会复活已结束 turn，`Stop` 清理 preview 并回到 idle，`SessionEnd` 删除记录。启动时将旧 running 恢复为 idle，同时保留 waiting。
+- `/runtime` 返回脱敏的 `jumpable` 与 `jumpReason`。App 需要 thread ID，iTerm2/Terminal 需要 exact TTY；其他可监控但不可精确跳转的会话仍显示为禁用行，并在底部说明原因。
+
+验证记录：
+
+- 自动测试覆盖贴顶几何、compact 固定文案与尺寸、hover intent/延迟/竞态、pointer 复查、attention 与交互组合、相同布局不重复动画、完整 Hook 状态转换、启动恢复和跳转能力隐私。
+- `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check` 通过；前端 TypeScript/Vite 与原生 Objective-C/Go production build 通过。
+- 当前 Mac 的真实 LaunchAgent 已覆盖本次构建；WindowServer 实测 compact 为 `360 × 40pt`、expanded 为 `760 × 520pt`，两种状态的顶边均为屏幕 `Y=0`。真实截图确认上角直角、下角圆角和连续深色容器。
+- 使用同一 production 二进制的临时 App bundle 完成辅助功能交互验收：panel 内持续操作超过 90 秒没有误收起或闪烁，列表滚动值完成 `0 → 1 → 0`，在多次每秒 runtime 刷新后保持原滚动位置；不可跳转行、底部刷新和真实 Codex App 行点击均返回可读结果。验收后进程、18083 端口、临时数据库和 App bundle 已清理。
+- 本机异常记录来自一次 Codex App Server 探针：收到了 `SessionStart` 与 `UserPromptSubmit`，但探针退出时缺少 `Stop`/`SessionEnd`，旧版本将其永久保留为 running。其 App surface 与 thread ID 形状正常，点击 deep link 只能说明系统接受 URL，已结束的临时 thread 实际无法恢复。启动恢复现在将这类旧 running 立即归零，而不是等 7 天。
+- Code Review：分离自审修复了交互结束依赖 tracking-area enter、滚轮重复排入 interaction start、不可跳转原因错误色和 failure hold 提前清除问题；复审未发现剩余 P0/P1/P2/P3。

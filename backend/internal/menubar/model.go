@@ -30,6 +30,7 @@ type View struct {
 	Expanded           bool         `json:"expanded"`
 	Mode               string       `json:"mode"`
 	Layout             PanelLayout  `json:"layout"`
+	AnimateFrame       bool         `json:"animateFrame"`
 	CompactSummary     string       `json:"compactSummary"`
 	CompactTokens      string       `json:"compactTokens"`
 	WaitingCount       int          `json:"waitingCount"`
@@ -49,18 +50,20 @@ type View struct {
 }
 
 type SessionRow struct {
-	ID        int64  `json:"id"`
-	State     string `json:"state"`
-	Title     string `json:"title"`
-	Subtitle  string `json:"subtitle"`
-	Meta      string `json:"meta"`
-	Highlight bool   `json:"highlight"`
+	ID         int64  `json:"id"`
+	State      string `json:"state"`
+	Title      string `json:"title"`
+	Subtitle   string `json:"subtitle"`
+	Meta       string `json:"meta"`
+	Highlight  bool   `json:"highlight"`
+	Jumpable   bool   `json:"jumpable"`
+	JumpReason string `json:"jumpReason,omitempty"`
 }
 
 func BuildView(state *State, machine MachineState, screen ScreenMetrics, now time.Time, refreshing bool, statusOverride string) View {
 	view := View{
 		Expanded: machine.Mode != ModeCompact, Mode: string(machine.Mode),
-		CompactSummary: "Dora", CompactTokens: "—", Today: "今日 —", SevenDays: "7 日 —", AllTime: "全部 —",
+		CompactSummary: "Dora", CompactTokens: "今日 token —", Today: "今日 —", SevenDays: "7 日 —", AllTime: "全部 —",
 		FiveHour: "Codex 5 小时配额：暂无数据", SevenDay: "Codex 7 日配额：暂无数据",
 		Status: "正在连接本地服务", Refreshing: refreshing,
 		HighlightSessionID: machine.HighlightSessionID,
@@ -69,8 +72,7 @@ func BuildView(state *State, machine MachineState, screen ScreenMetrics, now tim
 	if state != nil {
 		view.WaitingCount = state.Runtime.WaitingCount
 		view.RunningCount = state.Runtime.RunningCount
-		view.CompactSummary = compactSummary(view.RunningCount, view.WaitingCount)
-		view.CompactTokens = compactTokens(state.Snapshot.Usage.TodayTokens)
+		view.CompactTokens = "今日 token " + compactTokens(state.Snapshot.Usage.TodayTokens)
 		view.Today = tokenRow("今日", state.Snapshot.Usage.TodayTokens)
 		view.SevenDays = tokenRow("7 日", state.Snapshot.Usage.SevenDayTokens)
 		view.AllTime = tokenRow("全部", state.Snapshot.Usage.AllTimeTokens)
@@ -92,7 +94,7 @@ func BuildView(state *State, machine MachineState, screen ScreenMetrics, now tim
 }
 
 func statusIsError(status string) bool {
-	for _, marker := range []string{"失败", "无法", "未配置", "拒绝", "已经结束"} {
+	for _, marker := range []string{"失败", "无法", "未配置", "拒绝", "已经结束", "缺少", "不支持"} {
 		if strings.Contains(status, marker) {
 			return true
 		}
@@ -105,43 +107,24 @@ func CalculateLayout(screen ScreenMetrics, expanded bool, sessions, running, wai
 	if visible.Width <= 0 || visible.Height <= 0 {
 		visible = screen.Frame
 	}
-	width, height := 420.0, 40.0
+	width, height := 360.0, 40.0
 	if !expanded {
-		width = 340 + float64(len(fmt.Sprintf("%d%d", running, waiting)))*8
-		width = min(520, max(360, width))
+		width = 360
 	} else {
 		width = min(760, max(600, visible.Width-32))
-		natural := 244.0 + float64(sessions)*64
+		natural := 244.0 + float64(sessions)*56
 		height = min(520, min(visible.Height*0.65, natural))
 		height = max(244, height)
 	}
 	width = min(width, max(1, visible.Width-16))
 	height = min(height, max(1, visible.Height-16))
 	top := screen.Frame.Y + screen.Frame.Height
-	gap := 8.0
-	if screen.SafeTop > 0 {
-		gap = 2
-	}
-	frame := Rect{X: visible.X + (visible.Width-width)/2, Y: top - height - gap, Width: width, Height: height}
-	if frame.Y < visible.Y {
-		frame.Y = visible.Y
-	}
+	frame := Rect{X: screen.Frame.X + (screen.Frame.Width-width)/2, Y: top - height, Width: width, Height: height}
 	viewport := 0.0
 	if expanded {
-		viewport = max(0, height-244)
+		viewport = max(0, height-176)
 	}
-	return PanelLayout{Frame: frame, Scrollable: float64(sessions)*64 > viewport, SessionViewport: viewport}
-}
-
-func compactSummary(running, waiting int) string {
-	parts := []string{"Dora"}
-	if waiting > 0 {
-		parts = append(parts, fmt.Sprintf("%d 等待", waiting))
-	}
-	if running > 0 {
-		parts = append(parts, fmt.Sprintf("%d 运行", running))
-	}
-	return strings.Join(parts, " · ")
+	return PanelLayout{Frame: frame, Scrollable: expanded && float64(sessions)*56 > viewport, SessionViewport: viewport}
 }
 
 func sessionRows(runtime RuntimeState, highlight int64, now time.Time) []SessionRow {
@@ -175,6 +158,7 @@ func sessionRows(runtime RuntimeState, highlight int64, now time.Time) []Session
 		rows = append(rows, SessionRow{
 			ID: session.ID, State: session.State, Title: title, Subtitle: subtitle,
 			Meta: meta, Highlight: session.ID == highlight,
+			Jumpable: session.Jumpable, JumpReason: session.JumpReason,
 		})
 	}
 	return rows

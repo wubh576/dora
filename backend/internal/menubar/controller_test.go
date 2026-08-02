@@ -116,7 +116,7 @@ func TestControllerLoadsUsageAndRuntimeIntoOneView(t *testing.T) {
 	}
 	select {
 	case view := <-presented:
-		if view.CompactTokens != "1K" || view.RunningCount != 1 || len(view.Sessions) != 1 {
+		if view.CompactTokens != "今日 token 1K" || view.RunningCount != 1 || len(view.Sessions) != 1 {
 			t.Fatalf("组合视图错误: %+v", view)
 		}
 	case <-time.After(time.Second):
@@ -153,7 +153,7 @@ func TestControllerDoesNotOverwriteNewRuntimeWithOlderFullLoad(t *testing.T) {
 	for {
 		select {
 		case view := <-presented:
-			if view.CompactTokens == "1K" && view.RunningCount == 2 {
+			if view.CompactTokens == "今日 token 1K" && view.RunningCount == 2 {
 				return
 			}
 		case <-deadline:
@@ -200,7 +200,7 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 	for {
 		select {
 		case view := <-presented:
-			if view.CompactTokens == "2K" && view.OperationStatus == "token 已更新，配额刷新失败" {
+			if view.CompactTokens == "今日 token 2K" && view.OperationStatus == "token 已更新，配额刷新失败" {
 				return
 			}
 		case <-deadline:
@@ -221,7 +221,7 @@ func TestControllerOpenDashboardUsesConfiguredLoopbackURL(t *testing.T) {
 	}
 }
 
-func TestControllerClickCollapsesBeforeExactJump(t *testing.T) {
+func TestControllerJumpFailureKeepsExpandedUntilUserCanReadReason(t *testing.T) {
 	jumper := &fakeJumper{err: errors.New("target gone")}
 	presented := make(chan View, 8)
 	controller := NewController(&fakeLoader{}, fakeRefresher{}, "", func(view View) { presented <- view })
@@ -244,18 +244,18 @@ func TestControllerClickCollapsesBeforeExactJump(t *testing.T) {
 		case <-time.After(time.Millisecond):
 		}
 	}
-	if controller.machine.State().Mode != ModeCompact {
-		t.Fatalf("点击后未立即收起: %+v", controller.machine.State())
+	if controller.machine.State().Mode == ModeCompact {
+		t.Fatalf("跳转返回前错误收起: %+v", controller.machine.State())
 	}
 	statusDeadline := time.After(time.Second)
 	for {
 		select {
 		case view := <-presented:
-			if view.OperationStatus == "跳转 Codex 会话失败：target gone" && !view.Expanded {
+			if view.OperationStatus == "跳转 Codex 会话失败：target gone" && view.Expanded {
 				return
 			}
 		case <-statusDeadline:
-			t.Fatal("compact 状态没有显示跳转失败")
+			t.Fatal("展开状态没有显示跳转失败")
 		}
 	}
 }
@@ -277,6 +277,47 @@ func TestControllerSuccessfulRetryClearsPreviousJumpError(t *testing.T) {
 	jumper.mu.Unlock()
 	if calls != 2 {
 		t.Fatalf("jump 调用次数 = %d", calls)
+	}
+}
+
+func TestControllerRuntimeRefreshWithSameLayoutDoesNotAnimateFrame(t *testing.T) {
+	loader := &fakeLoader{
+		state:   State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 1000}}},
+		runtime: RuntimeState{WaitingCount: 1, Sessions: []RuntimeSession{{ID: 7, State: "waiting", SessionName: "dora", RequestID: 9}}},
+	}
+	presented := make(chan View, 16)
+	controller := NewController(loader, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.LoadAsync(context.Background())
+	<-presented
+	controller.NotifyAttention(9, 7)
+	expanded := <-presented
+	if !expanded.Expanded || !expanded.AnimateFrame {
+		t.Fatalf("首次展开没有尺寸动画: %+v", expanded)
+	}
+	loader.runtime.Sessions[0].WaitSeconds = 1
+	controller.LoadRuntimeAsync(context.Background())
+	updated := <-presented
+	if updated.Layout != expanded.Layout || updated.AnimateFrame {
+		t.Fatalf("相同 layout 的每秒刷新重复动画: expanded=%+v updated=%+v", expanded.Layout, updated)
+	}
+}
+
+func TestControllerExplainsUnjumpableSessionInExpandedFooter(t *testing.T) {
+	loader := &fakeLoader{
+		runtime: RuntimeState{RunningCount: 1, Sessions: []RuntimeSession{{
+			ID: 12, State: "running", SessionName: "probe", JumpReason: "无法识别 Codex 会话来源",
+		}}},
+	}
+	presented := make(chan View, 16)
+	controller := NewController(loader, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.LoadAsync(context.Background())
+	<-presented
+	controller.ExplainSession(12)
+	view := waitForView(t, presented, func(view View) bool {
+		return view.Expanded && view.OperationStatus == "无法识别 Codex 会话来源"
+	})
+	if !view.OperationError {
+		t.Fatalf("不可跳转原因未作为错误反馈: %+v", view)
 	}
 }
 

@@ -50,6 +50,8 @@ type Controller struct {
 	operationStatus string
 	operationUntil  time.Time
 	runtimeStatus   string
+	lastFrame       Rect
+	hasFrame        bool
 	stopped         bool
 }
 
@@ -69,6 +71,10 @@ func (controller *Controller) SetSessionJumper(jumper SessionJumper) {
 	controller.mu.Unlock()
 }
 
+func (controller *Controller) SetPointerChecker(check func() bool) {
+	controller.machine.SetPointerChecker(check)
+}
+
 func (controller *Controller) SetScreen(screen ScreenMetrics) {
 	controller.mu.Lock()
 	controller.screen = screen
@@ -77,6 +83,8 @@ func (controller *Controller) SetScreen(screen ScreenMetrics) {
 }
 
 func (controller *Controller) Hover(inside bool) { controller.machine.Hover(inside) }
+
+func (controller *Controller) UIInteraction(active bool) { controller.machine.UIInteraction(active) }
 
 func (controller *Controller) NotifyAttention(requestID, sessionID int64) bool {
 	return controller.machine.Attention(requestID, sessionID)
@@ -179,6 +187,7 @@ func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 	runtimeVersion := controller.runtimeVersion
 	controller.operationStatus = ""
 	controller.mu.Unlock()
+	controller.machine.OperationStart()
 	controller.publish()
 	go func() {
 		usageErr, quotaErr := controller.refresher.Refresh(ctx)
@@ -214,13 +223,13 @@ func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 		}
 		controller.setStatusLocked(status)
 		controller.mu.Unlock()
+		controller.machine.OperationEnd(usageErr == nil && quotaErr == nil && loadErr == nil && runtimeErr == nil)
 		controller.publish()
 	}()
 	return true
 }
 
 func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID int64) bool {
-	controller.machine.ClickSession()
 	controller.mu.Lock()
 	controller.operationStatus = ""
 	controller.operationUntil = time.Time{}
@@ -234,19 +243,40 @@ func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID in
 	}
 	controller.jumping = true
 	controller.mu.Unlock()
+	controller.machine.OperationStart()
 	controller.publish()
 	go func() {
 		jumpContext, cancel := context.WithTimeout(ctx, jumpTimeout)
 		defer cancel()
-		if err := jumper.JumpAttentionSession(jumpContext, sessionID); err != nil {
-			controller.PresentStatus(fmt.Sprintf("跳转 Codex 会话失败：%v", err))
-		}
+		err := jumper.JumpAttentionSession(jumpContext, sessionID)
 		controller.mu.Lock()
 		controller.jumping = false
+		if err != nil {
+			controller.setStatusLocked(fmt.Sprintf("跳转 Codex 会话失败：%v", err))
+		}
 		controller.mu.Unlock()
+		controller.machine.OperationEnd(err == nil)
+		controller.publish()
 		controller.LoadRuntimeAsync(ctx)
 	}()
 	return true
+}
+
+func (controller *Controller) ExplainSession(sessionID int64) {
+	controller.mu.Lock()
+	reason := "当前 Codex 会话无法精确跳转"
+	if controller.last != nil {
+		for _, session := range controller.last.Runtime.Sessions {
+			if session.ID == sessionID && session.JumpReason != "" {
+				reason = session.JumpReason
+				break
+			}
+		}
+	}
+	controller.setStatusLocked(reason)
+	controller.mu.Unlock()
+	controller.machine.HoldFailure()
+	controller.publish()
 }
 
 func (controller *Controller) OpenDashboard() error {
@@ -291,8 +321,12 @@ func (controller *Controller) publish() {
 	}
 	last := cloneState(controller.last)
 	screen, refreshing := controller.screen, controller.refreshing
+	view := BuildView(last, controller.machine.State(), screen, now, refreshing, status)
+	view.AnimateFrame = controller.hasFrame && view.Layout.Frame != controller.lastFrame
+	controller.lastFrame = view.Layout.Frame
+	controller.hasFrame = true
 	controller.mu.Unlock()
-	controller.present(BuildView(last, controller.machine.State(), screen, now, refreshing, status))
+	controller.present(view)
 }
 
 func (controller *Controller) setStatusLocked(message string) {
