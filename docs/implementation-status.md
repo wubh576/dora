@@ -403,6 +403,7 @@
 - SQLite migration 增加最小 `runtime_sessions` 与 `attention_requests`，实现 running/waiting/idle、稳定去重、notified/resolved 分离、`SessionEnd` 清理和重启不重复提醒。
 - 增加 attention snapshot 与 Codex hook loopback API；只接收有界脱敏字段，不保存 prompt、回复、完整命令、工具输入、环境变量、transcript 路径或完整 cwd。
 - 增加 `dora hooks install/status/uninstall/emit codex`，原子合并并保留用户已有 hooks，支持幂等更新路径、损坏保护和官方信任状态；不绕过 Codex `/hooks` 授权。
+- `dora install` 自动使用 LaunchAgent 稳定路径安装 Hooks，install/status 直接显示实时提醒的已启用/待授权/需修复状态；未授权不阻断其他功能，uninstall 只移除 Dora handlers。
 - 菜单栏 waiting 时显示 `🔴 N`，顶部按 session 展示 App/CLI、项目 basename、等待原因、时长与请求数；新 request 每条只发一次声音。
 - 点击使用 Codex App deep link 或 iTerm2/Terminal exact TTY 跳转，不解决等待；目标消失时清理 runtime 状态，不使用标题、cwd 或最近窗口猜测。
 - 运行日志以不可逆 session 短哈希记录 Hook 状态、attention 创建/去重/解除、提醒和回跳结果；7 天无结构化活动的异常残留由启动和每小时 stale reconciliation 清理。

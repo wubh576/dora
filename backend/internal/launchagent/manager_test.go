@@ -18,6 +18,9 @@ import (
 
 func TestPathsForHomeUsesStableUserLocations(t *testing.T) {
 	paths := PathsForHome("/Users/tester")
+	if paths.Home != "/Users/tester" {
+		t.Fatalf("Home = %q", paths.Home)
+	}
 	if paths.Binary != "/Users/tester/Library/Application Support/Dora/bin/dora" {
 		t.Fatalf("Binary = %q", paths.Binary)
 	}

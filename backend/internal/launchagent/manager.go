@@ -25,6 +25,7 @@ const (
 )
 
 type Paths struct {
+	Home         string
 	Binary       string
 	BinaryTemp   string
 	Plist        string
@@ -45,6 +46,7 @@ func PathsForHome(home string) Paths {
 	plist := filepath.Join(launchAgents, Label+".plist")
 	logs := filepath.Join(home, "Library", "Logs", "Dora")
 	return Paths{
+		Home:         filepath.Clean(home),
 		Binary:       binary,
 		BinaryTemp:   binary + ".tmp",
 		Plist:        plist,

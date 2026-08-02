@@ -111,7 +111,7 @@ open http://127.0.0.1:8080
 ~/Library/Application Support/Dora/bin/dora
 ```
 
-并安装 `~/Library/LaunchAgents/io.github.wubh576.dora.plist`。LaunchAgent 在当前用户进入 macOS 桌面后运行同一个 `dora menubar` 进程；无需 `sudo`，不会创建 LaunchDaemon 或第二个后端。
+并安装 `~/Library/LaunchAgents/io.github.wubh576.dora.plist`。LaunchAgent 在当前用户进入 macOS 桌面后运行同一个 `dora menubar` 进程；无需 `sudo`，不会创建 LaunchDaemon 或第二个后端。`install` 同时把 Dora Codex Hooks 合并到用户配置，安装结果会明确显示实时提醒是已启用还是待授权。
 
 检查安装、加载、运行和真实 health API：
 
@@ -119,7 +119,7 @@ open http://127.0.0.1:8080
 ./bin/dora status
 ```
 
-`status` 的退出码为：`0` 表示已安装且正常运行，`1` 表示未安装、未运行或运行异常，`2` 表示状态检查本身失败。输出的仪表盘地址固定为 `http://127.0.0.1:8080`。
+`status` 的退出码为：`0` 表示已安装且正常运行，`1` 表示未安装、未运行或运行异常，`2` 表示状态检查本身失败。输出的仪表盘地址固定为 `http://127.0.0.1:8080`，并会同时显示 Codex 实时提醒的安装与授权状态。
 
 在菜单中点击“退出 Dora”后，LaunchAgent 会把这次成功退出视为用户主动停止，因此本次登录会话不会立即拉起 Dora；下次登录 macOS 时仍会按 `RunAtLoad` 自动启动。需要立刻重新启动时，再执行一次 `./bin/dora install`。
 
@@ -129,20 +129,20 @@ open http://127.0.0.1:8080
 ./bin/dora uninstall
 ```
 
-卸载会停止 LaunchAgent，并删除 plist、安装二进制和安装临时文件；`dora.db`、`settings.json`、Codex 原始数据和日志都会保留。三个命令均只管理当前 macOS 用户，重复安装或卸载是安全的。
+卸载会停止 LaunchAgent，删除 plist、安装二进制和 Dora 自己的 Codex Hook handlers；`dora.db`、`settings.json`、Codex 原始数据、用户的其他 Hooks 和日志都会保留。三个命令均只管理当前 macOS 用户，重复安装或卸载是安全的。
 
 `go run ./cmd/dora install` 等开发构建不包含生产 Web 资源，会被拒绝。请始终先执行 `make build`，再运行 `./bin/dora install`。
 
 ### Codex 实时提醒
 
-生产二进制安装到稳定路径后，为 Codex 安装结构化生命周期 hooks：
+正常安装流程中 `dora install` 会自动使用稳定二进制路径安装 Codex 结构化生命周期 Hooks。以下命令保留用于单独修复、检查或移除：
 
 ```bash
 "$HOME/Library/Application Support/Dora/bin/dora" hooks install codex
 "$HOME/Library/Application Support/Dora/bin/dora" hooks status codex
 ```
 
-安装会原子合并 `~/.codex/hooks.json`，保留其他工具和用户已有的 hooks；重复执行会更新 Dora 可执行文件路径，不产生重复 handler。Codex 自己的 hook 信任机制不会被绕过：首次安装或 Dora 路径变化后，在 Codex 中打开 `/hooks`，检查命令与配置来源后明确授权。状态命令会报告配置路径、Dora 路径、缺失/损坏事件和信任状态。
+安装会原子合并 `~/.codex/hooks.json`，保留其他工具和用户已有的 hooks；重复执行会更新 Dora 可执行文件路径，不产生重复 handler。Codex 自己的 hook 信任机制不会被绕过：每个 macOS 用户在首次安装或 Hook 命令真正变化后，需要在 Codex 中打开 `/hooks`，检查命令与配置来源后明确授权一次。授权 hash 会持久保存；Dora 普通升级仍使用同一稳定路径和 Hook 命令，不会重复询问。`--dangerously-bypass-hook-trust` 不是 Dora 的安装方式。
 
 卸载只移除带 Dora 标记的 handler：
 

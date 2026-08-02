@@ -39,6 +39,126 @@ func TestWriteCodexHooksStatus(t *testing.T) {
 	}
 }
 
+func TestWriteRealtimeReminderStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status codexhooks.Status
+		err    error
+		want   string
+	}{
+		{name: "enabled", status: codexhooks.Status{Installed: true, Trust: "trusted"}, want: "实时提醒：已启用"},
+		{name: "pending trust", status: codexhooks.Status{Installed: true, Trust: "untrusted"}, want: "实时提醒：待授权"},
+		{name: "missing", status: codexhooks.Status{}, want: "dora install 自动修复"},
+		{name: "broken", status: codexhooks.Status{Broken: "invalid"}, want: "Hook 配置损坏"},
+		{name: "invalid executable", status: codexhooks.Status{Installed: true, ExecutableProblem: "missing"}, want: "handler 路径失效"},
+		{name: "status error", err: errors.New("unavailable"), want: "实时提醒：未启用"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := writeRealtimeReminderStatus(&output, test.status, test.err); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), test.want) {
+				t.Fatalf("实时提醒状态缺少 %q: %s", test.want, output.String())
+			}
+		})
+	}
+}
+
+func TestLaunchAgentHookOnboardingUsesStablePath(t *testing.T) {
+	home := t.TempDir()
+	executable := launchagent.PathsForHome(home).Binary
+	if err := os.MkdirAll(filepath.Dir(executable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("fixture"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	status, err := installLaunchAgentCodexHooks(home, executable)
+	if err != nil || !status.Installed || status.Executable != executable || status.ExecutableProblem != "" {
+		t.Fatalf("安装 LaunchAgent hooks = %+v, %v", status, err)
+	}
+	first, err := os.ReadFile(filepath.Join(home, ".codex", "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(first), executable) {
+		t.Fatalf("Hook 未使用稳定安装路径: %s", first)
+	}
+	if _, err := installLaunchAgentCodexHooks(home, executable); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(filepath.Join(home, ".codex", "hooks.json"))
+	if err != nil || !bytes.Equal(first, second) {
+		t.Fatalf("重复安装改变了 Hook 配置: %v", err)
+	}
+	if _, err := uninstallLaunchAgentCodexHooks(home, executable); err != nil {
+		t.Fatal(err)
+	}
+	status, err = launchAgentCodexHooksStatus(home, executable)
+	if err != nil || status.Installed {
+		t.Fatalf("卸载后 Hook 仍安装: %+v, %v", status, err)
+	}
+}
+
+func TestUninstallComponentsAttemptsBothAndReturnsPartialFailure(t *testing.T) {
+	tests := []struct {
+		name           string
+		launchAgentErr error
+		hookErr        error
+		wantOutput     []string
+		wantError      []string
+	}{
+		{
+			name: "success", wantOutput: []string{"LaunchAgent：已卸载", "hooks：已移除"},
+		},
+		{
+			name: "hook cleanup fails", hookErr: errors.New("broken hooks"),
+			wantOutput: []string{"LaunchAgent：已卸载", "hooks：未能自动移除"},
+			wantError:  []string{"broken hooks"},
+		},
+		{
+			name: "launchagent cleanup fails", launchAgentErr: errors.New("launchctl failed"),
+			wantOutput: []string{"LaunchAgent：未能卸载", "hooks：已移除"},
+			wantError:  []string{"launchctl failed"},
+		},
+		{
+			name: "both fail", launchAgentErr: errors.New("launchctl failed"), hookErr: errors.New("broken hooks"),
+			wantOutput: []string{"LaunchAgent：未能卸载", "hooks：未能自动移除"},
+			wantError:  []string{"launchctl failed", "broken hooks"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			launchAgentCalls, hookCalls := 0, 0
+			err := uninstallComponents(
+				context.Background(),
+				&output,
+				func(context.Context) error { launchAgentCalls++; return test.launchAgentErr },
+				func() error { hookCalls++; return test.hookErr },
+			)
+			if launchAgentCalls != 1 || hookCalls != 1 {
+				t.Fatalf("卸载未尝试两个组件: launchagent=%d hooks=%d", launchAgentCalls, hookCalls)
+			}
+			for _, want := range test.wantOutput {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("卸载输出缺少 %q: %s", want, output.String())
+				}
+			}
+			if len(test.wantError) == 0 && err != nil {
+				t.Fatalf("卸载意外失败: %v", err)
+			}
+			for _, want := range test.wantError {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("卸载错误缺少 %q: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
 type unavailableHookEmitter struct{}
 
 func (unavailableHookEmitter) Emit(context.Context, io.Reader) error {

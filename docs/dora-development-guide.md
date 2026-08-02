@@ -1096,6 +1096,7 @@ dora uninstall
 安装内容：
 
 - 当前生产二进制原子复制到 `~/Library/Application Support/Dora/bin/dora`。
+- 使用安装后稳定二进制路径原子合并 Dora Codex Hooks，不覆盖用户其他 handlers。
 - plist 固定为 `~/Library/LaunchAgents/io.github.wubh576.dora.plist`。
 - Label 固定为 `io.github.wubh576.dora`。
 - stdout/stderr 分别写入 `~/Library/Logs/Dora/dora.stdout.log` 和 `dora.stderr.log`。
@@ -1110,8 +1111,8 @@ dora uninstall
 - plist 使用安装后二进制的绝对路径，ProgramArguments 为该路径、`menubar` 和用于启用受管日志轮转的 `--launchagent` 标记。
 - 二进制与 plist 都先写明确临时文件，再 rename 替换；重装按 `print → bootout → bootstrap → kickstart` 安全重载。
 - install 等待 loopback health，重复执行不会产生多个 LaunchAgent 或 Dora 常驻进程。
-- status 综合 plist、安装二进制、`launchctl print` 和 health；退出码 0 为正常，1 为未安装/未运行/异常，2 为检查失败。
-- uninstall 幂等，只删除 plist、安装二进制和对应临时文件，保留 SQLite、settings、日志和 Codex 原始数据。
+- status 综合 plist、安装二进制、`launchctl print`、health 和 Codex Hook 安装/信任状态；退出码 0 为正常，1 为未安装/未运行/异常，2 为检查失败。Hook 未授权只降级实时提醒，不影响 token、成本、配额和 Web。
+- uninstall 幂等，删除 plist、安装二进制、对应临时文件和 Dora Hook handlers，保留 SQLite、settings、日志、用户其他 Hooks 和 Codex 原始数据。
 - 菜单“退出 Dora”产生成功退出，当前登录会话不立即重启；下次登录仍由 RunAtLoad 启动。
 - stdout 和 stderr 各自以 200 MiB 为活动文件阈值；启动时检查一次，运行中每 10 分钟检查一次，任一侧失败不阻断另一侧或应用主流程。
 - 达到阈值时先原子覆盖同名 `.1` 备份，再 truncate 原活动文件，保证 launchd 已打开的文件描述符继续写入原 inode；每侧只保留一个备份，不生成 `.2`。
@@ -1387,8 +1388,9 @@ dora hooks uninstall codex
 dora hooks emit codex
 ```
 
-- install 原子合并 `~/.codex/hooks.json`，保留非 Dora 配置，重复安装幂等并更新稳定二进制路径。
+- `dora install` 默认原子合并 `~/.codex/hooks.json`，独立 hooks install 命令保留为修复入口；两者都保留非 Dora 配置，重复安装幂等并使用稳定二进制路径。
 - status 报告配置损坏、路径、缺失事件和 Codex trust；Dora 只读 `~/.codex/config.toml` 中的 trust hash，不写入或绕过 Codex trust 状态，用户必须在 Codex `/hooks` 明确授权。
+- trust hash 持久保存；普通 Dora 升级不改变稳定 handler 命令，因此不重复授权。禁止在 Dora 中使用 `--dangerously-bypass-hook-trust` 或自动写入 trust hash。
 - emit 限制 stdin 大小，只提取最小字段，并以短超时 POST 到固定 loopback endpoint；禁止 redirect，Dora 未运行时静默成功，不阻塞 Codex。
 - surface 依据受控字段、进程 executable/ancestry、TTY 和终端类型识别。只有实际 App ancestry 才标记 Codex App；CLI 只支持 iTerm2 与 Terminal exact TTY。
 

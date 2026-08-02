@@ -156,6 +156,10 @@ func writeCodexHooksStatus(output io.Writer, status codexhooks.Status) error {
 		_, err := fmt.Fprintf(output, "问题：%s\n", status.Broken)
 		return err
 	}
+	if status.ExecutableProblem != "" {
+		_, err := fmt.Fprintf(output, "问题：%s\n", status.ExecutableProblem)
+		return err
+	}
 	if len(status.Missing) > 0 {
 		_, err := fmt.Fprintf(output, "缺失事件：%s\n", strings.Join(status.Missing, ", "))
 		return err
@@ -202,8 +206,11 @@ func installCommand(args []string) error {
 	if err := manager.Install(ctx); err != nil {
 		return err
 	}
-	fmt.Printf("Dora 已安装并正在运行\n菜单栏：点击 Dora 图标查看用量\n仪表盘：%s\n", launchagent.DashboardURL)
-	return nil
+	hookStatus, hookErr := installLaunchAgentCodexHooks(manager.Paths().Home, manager.Paths().Binary)
+	if _, err := fmt.Fprintf(os.Stdout, "Dora 已安装并正在运行\n菜单栏：点击 Dora 图标查看用量\n仪表盘：%s\n", launchagent.DashboardURL); err != nil {
+		return err
+	}
+	return writeRealtimeReminderStatus(os.Stdout, hookStatus, hookErr)
 }
 
 func launchAgentStatusCommand(args []string) error {
@@ -230,6 +237,10 @@ func launchAgentStatusCommand(args []string) error {
 	if err := writeLaunchAgentStatus(os.Stdout, status, installed, loaded, buildinfo.Current()); err != nil {
 		return &commandExitError{code: 2, err: err}
 	}
+	hookStatus, hookErr := launchAgentCodexHooksStatus(manager.Paths().Home, manager.Paths().Binary)
+	if err := writeRealtimeReminderStatus(os.Stdout, hookStatus, hookErr); err != nil {
+		return &commandExitError{code: 2, err: err}
+	}
 	if status.ExitCode() != 0 {
 		return &commandExitError{code: status.ExitCode()}
 	}
@@ -249,6 +260,53 @@ func writeLaunchAgentStatus(output io.Writer, status launchagent.Status, install
 	return err
 }
 
+func writeRealtimeReminderStatus(output io.Writer, status codexhooks.Status, statusErr error) error {
+	switch {
+	case statusErr != nil:
+		_, err := fmt.Fprintf(output, "实时提醒：未启用（%v）\n", statusErr)
+		return err
+	case status.Broken != "":
+		_, err := fmt.Fprintln(output, "实时提醒：未启用（Codex Hook 配置损坏，请运行 dora hooks status codex）")
+		return err
+	case status.ExecutableProblem != "":
+		_, err := fmt.Fprintln(output, "实时提醒：未启用（Dora handler 路径失效，请运行 dora install 自动修复）")
+		return err
+	case !status.Installed:
+		_, err := fmt.Fprintln(output, "实时提醒：未启用（请运行 dora install 自动修复）")
+		return err
+	case status.Trust == "trusted":
+		_, err := fmt.Fprintln(output, "实时提醒：已启用")
+		return err
+	default:
+		_, err := fmt.Fprintln(output, "实时提醒：待授权（在 Codex 输入 /hooks，检查并启用 Dora hooks）")
+		return err
+	}
+}
+
+func installLaunchAgentCodexHooks(home, executable string) (codexhooks.Status, error) {
+	manager, err := codexhooks.NewManager(filepath.Join(home, ".codex"), executable)
+	if err != nil {
+		return codexhooks.Status{}, err
+	}
+	return manager.Install()
+}
+
+func launchAgentCodexHooksStatus(home, executable string) (codexhooks.Status, error) {
+	manager, err := codexhooks.NewManager(filepath.Join(home, ".codex"), executable)
+	if err != nil {
+		return codexhooks.Status{}, err
+	}
+	return manager.Status()
+}
+
+func uninstallLaunchAgentCodexHooks(home, executable string) (codexhooks.Status, error) {
+	manager, err := codexhooks.NewManager(filepath.Join(home, ".codex"), executable)
+	if err != nil {
+		return codexhooks.Status{}, err
+	}
+	return manager.Uninstall()
+}
+
 func uninstallCommand(args []string) error {
 	if len(args) != 0 {
 		return fmt.Errorf("uninstall 不支持参数 %q", args[0])
@@ -259,11 +317,41 @@ func uninstallCommand(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := manager.Uninstall(ctx); err != nil {
-		return err
+	return uninstallComponents(
+		ctx,
+		os.Stdout,
+		manager.Uninstall,
+		func() error {
+			_, err := uninstallLaunchAgentCodexHooks(manager.Paths().Home, manager.Paths().Binary)
+			return err
+		},
+	)
+}
+
+func uninstallComponents(
+	ctx context.Context,
+	output io.Writer,
+	uninstallLaunchAgent func(context.Context) error,
+	uninstallHooks func() error,
+) error {
+	launchAgentErr := uninstallLaunchAgent(ctx)
+	hookErr := uninstallHooks()
+	var outputErrors []error
+	if launchAgentErr == nil {
+		_, err := fmt.Fprintln(output, "Dora LaunchAgent：已卸载；数据库、设置和日志均已保留")
+		outputErrors = append(outputErrors, err)
+	} else {
+		_, err := fmt.Fprintln(output, "Dora LaunchAgent：未能卸载")
+		outputErrors = append(outputErrors, err)
 	}
-	fmt.Println("Dora LaunchAgent 已卸载；数据库、设置和日志均已保留")
-	return nil
+	if hookErr == nil {
+		_, err := fmt.Fprintln(output, "Codex hooks：已移除 Dora handlers")
+		outputErrors = append(outputErrors, err)
+	} else {
+		_, err := fmt.Fprintln(output, "Codex hooks：未能自动移除")
+		outputErrors = append(outputErrors, err)
+	}
+	return errors.Join(launchAgentErr, hookErr, errors.Join(outputErrors...))
 }
 
 func newLaunchAgentManager() (*launchagent.Manager, error) {

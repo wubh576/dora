@@ -154,6 +154,26 @@ func TestStatusReportsTrustedHashes(t *testing.T) {
 	}
 }
 
+func TestStatusReportsInvalidExecutablePath(t *testing.T) {
+	home := t.TempDir()
+	executable := filepath.Join(home, "Dora App", "dora")
+	manager, _ := NewManager(home, executable)
+	status, err := manager.Install()
+	if err != nil || status.ExecutableProblem == "" {
+		t.Fatalf("缺失 handler 路径状态 = %+v, %v", status, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(executable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("fixture"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	status, err = manager.Status()
+	if err != nil || status.ExecutableProblem != "" {
+		t.Fatalf("可执行 handler 被误报: %+v, %v", status, err)
+	}
+}
+
 func TestStatusIgnoresCommentedTrustedHashes(t *testing.T) {
 	home := t.TempDir()
 	manager, _ := NewManager(home, "/tmp/dora")

@@ -40,12 +40,13 @@ type Manager struct {
 }
 
 type Status struct {
-	Path       string
-	Executable string
-	Installed  bool
-	Trust      string
-	Broken     string
-	Missing    []string
+	Path              string
+	Executable        string
+	Installed         bool
+	Trust             string
+	Broken            string
+	ExecutableProblem string
+	Missing           []string
 }
 
 func NewManager(codexHome, executable string) (*Manager, error) {
@@ -163,6 +164,13 @@ func (m *Manager) Status() (Status, error) {
 	status.Installed = len(status.Missing) == 0
 	if status.Installed {
 		status.Trust = m.trustStatus()
+		info, err := os.Stat(m.executable)
+		switch {
+		case err != nil:
+			status.ExecutableProblem = "Dora handler 路径不可用"
+		case !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0:
+			status.ExecutableProblem = "Dora handler 不是可执行文件"
+		}
 	}
 	return status, nil
 }
