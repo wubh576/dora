@@ -412,6 +412,7 @@
 验证记录：
 
 - 当前 Codex App `0.146.0-alpha.9.2` 的官方 `hooks/list` 真实识别全部 7 个 Dora handlers，matcher、timeout、source path 与 current hash 和 Dora 计算结果一致；用户已在 `/hooks` 明确授权，`dora hooks status codex` 返回“已授权”。重复执行 `dora install` 后 `hooks.json` SHA-256 仍为 `ebd8f8ddbf6d857f610de359e4cc1667940289d152aba75a9ae2dabe07f82f9e`，证明稳定命令不会让普通升级反复授权。
+- Codex App 真实会话触发 `SessionStart → UserPromptSubmit → Stop → SessionEnd`，全部识别为 `codex_app`；无 TTY 的官方 App Server 临时线程也触发相同起始事件并保持 `ephemeral=true`，没有写入独立 session 文件。App thread ID 可直接用于后述 deep link。
 - Codex CLI `0.146.0` 真实 iTerm2 探针确认 Allow 顺序为 `PermissionRequest → PostToolUse(Bash) → Stop → SessionEnd`：PermissionRequest 后 Attention API 为 1 并只播放一次 `Glass`，PostToolUse 到达时恢复为 0。取消路径在按 Esc 后没有即时 resolved Hook，下一次 `UserPromptSubmit` 到达时恢复为 0，随后为 `Stop → SessionEnd`。
 - 结构化追问真实探针确认 `PreToolUse(request_user_input) → PostToolUse(request_user_input) → Stop → SessionEnd`，菜单摘要为“Codex 等待回答”，回答后立即解除。当前 CLI 默认模式下该工具仍由 under-development feature 控制；Dora 只监听工具真实出现的结构化事件，不把普通问号或 final answer 识别为 waiting。
 - iTerm2 与 macOS Terminal 均从各自真实 Codex CLI 进程注册为独立 session，保存对应 exact TTY；两个测试窗口均按 exact TTY 关闭，未使用标题、cwd 或最近窗口回退。脱敏事件形状已保存到 `backend/internal/codexhooks/testdata/`，不含 prompt、回复、完整命令、凭证或真实 session ID。

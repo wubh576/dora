@@ -1378,6 +1378,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 - notified 与 resolved 分开记录。一次新 request 只发一次声音；点击菜单只跳转，不解决 request；重启不重放历史声音。
 - PermissionRequest 没有单独假设 resolved Hook：`PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。
 - 不能用几秒钟 timeout 盲目解除 waiting。缺失 `SessionEnd` 的异常残留以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。
+- Codex App `0.146.0-alpha.9.2` 实机探针确认全局 Hook 会产生 `SessionStart → UserPromptSubmit → Stop → SessionEnd`，且无 TTY 的 App 进程祖先会稳定识别为 `codex_app`；原始 thread ID 可直接用于 deep link。
 - Codex CLI `0.146.0` 实机探针确认：Allow 的事件顺序为 `PermissionRequest → PostToolUse → Stop`；TUI 按 Esc 取消后没有即时 resolved Hook，下一次 `UserPromptSubmit` 才解除 waiting；启用当前 CLI 的结构化提问能力后，顺序为 `PreToolUse(request_user_input) → PostToolUse(request_user_input) → Stop`。这三条真实边界作为状态机依据，不能用 UI 文案或自然语言猜测补齐事件。
 
 ### 25.2 Hook 生命周期与安全
