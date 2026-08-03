@@ -40,6 +40,7 @@ type RuntimeSession struct {
 	Provider          string
 	ExternalSessionID string
 	CWDBasename       string
+	SessionName       string
 	Model             string
 	Surface           string
 	TerminalKind      string

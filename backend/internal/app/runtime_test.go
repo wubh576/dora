@@ -183,6 +183,56 @@ type recordingAttentionStore struct {
 	marked   map[int64]bool
 }
 
+type fixedThreadTitleSource struct {
+	titles map[string]string
+	err    error
+}
+
+func (source fixedThreadTitleSource) Titles(_ context.Context, sessionIDs []string) (map[string]string, error) {
+	if source.err != nil {
+		return nil, source.err
+	}
+	result := make(map[string]string)
+	for _, sessionID := range sessionIDs {
+		if title := source.titles[sessionID]; title != "" {
+			result[sessionID] = title
+		}
+	}
+	return result, nil
+}
+
+func TestSyncRuntimeSessionTitlesCachesCurrentCodexName(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	event := domain.CodexHookEvent{
+		ExternalSessionID: "runtime-title", EventName: "UserPromptSubmit", CWDBasename: "dora",
+		Surface: domain.CodexSurfaceApp, PromptPreview: "用户请求", ReceivedAt: time.Now().UTC(),
+	}
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	source := fixedThreadTitleSource{titles: map[string]string{"runtime-title": "真实任务标题"}}
+	if err := syncRuntimeSessionTitles(ctx, store, source); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.SessionName != "真实任务标题" {
+		t.Fatalf("任务标题同步错误: %+v, %v", active, err)
+	}
+
+	if err := syncRuntimeSessionTitles(ctx, store, fixedThreadTitleSource{err: errors.New("state unavailable")}); err == nil {
+		t.Fatal("任务标题读取失败未返回错误")
+	}
+	active, err = store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.SessionName != "真实任务标题" {
+		t.Fatalf("读取失败破坏了缓存标题: %+v, %v", active, err)
+	}
+}
+
 func (store *recordingAttentionStore) ClaimUnnotifiedAttention(_ context.Context, _ time.Time) ([]domain.AttentionRequest, error) {
 	result := make([]domain.AttentionRequest, 0, len(store.requests))
 	for _, request := range store.requests {

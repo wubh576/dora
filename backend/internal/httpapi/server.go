@@ -280,7 +280,10 @@ func (s *server) runtimeSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	response := runtimeResponse{GeneratedAt: now.Format(time.RFC3339Nano), Sessions: make([]runtimeSessionResponse, 0, len(active))}
 	for _, item := range active {
-		name := item.Session.CWDBasename
+		name := item.Session.SessionName
+		if name == "" {
+			name = item.Session.CWDBasename
+		}
 		if name == "" {
 			name = "未命名会话"
 		}

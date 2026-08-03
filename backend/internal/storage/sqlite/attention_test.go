@@ -159,6 +159,38 @@ func TestRuntimeSessionsCombineRunningAndWaitingWithSafePreview(t *testing.T) {
 	}
 }
 
+func TestRuntimeSessionNameCacheFollowsSessionLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	event := attentionEvent("UserPromptSubmit", time.Now().UTC())
+	event.ExternalSessionID = "named-session"
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRuntimeSessionNames(ctx, map[string]string{
+		"named-session": "用户重命名的任务",
+		"missing":       "不应创建 session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.SessionName != "用户重命名的任务" {
+		t.Fatalf("runtime 标题缓存错误: %+v, %v", active, err)
+	}
+	event.EventName = "SessionEnd"
+	event.ReceivedAt = event.ReceivedAt.Add(time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RuntimeSession(ctx, active[0].Session.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("SessionEnd 后仍保留标题缓存: %v", err)
+	}
+}
+
 func TestRuntimeLifecycleOnlyShowsActiveTurns(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))

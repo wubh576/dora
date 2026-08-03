@@ -648,7 +648,8 @@ func TestOpenMigratesVersionSixWithoutLosingRuntimeSession(t *testing.T) {
 	if session.ExternalSessionID != "legacy-session" || session.CWDBasename != "dora" ||
 		session.Model != "gpt-test" || session.Surface != domain.CodexSurfaceCLI ||
 		session.TerminalKind != domain.TerminalITerm2 || session.TTY != "/dev/ttys001" ||
-		session.State != domain.RuntimeStateWaiting || !session.LastSeenAt.Equal(lastSeen) || session.PromptPreview != "" {
+		session.State != domain.RuntimeStateWaiting || !session.LastSeenAt.Equal(lastSeen) ||
+		session.PromptPreview != "" || session.SessionName != "" {
 		t.Fatalf("v6 runtime migration 破坏原记录: %+v", session)
 	}
 }

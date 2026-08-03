@@ -35,6 +35,7 @@ const (
 	FrontendOrigin      = "http://127.0.0.1:5173"
 	loopbackHost        = "127.0.0.1"
 	attentionInterval   = time.Second
+	threadTitleInterval = time.Second
 	staleCheckInterval  = time.Hour
 	runtimeSessionStale = 7 * 24 * time.Hour
 )
@@ -64,22 +65,24 @@ type Config struct {
 
 // Runtime 统一持有 HTTP、SQLite、扫描器和配额服务，serve 与 menubar 共用它。
 type Runtime struct {
-	address       string
-	initializedAt time.Time
-	server        *http.Server
-	listener      net.Listener
-	store         *dorasqlite.Store
-	scanner       *scan.Scanner
-	quota         *quota.Service
-	jump          *jump.Service
-	logger        Logger
-	ctx           context.Context
-	cancel        context.CancelFunc
-	errors        chan error
-	wg            sync.WaitGroup
-	closeOnce     sync.Once
-	attentionOnce sync.Once
-	closeErr      error
+	address        string
+	initializedAt  time.Time
+	server         *http.Server
+	listener       net.Listener
+	store          *dorasqlite.Store
+	scanner        *scan.Scanner
+	quota          *quota.Service
+	jump           *jump.Service
+	threadTitles   *codex.ThreadTitleReader
+	logger         Logger
+	ctx            context.Context
+	cancel         context.CancelFunc
+	errors         chan error
+	wg             sync.WaitGroup
+	closeOnce      sync.Once
+	attentionOnce  sync.Once
+	titleErrorOnce sync.Once
+	closeErr       error
 }
 
 func Start(parent context.Context, config Config) (*Runtime, error) {
@@ -106,8 +109,14 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		cancel()
 		return nil, fmt.Errorf("初始化 SQLite: %w", err)
 	}
+	threadTitles, titleErr := codex.OpenThreadTitleReader(ctx, config.CodexHomes)
+	if titleErr != nil {
+		config.Logger.Printf("Codex 任务标题读取不可用；运行列表将回退为项目名")
+		threadTitles = nil
+	}
 	cleanup := func() {
 		cancel()
+		_ = threadTitles.Close()
 		_ = store.Close()
 	}
 
@@ -185,6 +194,7 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		scanner:       scanner,
 		quota:         quotaService,
 		jump:          jump.New(jumpRunner),
+		threadTitles:  threadTitles,
 		logger:        config.Logger,
 		ctx:           ctx,
 		cancel:        cancel,
@@ -199,6 +209,10 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 	go runtime.scanLoop(ctx, config.ScanInterval)
 	go runtime.quotaLoop(ctx, config.ScanInterval)
 	go runtime.staleReconciliationLoop(ctx)
+	if threadTitles != nil {
+		runtime.wg.Add(1)
+		go runtime.threadTitleLoop(ctx)
+	}
 	if config.LogRotator != nil {
 		runtime.wg.Add(1)
 		go runtime.logRotationLoop(ctx, config.LogRotator)
@@ -278,7 +292,7 @@ func (r *Runtime) Close() error {
 		defer cancel()
 		shutdownErr := r.server.Shutdown(shutdownCtx)
 		r.wg.Wait()
-		r.closeErr = errors.Join(shutdownErr, r.store.Close())
+		r.closeErr = errors.Join(shutdownErr, r.threadTitles.Close(), r.store.Close())
 	})
 	return r.closeErr
 }
@@ -369,6 +383,50 @@ func (r *Runtime) staleReconciliationLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+type threadTitleSource interface {
+	Titles(context.Context, []string) (map[string]string, error)
+}
+
+func (r *Runtime) threadTitleLoop(ctx context.Context) {
+	defer r.wg.Done()
+	ticker := time.NewTicker(threadTitleInterval)
+	defer ticker.Stop()
+	for {
+		if err := syncRuntimeSessionTitles(ctx, r.store, r.threadTitles); err != nil && !backgroundStopped(ctx, err) {
+			r.titleErrorOnce.Do(func() {
+				r.logger.Printf("Codex 任务标题同步失败；运行列表将使用缓存标题或项目名")
+			})
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func syncRuntimeSessionTitles(ctx context.Context, store *dorasqlite.Store, source threadTitleSource) error {
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil {
+		return err
+	}
+	sessionIDs := make([]string, 0, len(active))
+	for _, item := range active {
+		sessionIDs = append(sessionIDs, item.Session.ExternalSessionID)
+	}
+	titles, err := source.Titles(ctx, sessionIDs)
+	if err != nil {
+		return err
+	}
+	updates := make(map[string]string)
+	for _, item := range active {
+		if title := titles[item.Session.ExternalSessionID]; title != "" && title != item.Session.SessionName {
+			updates[item.Session.ExternalSessionID] = title
+		}
+	}
+	return store.UpdateRuntimeSessionNames(ctx, updates)
 }
 
 type attentionStore interface {

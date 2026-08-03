@@ -252,6 +252,65 @@ func TestEmitterBoundsPromptBeforeLoopbackRequest(t *testing.T) {
 	}
 }
 
+func TestParseHookEventKeepsOnlyCodexAppUserRequest(t *testing.T) {
+	wrapped := `# Context from my IDE setup:
+
+## Active file: AGENTS.md
+
+# Files mentioned by the user:
+
+## screenshot.png
+
+## My request for Codex:
+改成跟随系统实际菜单栏高度？
+而且展示真正的用户 prompt。`
+	input := fmt.Sprintf(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":%q}`, wrapped)
+	event, err := parseHookEvent(strings.NewReader(input), Surface{Name: domain.CodexSurfaceApp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.PromptPreview != "改成跟随系统实际菜单栏高度？ 而且展示真正的用户 prompt。" {
+		t.Fatalf("Codex App 用户 prompt 提取错误: %q", event.PromptPreview)
+	}
+	for _, injected := range []string{"Context from my IDE", "AGENTS.md", "screenshot.png", "My request for Codex"} {
+		if strings.Contains(event.PromptPreview, injected) {
+			t.Fatalf("preview 保留了 Codex App 注入上下文 %q: %q", injected, event.PromptPreview)
+		}
+	}
+}
+
+func TestParseHookEventDoesNotInterpretCLIUserTextAsAppWrapper(t *testing.T) {
+	prompt := "说明下面这个标题：\n## My request for Codex:\n不要删掉前文"
+	input := fmt.Sprintf(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":%q}`, prompt)
+	event, err := parseHookEvent(strings.NewReader(input), Surface{Name: domain.CodexSurfaceCLI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.PromptPreview != "说明下面这个标题： ## My request for Codex: 不要删掉前文" {
+		t.Fatalf("CLI prompt 被当成 App 包装处理: %q", event.PromptPreview)
+	}
+}
+
+func TestParseHookEventKeepsMarkerQuotedInsideAppUserRequest(t *testing.T) {
+	wrapped := `# Context from my IDE setup:
+
+## Active file: AGENTS.md
+
+## My request for Codex:
+请解释这个包装标记：
+## My request for Codex:
+它为什么会出现？`
+	input := fmt.Sprintf(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":%q}`, wrapped)
+	event, err := parseHookEvent(strings.NewReader(input), Surface{Name: domain.CodexSurfaceApp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "请解释这个包装标记： ## My request for Codex: 它为什么会出现？"
+	if event.PromptPreview != want {
+		t.Fatalf("App 用户正文中的 marker 截断了请求: %q", event.PromptPreview)
+	}
+}
+
 func TestEmitterEndsOnlyVerifiedBackgroundPrompts(t *testing.T) {
 	for _, test := range []struct {
 		name      string

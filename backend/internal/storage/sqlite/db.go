@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const migrationVersion = 7
+const migrationVersion = 8
 
 type Store struct {
 	db     *sql.DB
@@ -112,6 +112,7 @@ func (s *Store) initialize(ctx context.Context) error {
 		migrateCacheCreationDurations,
 		migrateRuntimeAttention,
 		migrateRuntimePromptPreview,
+		migrateRuntimeSessionName,
 	}
 	for index, migration := range migrations {
 		version := index + 1
@@ -154,6 +155,11 @@ func (s *Store) initialize(ctx context.Context) error {
 
 func migrateRuntimePromptPreview(ctx context.Context, tx *sql.Tx, _ int64) error {
 	_, err := tx.ExecContext(ctx, "ALTER TABLE runtime_sessions ADD COLUMN prompt_preview TEXT NOT NULL DEFAULT ''")
+	return err
+}
+
+func migrateRuntimeSessionName(ctx context.Context, tx *sql.Tx, _ int64) error {
+	_, err := tx.ExecContext(ctx, "ALTER TABLE runtime_sessions ADD COLUMN session_name TEXT NOT NULL DEFAULT ''")
 	return err
 }
 

@@ -85,7 +85,9 @@ func TestRuntimeAPICombinesRunningAndWaitingWithoutPrivateIdentifiers(t *testing
 	}
 	defer store.Close()
 	now := time.Date(2026, 8, 2, 10, 30, 0, 0, time.UTC)
-	handler := NewHandler(store, Options{Now: func() time.Time { return now }})
+	handler := NewHandler(store, Options{
+		Now: func() time.Time { return now },
+	})
 	post := func(body string) {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/codex", strings.NewReader(body))
@@ -98,6 +100,11 @@ func TestRuntimeAPICombinesRunningAndWaitingWithoutPrivateIdentifiers(t *testing
 	}
 	post(`{"sessionId":"private-running","hookEvent":"UserPromptSubmit","cwdBasename":"/Users/private/work/dora","surface":"codex_app","promptPreview":"实现 灵动岛"}`)
 	post(`{"sessionId":"private-waiting","hookEvent":"PermissionRequest","cwdBasename":"/Users/private/work/other","surface":"codex_cli","terminalKind":"terminal","tty":"/dev/ttys999","toolName":"Bash","inputHash":"sha256:runtime"}`)
+	if err := store.UpdateRuntimeSessionNames(context.Background(), map[string]string{
+		"private-running": "修复菜单栏任务",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
@@ -113,8 +120,15 @@ func TestRuntimeAPICombinesRunningAndWaitingWithoutPrivateIdentifiers(t *testing
 		t.Fatalf("Runtime API 计数错误: %+v", payload)
 	}
 	if payload.Sessions[0].State != "waiting" || payload.Sessions[0].RequestID <= 0 || !payload.Sessions[0].Jumpable ||
-		payload.Sessions[1].PromptPreview != "实现 灵动岛" || !payload.Sessions[1].Jumpable {
+		payload.Sessions[1].SessionName != "修复菜单栏任务" || payload.Sessions[1].PromptPreview != "实现 灵动岛" || !payload.Sessions[1].Jumpable {
 		t.Fatalf("Runtime API session 错误: %+v", payload.Sessions)
+	}
+	active, err := store.RuntimeSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 2 || active[1].Session.SessionName != "修复菜单栏任务" {
+		t.Fatalf("Runtime API 未缓存任务标题: %+v", active)
 	}
 	for _, private := range []string{"private-running", "private-waiting", "/Users/private", "/dev/ttys999"} {
 		if strings.Contains(serialized, private) {

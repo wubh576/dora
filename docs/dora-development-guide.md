@@ -451,7 +451,7 @@ CREATE TABLE provider_state (
 
 Usage 数据不建立 session 表。Codex 和 Claude Code 的 usage session ID、父子关系与项目完整路径只允许在 parser/去重过程的内存中短暂存在，不得进入 usage SQLite、日志或 Diagnostics API；Diagnostics 只暴露聚合后的 session 数。
 
-Codex 实时提醒是独立边界：`runtime_sessions` 只保存仍在运行的 Codex external session ID、cwd basename、model、surface、受支持终端的 exact TTY、state 和 last seen；`attention_requests` 保存稳定事件 key、等待类型、精简摘要、提醒和解决时间。不得保存 prompt、回复、完整命令、工具输入、环境变量、transcript 路径或完整 cwd。`SessionEnd` 与确认跳转目标消失会删除 runtime session，历史 attention 只保留解决审计所需的最小字段。
+Codex 实时提醒是独立边界：`runtime_sessions` 只保存仍在运行的 Codex external session ID、cwd basename、清洗截断后的任务标题与用户 prompt preview、model、surface、受支持终端的 exact TTY、state 和 last seen；`attention_requests` 保存稳定事件 key、等待类型、精简摘要、提醒和解决时间。不得保存完整 prompt、回复、完整命令、工具输入、环境变量、transcript 路径或完整 cwd。`SessionEnd` 与确认跳转目标消失会删除包含标题缓存的 runtime session，历史 attention 只保留解决审计所需的最小字段。
 
 ## 8. 时间窗口必须统一
 
@@ -960,7 +960,7 @@ cache read / (input + cache read + cache creation)
       "provider": "provider.codex",
       "state": "waiting",
       "surface": "codex_app",
-      "sessionName": "dora",
+      "sessionName": "实现原生灵动岛",
       "promptPreview": "实现原生灵动岛",
       "lastSeenAt": "2026-08-02T11:59:55Z",
       "requestId": 12,
@@ -974,7 +974,7 @@ cache read / (input + cache read + cache creation)
 }
 ```
 
-会话名优先使用 Hook 可用的真实名称；当前 Codex Hook 没有提供独立 session title，因此回退为 cwd basename，再回退为“未命名会话”。不得读取 Codex 私有 cache 或用 AI 猜测名称。`jumpable` 由服务端根据 App thread ID 或受支持终端的 exact TTY 判断；不可跳转时返回不包含原始 thread ID/TTY 的 `jumpReason`，API 仍不得暴露这些定位值。
+会话名按 runtime 中已有的 external session ID，从每个 Codex home 的 `state_5.sqlite` `threads` 表只读获取用户重命名或自动生成的任务标题；标题清洗、截断后缓存到 Dora SQLite 的临时 `runtime_sessions` 记录，随 `SessionEnd` 或目标消失一起删除，不形成 session 浏览或管理能力。Codex 数据库缺失、结构不兼容或未命中时优先使用已缓存标题，再回退为 cwd basename 和“未命名会话”，不使用 AI 猜测名称。Codex App Hook 包装的 prompt 只提取精确标记 `## My request for Codex:` 之后的用户请求，再按既有规则压缩为最多 160 个 Unicode 字符的一行 preview；CLI 原始用户文本不套用该规则。`jumpable` 由服务端根据 App thread ID 或受支持终端的 exact TTY 判断；不可跳转时返回不包含原始 thread ID/TTY 的 `jumpReason`，API 仍不得暴露这些定位值。
 
 ## 17. 第一期运行方式
 

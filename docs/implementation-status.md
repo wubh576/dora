@@ -466,3 +466,18 @@
 - 将 Codex App 项目首页固定 `# Overview` Ambient Suggestions prompt 转换为最小 `SessionEnd` tombstone，避免其缺少 `Stop` 时长期显示为 running；只匹配 App surface 和已确认前缀，普通 App prompt、CLI 与其他事件保持原行为。
 - 本机异常记录来自一次 Codex App Server 探针：收到了 `SessionStart` 与 `UserPromptSubmit`，但探针退出时缺少 `Stop`/`SessionEnd`，旧版本将其永久保留为 running。其 App surface 与 thread ID 形状正常，点击 deep link 只能说明系统接受 URL，已结束的临时 thread 实际无法恢复。启动恢复现在将这类旧 running 立即归零，而不是等 7 天。
 - Code Review：分离自审修复了交互结束依赖 tracking-area enter、滚轮重复排入 interaction start、不可跳转原因错误色和 failure hold 提前清除问题；本次回归复审确认采样只在内外状态变化时通知状态机，不会触发周期性重绘，复审未发现剩余 P0/P1/P2/P3。
+
+## 里程碑 24：系统菜单栏边界与真实任务信息
+
+已完成：
+
+- compact 高度使用主屏实际菜单栏上下边界，自动隐藏时回退到安全区或系统菜单栏厚度；紧凑态关闭窗口阴影，文字和圆角随实际高度布局。
+- 运行列表按已有 external session ID 只读查询 Codex App `state_5.sqlite`，展示侧边栏一致的任务标题；清洗后的标题缓存到临时 runtime 记录并随 session 删除，读取失败时使用缓存或回退项目名。
+- Codex App Hook 只保留 `## My request for Codex:` 之后的真正用户请求作为 preview，不再展示 IDE、文件或浏览器注入上下文；CLI prompt 保持原始语义。
+
+验证记录：
+
+- 当前 Mac 使用临时 Dora SQLite 与真实 Codex `state_5.sqlite` 完成只读联调；Runtime API 返回与 Codex 侧边栏一致的中文任务标题，SQLite 确认缓存成功，`SessionEnd` 后 runtime 与标题缓存同时删除。
+- 自动测试覆盖真实标题与用户重命名优先级、空名称回退、Unicode 清洗与长度、缺失状态库、migration 8、后台同步失败保留缓存、Runtime API 隐私、App wrapper 与正文 marker 冲突、CLI prompt 保留和标题生命周期。
+- `make verify`、`go test -race ./...`、`go vet ./...`、原生 Objective-C/Go production build 与 `git diff --check` 通过；临时服务已关闭，18084 端口、临时 SQLite 和目录均已清理。
+- Code Review：独立 Reviewer 发现 App 正文重复 marker 会截断前文、控制字符名称不会回退原标题两个 P3；修复并补回归测试后复审通过，无剩余 P0/P1/P2/P3。

@@ -22,6 +22,7 @@ const (
 	DefaultEndpoint              = "http://127.0.0.1:8080/api/v1/hooks/codex"
 	maxInputBytes                = 256 << 10
 	codexAppOverviewPromptPrefix = "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:"
+	codexAppUserRequestMarker    = "## My request for Codex:"
 )
 
 var ErrServiceUnavailable = errors.New("Dora 服务不可用")
@@ -144,7 +145,7 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 		ToolUseID:    strings.TrimSpace(raw.ToolUseID),
 	}
 	if event.HookEvent == "UserPromptSubmit" {
-		event.PromptPreview = raw.Prompt
+		event.PromptPreview = userPrompt(raw.Prompt, surface)
 	}
 	if event.HookEvent == "PermissionRequest" {
 		if len(raw.ToolInput) == 0 {
@@ -176,4 +177,22 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 	event.ToolName = domainEvent.ToolName
 	event.PromptPreview = domainEvent.PromptPreview
 	return event, nil
+}
+
+func userPrompt(value string, surface Surface) string {
+	if surface.Name != domain.CodexSurfaceApp {
+		return value
+	}
+	offset := 0
+	requestStart := -1
+	for _, line := range strings.SplitAfter(value, "\n") {
+		offset += len(line)
+		if requestStart < 0 && strings.TrimSpace(line) == codexAppUserRequestMarker {
+			requestStart = offset
+		}
+	}
+	if requestStart >= 0 {
+		return value[requestStart:]
+	}
+	return value
 }

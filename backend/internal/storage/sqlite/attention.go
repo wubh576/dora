@@ -91,7 +91,7 @@ func (s *Store) RuntimeSessions(ctx context.Context) ([]domain.ActiveSession, er
 			GROUP BY runtime_session_id
 		)
 		SELECT
-			s.id, s.provider, s.external_session_id, s.cwd_basename, s.model,
+			s.id, s.provider, s.external_session_id, s.cwd_basename, s.session_name, s.model,
 			s.surface, s.terminal_kind, s.tty, s.state, s.prompt_preview, s.last_seen_at_ms,
 			r.id, r.event_key, r.kind, r.summary, r.turn_id, r.created_at_ms,
 			r.notified_at_ms, active.waiting_since, active.request_count
@@ -128,6 +128,7 @@ func (s *Store) RuntimeSessions(ctx context.Context) ([]domain.ActiveSession, er
 			&item.Session.Provider,
 			&item.Session.ExternalSessionID,
 			&item.Session.CWDBasename,
+			&item.Session.SessionName,
 			&item.Session.Model,
 			&item.Session.Surface,
 			&item.Session.TerminalKind,
@@ -315,7 +316,7 @@ func (s *Store) RuntimeSession(ctx context.Context, id int64) (domain.RuntimeSes
 	var session domain.RuntimeSession
 	var lastSeen int64
 	err := s.readDB.QueryRowContext(ctx, `
-		SELECT id, provider, external_session_id, cwd_basename, model,
+		SELECT id, provider, external_session_id, cwd_basename, session_name, model,
 			surface, terminal_kind, tty, state, prompt_preview, last_seen_at_ms
 		FROM runtime_sessions
 		WHERE id = ?
@@ -324,6 +325,7 @@ func (s *Store) RuntimeSession(ctx context.Context, id int64) (domain.RuntimeSes
 		&session.Provider,
 		&session.ExternalSessionID,
 		&session.CWDBasename,
+		&session.SessionName,
 		&session.Model,
 		&session.Surface,
 		&session.TerminalKind,
@@ -337,6 +339,30 @@ func (s *Store) RuntimeSession(ctx context.Context, id int64) (domain.RuntimeSes
 	}
 	session.LastSeenAt = time.UnixMilli(lastSeen).UTC()
 	return session, nil
+}
+
+func (s *Store) UpdateRuntimeSessionNames(ctx context.Context, names map[string]string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	err := s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
+		for externalSessionID, name := range names {
+			if externalSessionID == "" || name == "" {
+				continue
+			}
+			if _, err := conn.ExecContext(ctx, `
+				UPDATE runtime_sessions SET session_name = ?
+				WHERE provider = ? AND external_session_id = ? AND session_name != ?
+			`, name, domain.CodexSource, externalSessionID, name); err != nil {
+				return fmt.Errorf("更新 Codex runtime session 名称: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("保存 Codex runtime session 名称: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) RuntimeSessionState(ctx context.Context, externalSessionID string) (string, error) {
