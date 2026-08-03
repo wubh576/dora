@@ -187,8 +187,7 @@ func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 	runtimeVersion := controller.runtimeVersion
 	controller.operationStatus = ""
 	controller.mu.Unlock()
-	// 刷新期间保留展开态，便于直接查看进度和更新结果。
-	controller.machine.OperationStart()
+	// 刷新只更新数据，面板是否展开继续由鼠标和当前交互决定。
 	controller.publish()
 	go func() {
 		usageErr, quotaErr := controller.refresher.Refresh(ctx)
@@ -224,7 +223,6 @@ func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 		}
 		controller.setStatusLocked(status)
 		controller.mu.Unlock()
-		controller.machine.OperationEnd(usageErr == nil && quotaErr == nil && loadErr == nil && runtimeErr == nil)
 		controller.publish()
 	}()
 	return true

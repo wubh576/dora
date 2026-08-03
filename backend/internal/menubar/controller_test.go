@@ -200,7 +200,8 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 	loader := &fakeLoader{state: State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 2000}}}}
 	presented := make(chan View, 8)
 	controller := NewController(loader, refresher, "", func(view View) { presented <- view })
-	controller.SetPointerChecker(func() bool { return true })
+	pointerInside := true
+	controller.SetPointerChecker(func() bool { return pointerInside })
 	controller.UIInteraction(true)
 	if !controller.RefreshAsync(context.Background()) {
 		t.Fatal("首次 refresh 未启动")
@@ -212,8 +213,18 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 		t.Fatal("并发 refresh 被错误接受")
 	}
 	controller.UIInteraction(false)
-	if state := controller.machine.State(); state.Mode != ModeInteraction {
+	if state := controller.machine.State(); state.Mode != ModeHover {
 		t.Fatalf("被拒绝的重复刷新点击未保持展开: %+v", state)
+	}
+	pointerInside = false
+	controller.Hover(false)
+	collapseDeadline := time.After(time.Second)
+	for controller.machine.State().Mode != ModeCompact {
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-collapseDeadline:
+			t.Fatalf("刷新进行中鼠标离开后未收起: %+v", controller.machine.State())
+		}
 	}
 	close(refresher.release)
 	deadline := time.After(time.Second)
@@ -221,8 +232,8 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 		select {
 		case view := <-presented:
 			if view.Today == "今日 2K tokens" && view.OperationStatus == "token 已更新，配额刷新失败" {
-				if view.Mode != string(ModeInteraction) {
-					t.Fatalf("刷新失败后未重新展开: %+v", view)
+				if view.Mode != string(ModeCompact) {
+					t.Fatalf("鼠标已离开时刷新失败重新展开: %+v", view)
 				}
 				return
 			}
@@ -244,7 +255,7 @@ func TestControllerRefreshStaysExpandedUntilPointerLeavesAfterSuccess(t *testing
 	}
 	<-refresher.started
 	controller.UIInteraction(false)
-	if state := controller.machine.State(); state.Mode != ModeInteraction {
+	if state := controller.machine.State(); state.Mode != ModeHover {
 		t.Fatalf("刷新进行中未保持展开: %+v", state)
 	}
 	close(refresher.release)
