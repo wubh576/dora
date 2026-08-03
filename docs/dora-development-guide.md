@@ -1411,7 +1411,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 - 不能用几秒钟 timeout 盲目解除 waiting。Dora 启动时把上一进程遗留的 running 恢复为 idle，同时保留真正尚未解决的 waiting；缺失 `SessionEnd` 的 waiting 以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。
 - Codex App `0.146.0-alpha.9.2` 实机探针确认全局 Hook 会产生 `SessionStart → UserPromptSubmit → Stop → SessionEnd`，且无 TTY 的 App 进程祖先会稳定识别为 `codex_app`；原始 thread ID 可直接用于 deep link。
 - Codex App 项目首页会用固定 `# Overview` prompt 启动 Ambient Suggestions 后台任务，且当前可能只发送 `UserPromptSubmit`、不发送 `Stop`（`openai/codex#18541`）。该 Ambient Hook payload 暂无稳定的用户/后台来源字段，因此 helper 仅在 `codex_app + UserPromptSubmit + 已确认前缀` 同时匹配时把事件改写为无 prompt 的 `SessionEnd` tombstone，立即移除内部 runtime；CLI、普通 App prompt 和其他事件不受影响。
-- 可见 runtime 只由用户主动提交的 root prompt 启动。Codex 0.146.0 对 subagent Hook 提供可选 `agent_id`/`agent_type`；helper 遇到任一字段时把事件改写为无 prompt 的 `SessionEnd` tombstone。用户 turn 内的工具调用和推理不创建额外 session，后台任务的实际模型消耗仍进入 token 与费用统计。
+- 可见 runtime 只由用户主动提交的 root prompt 启动。Codex subagent Hook 的 `session_id` 仍指向父 session，`agent_id`/`agent_type` 才用于标识 subagent；helper 遇到任一非空 subagent 字段时直接成功忽略，不发送 loopback 事件，也不改变根 runtime 或 waiting request。用户 turn 内的工具调用和推理不创建额外 session，后台任务的实际模型消耗仍进入 token 与费用统计。
 - Codex CLI `0.146.0` 实机探针确认：Allow 的事件顺序为 `PermissionRequest → PostToolUse → Stop`；TUI 按 Esc 取消后没有即时 resolved Hook，下一次 `UserPromptSubmit` 才解除 waiting；启用当前 CLI 的结构化提问能力后，顺序为 `PreToolUse(request_user_input) → PostToolUse(request_user_input) → Stop`。这三条真实边界作为状态机依据，不能用 UI 文案或自然语言猜测补齐事件。
 
 ### 25.2 Hook 生命周期与安全

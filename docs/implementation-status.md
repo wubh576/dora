@@ -504,3 +504,15 @@
 
 - Snapshot API、菜单栏 Client/Model、四列 AppKit production build、`make verify`、`go test -race ./...`、`go vet ./...` 与 `git diff --check` 通过。
 - Code Review：独立 Reviewer 发现 README 漏写近 30 日、Snapshot fixture 无法区分 30D 与 ALL 两个 P3；补充文档和 `2026-07-01` 边界事件后复审通过，无剩余 P0/P1/P2/P3。
+
+## 里程碑 27：Subagent Hook 隔离
+
+已完成：
+
+- Codex helper 遇到非空 `agent_id` 或 `agent_type` 时返回成功 no-op，不再把父 session ID 改写为 `SessionEnd`，且不会发起 loopback HTTP 请求。
+- 同一父 session ID 的 subagent 事件不会删除 running 根 session、覆盖 prompt、解决 waiting request 或创建第二条 runtime session；真正的根 `SessionEnd` 保持原行为。
+
+验证记录：
+
+- Emitter 与 SQLite 定向测试及 race 回归测试、`git diff --check` 通过。
+- Code Review：独立 Reviewer 确认 `agent_id`/`agent_type` 均在 helper 出站前成功 no-op，同一父 session 的 running、waiting、prompt 与 request 不受影响，真正根 `SessionEnd` 和 Ambient Suggestions 过滤保持正常；无剩余 P0/P1/P2/P3。

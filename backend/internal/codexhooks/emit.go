@@ -25,7 +25,10 @@ const (
 	codexAppUserRequestMarker    = "## My request for Codex:"
 )
 
-var ErrServiceUnavailable = errors.New("Dora 服务不可用")
+var (
+	ErrServiceUnavailable = errors.New("Dora 服务不可用")
+	errSubagentEvent      = errors.New("忽略 Codex subagent 事件")
+)
 
 type eventSurfaceDetector interface {
 	Detect() Surface
@@ -52,6 +55,9 @@ func NewEmitter() *Emitter {
 
 func (emitter *Emitter) Emit(ctx context.Context, input io.Reader) error {
 	event, err := parseHookEvent(input, emitter.detector.Detect())
+	if errors.Is(err, errSubagentEvent) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -128,9 +134,8 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 		return attention.Event{}, errors.New("Codex Hook 事件缺少 session 或事件名")
 	}
 	if strings.TrimSpace(raw.AgentID) != "" || strings.TrimSpace(raw.AgentType) != "" {
-		// Subagent 由用户 turn 内部派生，不单独进入 Dora 的可见运行列表。
-		raw.HookEventName = "SessionEnd"
-		raw.Prompt = ""
+		// Subagent 复用根 session ID，任何状态事件都不能进入 Dora runtime。
+		return attention.Event{}, errSubagentEvent
 	}
 	event := attention.Event{
 		SessionID:    raw.SessionID,

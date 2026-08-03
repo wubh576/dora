@@ -316,7 +316,6 @@ func TestEmitterEndsOnlyVerifiedBackgroundPrompts(t *testing.T) {
 		name      string
 		surface   Surface
 		prompt    string
-		agentJSON string
 		eventName string
 	}{
 		{
@@ -327,14 +326,6 @@ func TestEmitterEndsOnlyVerifiedBackgroundPrompts(t *testing.T) {
 		{
 			name: "Codex App user prompt", surface: Surface{Name: domain.CodexSurfaceApp},
 			prompt: "帮我修复菜单栏", eventName: "UserPromptSubmit",
-		},
-		{
-			name: "Codex App subagent prompt", surface: Surface{Name: domain.CodexSurfaceApp},
-			prompt: "运行测试", agentJSON: `,"agent_id":"child-1","agent_type":"worker"`, eventName: "SessionEnd",
-		},
-		{
-			name: "CLI subagent prompt", surface: Surface{Name: domain.CodexSurfaceCLI},
-			prompt: "检查实现", agentJSON: `,"agent_id":"child-2"`, eventName: "SessionEnd",
 		},
 		{
 			name: "CLI same prefix", surface: Surface{Name: domain.CodexSurfaceCLI},
@@ -356,7 +347,7 @@ func TestEmitterEndsOnlyVerifiedBackgroundPrompts(t *testing.T) {
 				})},
 				detector: fixedDetector{surface: test.surface},
 			}
-			input := fmt.Sprintf(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":%q%s}`, test.prompt, test.agentJSON)
+			input := fmt.Sprintf(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":%q}`, test.prompt)
 			if err := emitter.Emit(context.Background(), strings.NewReader(input)); err != nil {
 				t.Fatal(err)
 			}
@@ -375,48 +366,97 @@ func TestEmitterEndsOnlyVerifiedBackgroundPrompts(t *testing.T) {
 }
 
 func TestBackgroundPromptsRemoveRegisteredRuntimeSession(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		prompt string
-	}{
-		{
-			name:   "Ambient Suggestions",
-			prompt: `{"session_id":"background","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"# Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/dora"}`,
-		},
-		{
-			name:   "subagent",
-			prompt: `{"session_id":"background","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"运行测试","agent_id":"child-1","agent_type":"worker"}`,
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ctx := context.Background()
-			store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	t.Run("Ambient Suggestions", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
+		apply := func(raw string, at time.Time) {
+			t.Helper()
+			event, err := parseHookEvent(strings.NewReader(raw), Surface{Name: domain.CodexSurfaceApp})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer store.Close()
-			now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
-			apply := func(raw string, at time.Time) {
-				t.Helper()
-				event, err := parseHookEvent(strings.NewReader(raw), Surface{Name: domain.CodexSurfaceApp})
-				if err != nil {
-					t.Fatal(err)
-				}
-				event = normalizeCodexAppBackgroundEvent(event)
-				domainEvent, err := event.Domain(at)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.ApplyCodexHookEvent(ctx, domainEvent); err != nil {
-					t.Fatal(err)
-				}
+			event = normalizeCodexAppBackgroundEvent(event)
+			domainEvent, err := event.Domain(at)
+			if err != nil {
+				t.Fatal(err)
 			}
-			apply(`{"session_id":"background","cwd":"/tmp/dora","hook_event_name":"SessionStart"}`, now)
-			apply(test.prompt, now.Add(time.Second))
-			if _, err := store.RuntimeSessionState(ctx, "background"); !errors.Is(err, sql.ErrNoRows) {
-				t.Fatalf("后台 runtime 未被移除: %v", err)
+			if _, err := store.ApplyCodexHookEvent(ctx, domainEvent); err != nil {
+				t.Fatal(err)
 			}
-		})
+		}
+		apply(`{"session_id":"background","cwd":"/tmp/dora","hook_event_name":"SessionStart"}`, now)
+		apply(`{"session_id":"background","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"# Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/dora"}`, now.Add(time.Second))
+		if _, err := store.RuntimeSessionState(ctx, "background"); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("后台 runtime 未被移除: %v", err)
+		}
+	})
+}
+
+func TestEmitterIgnoresSubagentEventsWithoutChangingRootSession(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var requests atomic.Int64
+	emitter := &Emitter{
+		endpoint: "http://127.0.0.1:8080/api/v1/hooks/codex",
+		client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requests.Add(1)
+			var event attention.Event
+			if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
+				return nil, err
+			}
+			domainEvent, err := event.Domain(time.Date(2026, 8, 3, 4, 0, int(requests.Load()), 0, time.UTC))
+			if err != nil {
+				return nil, err
+			}
+			if _, err := store.ApplyCodexHookEvent(ctx, domainEvent); err != nil {
+				return nil, err
+			}
+			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
+		})},
+		detector: fixedDetector{surface: Surface{Name: domain.CodexSurfaceApp}},
+	}
+	emit := func(value string) {
+		t.Helper()
+		if err := emitter.Emit(ctx, strings.NewReader(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const sessionID = "root-session"
+	emit(`{"session_id":"root-session","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"实现根任务"}`)
+	emit(`{"session_id":"root-session","cwd":"/tmp/dora","hook_event_name":"SessionEnd","agent_id":"child-1"}`)
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.ExternalSessionID != sessionID ||
+		active[0].Session.State != domain.RuntimeStateRunning || active[0].Session.PromptPreview != "实现根任务" {
+		t.Fatalf("subagent 事件破坏 running 根 session: %+v, %v", active, err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("subagent 事件发起了 loopback 请求: %d", requests.Load())
+	}
+
+	emit(`{"session_id":"root-session","turn_id":"turn-1","cwd":"/tmp/dora","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_use_id":"call-1","tool_input":{"command":"make verify"}}`)
+	emit(`{"session_id":"root-session","cwd":"/tmp/dora","hook_event_name":"Stop","agent_type":"explorer"}`)
+	active, err = store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateWaiting ||
+		active[0].Session.PromptPreview != "实现根任务" || active[0].RequestCount != 1 || active[0].Latest == nil {
+		t.Fatalf("subagent 事件破坏 waiting 根 session: %+v, %v", active, err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("waiting 期间 subagent 事件发起了 loopback 请求: %d", requests.Load())
+	}
+
+	emit(`{"session_id":"root-session","cwd":"/tmp/dora","hook_event_name":"SessionEnd"}`)
+	if _, err := store.RuntimeSessionState(ctx, sessionID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("真正的根 SessionEnd 未删除 session: %v", err)
 	}
 }
 
