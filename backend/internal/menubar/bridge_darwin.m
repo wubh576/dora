@@ -409,10 +409,12 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 @implementation DoraIslandPanel
 - (BOOL)canBecomeKeyWindow { return NO; }
 - (BOOL)canBecomeMainWindow { return NO; }
+- (void)doraDispatchEventToAppKit:(NSEvent *)event { [super sendEvent:event]; }
 - (void)sendEvent:(NSEvent *)event {
-    if (event.type == NSEventTypeLeftMouseDown) doraIslandOnEvent(7, 0);
-    [super sendEvent:event];
-    if (event.type == NSEventTypeLeftMouseUp) doraIslandOnEvent(8, 0);
+    DoraDispatchInteractionEvent(event.type,
+        ^{ doraIslandOnEvent(7, 0); },
+        ^{ [self doraDispatchEventToAppKit:event]; },
+        ^{ doraIslandOnEvent(8, 0); });
 }
 - (void)doraRefresh:(id)sender { doraIslandOnEvent(3, 0); }
 - (void)doraOpen:(id)sender { doraIslandOnEvent(4, 0); }

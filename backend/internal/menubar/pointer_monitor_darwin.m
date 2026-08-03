@@ -14,6 +14,24 @@ BOOL DoraUpdatePointerState(BOOL *known, BOOL *inside, BOOL nextInside) {
     return YES;
 }
 
+static BOOL DoraMouseEventBeginsInteraction(NSEventType type) {
+    return type == NSEventTypeLeftMouseDown;
+}
+
+static BOOL DoraMouseEventEndsInteractionAfterDispatch(NSEventType type) {
+    // NSControl 可能在 mouseDown 的 tracking loop 内消费 mouseUp，必须在分发返回后结束交互。
+    return type == NSEventTypeLeftMouseDown || type == NSEventTypeLeftMouseUp;
+}
+
+void DoraDispatchInteractionEvent(NSEventType type,
+                                  DoraInteractionEventBlock begin,
+                                  DoraInteractionEventBlock dispatch,
+                                  DoraInteractionEventBlock end) {
+    if (DoraMouseEventBeginsInteraction(type)) begin();
+    dispatch();
+    if (DoraMouseEventEndsInteractionAfterDispatch(type)) end();
+}
+
 @interface DoraPointerMonitorManager ()
 @property(nonatomic, copy) DoraPointerSampleBlock sampler;
 @property(nonatomic, strong, readwrite) id localMonitor;

@@ -60,6 +60,21 @@ int main(void) {
                        "pointer monitor unexpectedly listens for keyboard events")) return 1;
         if (doraAssert(DoraPointerEventMask() == requiredMouseEvents,
                        "pointer event mask helper differs from the required mouse events")) return 1;
+        NSMutableString *interactionOrder = [NSMutableString string];
+        DoraInteractionEventBlock begin = ^{ [interactionOrder appendString:@"start "]; };
+        DoraInteractionEventBlock dispatch = ^{ [interactionOrder appendString:@"dispatch "]; };
+        DoraInteractionEventBlock end = ^{ [interactionOrder appendString:@"end "]; };
+        DoraDispatchInteractionEvent(NSEventTypeLeftMouseDown, begin, dispatch, end);
+        if (doraAssert([interactionOrder isEqualToString:@"start dispatch end "],
+                       "mouse down does not bracket the full AppKit control tracking loop")) return 1;
+        [interactionOrder setString:@""];
+        DoraDispatchInteractionEvent(NSEventTypeLeftMouseUp, begin, dispatch, end);
+        if (doraAssert([interactionOrder isEqualToString:@"dispatch end "],
+                       "standalone mouse up is not retained as an interaction-end fallback")) return 1;
+        [interactionOrder setString:@""];
+        DoraDispatchInteractionEvent(NSEventTypeMouseMoved, begin, dispatch, end);
+        if (doraAssert([interactionOrder isEqualToString:@"dispatch "],
+                       "mouse movement unexpectedly changes interaction state")) return 1;
 
         NSEvent *event = (NSEvent *)[NSObject new];
         if (doraAssert(monitor.localHandler(event) == event, "local pointer monitor swallowed or replaced its event")) return 1;

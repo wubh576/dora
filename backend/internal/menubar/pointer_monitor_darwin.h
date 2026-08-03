@@ -1,9 +1,14 @@
 #import <Cocoa/Cocoa.h>
 
 typedef void (^DoraPointerSampleBlock)(void);
+typedef void (^DoraInteractionEventBlock)(void);
 
 NSEventMask DoraPointerEventMask(void);
 BOOL DoraUpdatePointerState(BOOL *known, BOOL *inside, BOOL nextInside);
+void DoraDispatchInteractionEvent(NSEventType type,
+                                  DoraInteractionEventBlock begin,
+                                  DoraInteractionEventBlock dispatch,
+                                  DoraInteractionEventBlock end);
 
 @interface DoraPointerMonitorManager : NSObject <NSAnimationDelegate>
 @property(nonatomic, strong, readonly) id localMonitor;

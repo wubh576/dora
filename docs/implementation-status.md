@@ -562,10 +562,12 @@
 已完成：
 
 - 修正里程碑 30 对刷新按钮的交互定义：刷新是面板内的数据操作，只在鼠标仍位于面板内时保持展开并展示“刷新中”和最终结果；刷新不再作为强制展开理由，鼠标离开整个面板后即按统一延迟收起，不等待后台刷新完成，失败结果也不会重新展开面板。
+- 修复原生按钮 tracking loop 吞掉独立 `mouseUp` 后 interaction 永久残留的问题：`NSPanel` 现在从 `mouseDown` 分发前到分发返回后完整包住交互，随后主动结束 interaction，并保留独立 `mouseUp` 兜底。刷新、跳转失败和不可跳转说明均不会再因一次按钮点击而永久展开。
 - 打开仪表盘是离开 Dora 的跳转动作，成功交给浏览器后仍立即收起；两类按钮不再共享相同的收起策略。
 
 验证记录：
 
 - controller 测试覆盖完整 mouse-down/action/mouse-up 顺序、刷新进行中离开后 450 ms 收起、部分失败完成后不重新展开、新 attention 和 single-flight 重复点击；仪表盘成功和失败路径保持原覆盖。
+- 原生测试固定 `mouseDown → AppKit 分发 → interaction end` 的 tracking-loop 边界，并确认独立 `mouseUp` 仍会结束交互、普通鼠标移动不会改变 interaction。
 - `make verify`、`go vet ./...`、菜单栏 race 测试与 `git diff --check` 通过；独立 Code Review 确认无 P0/P1/P2/P3。
-- 当前 Mac 的 production 构建已重新安装，LaunchAgent 健康检查通过；Dora 没有独立 App bundle，桌面辅助功能无法可靠定位其原生 panel，因此未把不确定的坐标点击写成验收通过。
+- 当前 Mac 使用同一 production 二进制的临时 App bundle 完成可见面板和刷新动作检查，刷新完成后的部分失败状态正常显示，attention 结束后恢复紧凑态；自动化合成指针不能替代真实物理鼠标离开，因此只把生产实际调用的原生 interaction 分发测试与 controller 离开延迟测试计入该边界的自动验收。临时进程、18085 端口、SQLite、Agent home 和 App bundle 已清理。
