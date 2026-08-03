@@ -1,10 +1,25 @@
 package menubar
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestBuildViewAlwaysSerializesSessionsAsArray(t *testing.T) {
+	view := BuildView(nil, MachineState{Mode: ModeCompact}, testScreen(), time.Now(), false, "")
+	if view.Sessions == nil {
+		t.Fatal("空 runtime 的 sessions 不应为 nil")
+	}
+	payload, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("序列化菜单栏视图: %v", err)
+	}
+	if !strings.Contains(string(payload), `"sessions":[]`) {
+		t.Fatalf("空 sessions 未序列化为数组: %s", payload)
+	}
+}
 
 func TestBuildViewShowsWaitingBeforeRunningAndSafePreview(t *testing.T) {
 	state := &State{

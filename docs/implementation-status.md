@@ -450,7 +450,7 @@
 已完成：
 
 - compact 与 expanded 共用一个持久 `NSPanel`，顶边精确贴合主屏幕顶部，上角保持直角、下角保留圆角；compact 固定为 `360 × 40pt`，只显示 Dora 与今日 token。
-- AppKit 主线程每 50ms 比较鼠标与当前 panel frame，只在内外状态变化时通知状态机；配合 100ms hover intent，进入后最迟约 150ms 展开。展开后只要鼠标仍在整个区域内就保持展开；离开后延迟 450ms 收起，收起和 attention timer 到期时仍会复查鼠标位置。
+- 内容 tracking area、local/global mouse monitor 与 frame 变化后单次采样共同判断鼠标是否位于 panel；鼠标静止时不做固定频率轮询，且只在内外状态变化时通知状态机。配合 100ms hover intent，进入后约 100–150ms 展开；离开后延迟 450ms 收起，收起和 attention 延迟到期时仍会复查鼠标位置。
 - 成功跳转后主动清除所有展开理由并立即收起，在鼠标真正离开前抑制同一次点击的迟到 mouse-up/hover；跳转失败仍保持展开以显示真实原因。
 - AppKit 视图树和 session 行按稳定 ID 增量更新，保留滚动位置；每秒 runtime 刷新不再反复重建子视图、调用 `orderFrontRegardless` 或为相同 frame 启动动画。
 - `SessionStart` 只注册 idle，`UserPromptSubmit` 才进入 running；`PostToolUse` 不会复活已结束 turn，`Stop` 清理 preview 并回到 idle，`SessionEnd` 删除记录。启动时将旧 running 恢复为 idle，同时保留 waiting。
@@ -462,10 +462,10 @@
 - `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check` 通过；前端 TypeScript/Vite 与原生 Objective-C/Go production build 通过。
 - 当前 Mac 的真实 LaunchAgent 已覆盖本次构建；WindowServer 实测 compact 为 `360 × 40pt`、expanded 为 `760 × 520pt`，两种状态的顶边均为屏幕 `Y=0`。真实截图确认上角直角、下角圆角和连续深色容器。
 - 使用同一 production 二进制的临时 App bundle 完成辅助功能交互验收：panel 内持续操作超过 90 秒没有误收起或闪烁，列表滚动值完成 `0 → 1 → 0`，在多次每秒 runtime 刷新后保持原滚动位置；不可跳转行、底部刷新和真实 Codex App 行点击均返回可读结果。验收后进程、18083 端口、临时数据库和 App bundle 已清理。
-- 修复贴顶 compact 偶发收不到 tracking-area enter 的回归：新增基于真实 `NSEvent.mouseLocation` 的 50ms 边界采样；自动测试、Objective-C production build 与真实 LaunchAgent 启动均通过。
+- 修复贴顶 compact 偶发收不到 tracking-area enter 的回归：使用真实 `NSEvent.mouseLocation`、1pt 顶边容错、local/global mouse monitor 和 frame 完成后的单次采样保持可靠展开；自动测试、Objective-C production build 与真实 LaunchAgent 启动均通过。
 - 将 Codex App 项目首页固定 `# Overview` Ambient Suggestions prompt 转换为最小 `SessionEnd` tombstone，避免其缺少 `Stop` 时长期显示为 running；只匹配 App surface 和已确认前缀，普通 App prompt、CLI 与其他事件保持原行为。
 - 本机异常记录来自一次 Codex App Server 探针：收到了 `SessionStart` 与 `UserPromptSubmit`，但探针退出时缺少 `Stop`/`SessionEnd`，旧版本将其永久保留为 running。其 App surface 与 thread ID 形状正常，点击 deep link 只能说明系统接受 URL，已结束的临时 thread 实际无法恢复。启动恢复现在将这类旧 running 立即归零，而不是等 7 天。
-- Code Review：分离自审修复了交互结束依赖 tracking-area enter、滚轮重复排入 interaction start、不可跳转原因错误色和 failure hold 提前清除问题；本次回归复审确认采样只在内外状态变化时通知状态机，不会触发周期性重绘，复审未发现剩余 P0/P1/P2/P3。
+- Code Review：分离自审修复了交互结束依赖 tracking-area enter、滚轮重复排入 interaction start、不可跳转原因错误色和 failure hold 提前清除问题；pointer 事件源后续改为事件驱动并继续只在内外状态变化时通知状态机，不会触发周期性重绘。
 
 ## 里程碑 24：系统菜单栏边界与真实任务信息
 
@@ -528,3 +528,17 @@
 
 - 原始 Hook JSON 到 SQLite 的端到端测试、attention/domain、SQLite、HTTP API、app 定向测试及 race 回归测试、`git diff --check` 通过。
 - Code Review：独立 Reviewer 确认 source 传递链路完整，compact 只更新非空定位元数据与 `last_seen_at`，不会改变状态、prompt、request 或提醒；普通和未知 source 兼容行为保持正常，无剩余 P0/P1/P2/P3。
+
+## 里程碑 29：事件驱动的鼠标状态
+
+已完成：
+
+- 移除常驻的 50ms pointer timer，保留内容 tracking area，并用 local/global `NSEvent` mouse monitor 覆盖 Dora 内外的鼠标移动与拖动；local monitor 原样返回事件，不监听键盘或申请新权限。
+- panel 首次显示、非动画 frame 应用和 frame 动画真实完成后单次采样当前位置；1pt 顶边容错与 Go 状态机按需最终复查保持不变。
+- local/global monitor 只安装一组，停止时安全移除；连续 mouse-moved 的 inside 状态不变时不跨 C/Go 边界，不触发相同 frame 动画或周期性重绘。
+
+验证记录：
+
+- 原生测试覆盖 local/global monitor 生命周期、四类 mouse event mask、local event 原样返回、状态去重，以及首显、立即 frame、屏幕变化和动画完成后的采样边界；空 runtime 的 `sessions` JSON 契约固定为 `[]`，避免 AppKit 首次采样收到 `NSNull`。
+- 当前 Mac 的真实 LaunchAgent 已覆盖本次 production 构建：从左、右、下方累计完成 20 次进入/离开，并完成 4 条按住鼠标拖入/拖出路径；控制条持续存活，离开后恢复紧凑态，未出现新权限弹窗。连续 CPU 采样除一次既有数据刷新峰值外为 `0.0%`～`3.4%`，没有固定 20Hz pointer 唤醒。
+- `make verify`、`go vet ./...`、菜单栏 race 测试与 `git diff --check` 通过；独立 Code Review 的首轮两个问题均已修复，复审确认无剩余 P0/P1/P2/P3。

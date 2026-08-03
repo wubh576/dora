@@ -1,4 +1,4 @@
-.PHONY: install dev backend frontend scan quota test build verify
+.PHONY: install dev backend frontend scan quota test native-test build verify
 
 FRONTEND_DIST := frontend/dist
 WEB_ASSET_STAGE := backend/internal/webassets/dist
@@ -30,6 +30,17 @@ quota:
 test:
 	go -C backend test ./...
 
+native-test:
+	@set -e; \
+		native_test_binary=$$(mktemp /private/tmp/dora-pointer-monitor-test.XXXXXX); \
+		trap 'rm -f "$$native_test_binary"' EXIT; \
+		xcrun clang -fobjc-arc -Wall -Wextra -Werror -framework Cocoa \
+			-I backend/internal/menubar \
+			backend/internal/menubar/pointer_monitor_darwin.m \
+			backend/internal/menubar/testdata/pointer_monitor_test.m \
+			-o "$$native_test_binary"; \
+		"$$native_test_binary"
+
 build:
 	rm -rf $(FRONTEND_DIST) $(WEB_ASSET_STAGE)
 	rm -f $(BINARY)
@@ -40,4 +51,4 @@ build:
 		cp -R $(FRONTEND_DIST)/. $(WEB_ASSET_STAGE)/; \
 		go -C backend build -tags production -ldflags "$(BUILD_LDFLAGS)" -o ../$(BINARY) ./cmd/dora
 
-verify: test build
+verify: test native-test build

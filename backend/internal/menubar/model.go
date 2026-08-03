@@ -70,6 +70,7 @@ func BuildView(state *State, machine MachineState, screen ScreenMetrics, now tim
 		Status: "正在连接本地服务", Refreshing: refreshing,
 		HighlightSessionID: machine.HighlightSessionID,
 		HighlightRequestID: machine.HighlightRequestID,
+		Sessions:           []SessionRow{},
 	}
 	if state != nil {
 		view.WaitingCount = state.Runtime.WaitingCount

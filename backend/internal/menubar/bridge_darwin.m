@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import "pointer_monitor_darwin.h"
 
 extern void doraIslandOnEvent(int kind, long long value);
 extern void doraIslandOnScreen(double x, double y, double width, double height,
@@ -9,11 +10,10 @@ extern void doraIslandOnScreen(double x, double y, double width, double height,
 static DoraIslandPanel *doraPanel;
 static id doraScreenObserver;
 static NSViewAnimation *doraFrameAnimation;
-static NSTimer *doraPointerTimer;
+static DoraPointerMonitorManager *doraPointerMonitor;
 static long long doraLastScrolledRequestID;
 static BOOL doraPointerKnown;
 static BOOL doraPointerInside;
-static const NSTimeInterval doraPointerSampleInterval = 0.05;
 
 static BOOL doraCurrentPointerInside(void);
 static void doraPublishPointerState(BOOL inside);
@@ -281,7 +281,8 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     [super updateTrackingAreas];
     if (self.doraTrackingArea != nil) [self removeTrackingArea:self.doraTrackingArea];
     self.doraTrackingArea = [[NSTrackingArea alloc]
-        initWithRect:NSZeroRect options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect
+        initWithRect:NSZeroRect options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways |
+        NSTrackingInVisibleRect | NSTrackingEnabledDuringMouseDrag
         owner:self userInfo:nil];
     [self addTrackingArea:self.doraTrackingArea];
 }
@@ -427,9 +428,7 @@ static BOOL doraCurrentPointerInside(void) {
 }
 
 static void doraPublishPointerState(BOOL inside) {
-    if (doraPointerKnown && doraPointerInside == inside) return;
-    doraPointerKnown = YES;
-    doraPointerInside = inside;
+    if (!DoraUpdatePointerState(&doraPointerKnown, &doraPointerInside, inside)) return;
     doraIslandOnEvent(inside ? 1 : 2, 0);
 }
 
@@ -476,6 +475,7 @@ static void doraApplyView(NSDictionary *view) {
     if (!targetChanged) return;
 
     if (doraFrameAnimation != nil) {
+        doraFrameAnimation.delegate = nil;
         [doraFrameAnimation stopAnimation];
         doraFrameAnimation = nil;
     }
@@ -483,6 +483,7 @@ static void doraApplyView(NSDictionary *view) {
     if (!animate) {
         [doraPanel setFrame:target display:YES];
         doraPanel.hasPresented = YES;
+        [doraPointerMonitor panelDidApplyFrame];
         return;
     }
     NSDictionary *animation = @{
@@ -495,6 +496,7 @@ static void doraApplyView(NSDictionary *view) {
     doraFrameAnimation.animationCurve = NSAnimationEaseInOut;
     doraFrameAnimation.animationBlockingMode = NSAnimationNonblocking;
     doraFrameAnimation.frameRate = 60;
+    doraFrameAnimation.delegate = doraPointerMonitor;
     [doraFrameAnimation startAnimation];
 }
 
@@ -521,14 +523,18 @@ void doraIslandStart(void) {
     doraPanel.contentView = doraPanel.islandContent;
     doraScreenObserver = [NSNotificationCenter.defaultCenter
         addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue
-        usingBlock:^(NSNotification *note) { doraSendScreen(); }];
-    [doraPanel orderFrontRegardless];
+        usingBlock:^(NSNotification *note) {
+            (void)note;
+            doraSendScreen();
+            [doraPointerMonitor screenParametersDidChange];
+        }];
     doraPointerKnown = NO;
-    doraPointerTimer = [NSTimer timerWithTimeInterval:doraPointerSampleInterval repeats:YES block:^(NSTimer *timer) {
+    doraPointerMonitor = [[DoraPointerMonitorManager alloc] initWithSampler:^{
         doraSamplePointer();
     }];
-    [NSRunLoop.mainRunLoop addTimer:doraPointerTimer forMode:NSRunLoopCommonModes];
-    doraSamplePointer();
+    [doraPointerMonitor start];
+    [doraPanel orderFrontRegardless];
+    [doraPointerMonitor panelDidFirstAppear];
     doraSendScreen();
     [NSApp run];
 }
@@ -563,11 +569,12 @@ void doraIslandStop(void) {
             doraScreenObserver = nil;
         }
         if (doraFrameAnimation != nil) {
+            doraFrameAnimation.delegate = nil;
             [doraFrameAnimation stopAnimation];
             doraFrameAnimation = nil;
         }
-        [doraPointerTimer invalidate];
-        doraPointerTimer = nil;
+        [doraPointerMonitor stop];
+        doraPointerMonitor = nil;
         doraPointerKnown = NO;
         [doraPanel close];
         doraPanel = nil;
