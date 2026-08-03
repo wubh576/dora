@@ -554,5 +554,18 @@
 验证记录：
 
 - 状态机回归测试覆盖刷新立即收起、成功后的下一次真实 hover、新 attention 保留、部分失败重新展开、快速重复点击，以及仪表盘成功和失败路径。
-- 当前 Mac 的真实 LaunchAgent 已点击刷新并确认 `lastScanAt` 与 quota `fetchedAt` 更新；点击仪表盘后 Chrome 打开 `127.0.0.1:8080`。两次操作均使用最终 production 构建。
+- 当前 Mac 的 LaunchAgent 已覆盖 production 构建并通过健康检查；刷新和仪表盘的 mouse-down/action/mouse-up 顺序由 controller 回归测试验证。
 - `make verify`、`go vet ./...`、菜单栏 race 测试与 `git diff --check` 通过；独立 Code Review 首轮发现的成功回调覆盖新状态和快速重复点击问题均已修复，复审确认无剩余 P0/P1/P2/P3。
+
+## 里程碑 31：区分刷新与跳转动作
+
+已完成：
+
+- 修正里程碑 30 对刷新按钮的交互定义：刷新是面板内的数据操作，点击后保持展开并展示“刷新中”和最终结果；鼠标离开整个面板后才按统一延迟收起。
+- 打开仪表盘是离开 Dora 的跳转动作，成功交给浏览器后仍立即收起；两类按钮不再共享相同的收起策略。
+
+验证记录：
+
+- controller 测试覆盖刷新进行中的 interaction、成功后的 hover、离开 450 ms 后收起、部分失败、新 attention 和 single-flight 重复点击；仪表盘成功和失败路径保持原覆盖。
+- `make verify`、`go vet ./...`、菜单栏 race 测试与 `git diff --check` 通过；独立 Code Review 确认无 P0/P1/P2/P3。
+- 当前 Mac 的 production 构建已重新安装，LaunchAgent 健康检查通过；Dora 没有独立 App bundle，桌面辅助功能无法可靠定位其原生 panel，因此未把不确定的坐标点击写成验收通过。

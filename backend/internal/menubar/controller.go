@@ -175,14 +175,8 @@ func (controller *Controller) LoadRuntimeAsync(ctx context.Context) bool {
 
 func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 	controller.mu.Lock()
-	if controller.stopped {
+	if controller.refreshing || controller.stopped {
 		controller.mu.Unlock()
-		return false
-	}
-	if controller.refreshing {
-		controller.mu.Unlock()
-		// 极快的重复点击即使被 single-flight 拒绝，也要结束本次菜单交互。
-		controller.machine.Dismiss()
 		return false
 	}
 	controller.refreshing = true
@@ -193,8 +187,8 @@ func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 	runtimeVersion := controller.runtimeVersion
 	controller.operationStatus = ""
 	controller.mu.Unlock()
-	// 菜单动作接受后立即收起；失败时再展开显示可操作的原因。
-	controller.machine.Dismiss()
+	// 刷新期间保留展开态，便于直接查看进度和更新结果。
+	controller.machine.OperationStart()
 	controller.publish()
 	go func() {
 		usageErr, quotaErr := controller.refresher.Refresh(ctx)
@@ -230,9 +224,7 @@ func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 		}
 		controller.setStatusLocked(status)
 		controller.mu.Unlock()
-		if usageErr != nil || quotaErr != nil || loadErr != nil || runtimeErr != nil {
-			controller.machine.OperationEnd(false)
-		}
+		controller.machine.OperationEnd(usageErr == nil && quotaErr == nil && loadErr == nil && runtimeErr == nil)
 		controller.publish()
 	}()
 	return true

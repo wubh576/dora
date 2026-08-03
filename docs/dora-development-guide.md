@@ -1107,7 +1107,7 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 - 启动与每分钟读取 snapshot；每秒只读取一次统一 `/runtime`，不再分别轮询 running 与 attention。扫描与配额后台周期仍由共享 runtime 统一管理。
 - 每秒 runtime 更新只复用并更新稳定 session ID 对应的已有行，保留 tracking area 与滚动位置；相同目标 frame 不启动动画，也不重复 `orderFrontRegardless`。
 - 手动刷新在后台 goroutine 中先扫描 token，再按用户授权刷新配额，不能并发触发，也不能阻塞 AppKit 事件循环。
-- 点击刷新后立即收起控制条并在后台继续工作；成功时保持紧凑，失败时重新展开显示真实原因。
+- 点击刷新后保持控制条展开，在后台工作期间显示刷新进度，完成后直接展示更新结果；鼠标离开整个区域后再按统一的 450 ms 延迟收起。
 - 配额刷新失败不能回滚新的 token 数据；刷新结束后重新读取 snapshot。
 - 灵动岛复用 loopback API DTO，不自行解析文件、查询 SQLite 或实现另一套统计。
 - “打开仪表盘”用参数化系统命令打开 runtime 的实际 loopback 地址，成功交给浏览器后立即收起控制条。

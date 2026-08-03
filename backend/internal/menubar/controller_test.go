@@ -212,8 +212,8 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 		t.Fatal("并发 refresh 被错误接受")
 	}
 	controller.UIInteraction(false)
-	if state := controller.machine.State(); state.Mode != ModeCompact {
-		t.Fatalf("被拒绝的重复刷新点击未收起: %+v", state)
+	if state := controller.machine.State(); state.Mode != ModeInteraction {
+		t.Fatalf("被拒绝的重复刷新点击未保持展开: %+v", state)
 	}
 	close(refresher.release)
 	deadline := time.After(time.Second)
@@ -232,7 +232,7 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 	}
 }
 
-func TestControllerRefreshDismissesClickAndStaysCompactAfterSuccess(t *testing.T) {
+func TestControllerRefreshStaysExpandedUntilPointerLeavesAfterSuccess(t *testing.T) {
 	refresher := &successfulBlockingRefresher{started: make(chan struct{}), release: make(chan struct{})}
 	presented := make(chan View, 16)
 	controller := NewController(&fakeLoader{}, refresher, "", func(view View) { presented <- view })
@@ -244,8 +244,8 @@ func TestControllerRefreshDismissesClickAndStaysCompactAfterSuccess(t *testing.T
 	}
 	<-refresher.started
 	controller.UIInteraction(false)
-	if state := controller.machine.State(); state.Mode != ModeCompact {
-		t.Fatalf("刷新点击结束后未立即收起: %+v", state)
+	if state := controller.machine.State(); state.Mode != ModeInteraction {
+		t.Fatalf("刷新进行中未保持展开: %+v", state)
 	}
 	close(refresher.release)
 	deadline := time.After(time.Second)
@@ -253,19 +253,17 @@ func TestControllerRefreshDismissesClickAndStaysCompactAfterSuccess(t *testing.T
 		select {
 		case view := <-presented:
 			if view.OperationStatus == "刷新完成" {
-				if view.Mode != string(ModeCompact) {
-					t.Fatalf("刷新成功后重新展开: %+v", view)
+				if view.Mode != string(ModeHover) {
+					t.Fatalf("刷新成功后未保留展开结果: %+v", view)
 				}
 				pointerInside = false
 				controller.Hover(false)
-				pointerInside = true
-				controller.Hover(true)
-				hoverDeadline := time.After(time.Second)
-				for controller.machine.State().Mode != ModeHover {
+				collapseDeadline := time.After(time.Second)
+				for controller.machine.State().Mode != ModeCompact {
 					select {
 					case <-time.After(10 * time.Millisecond):
-					case <-hoverDeadline:
-						t.Fatalf("刷新完成后下一次真实进入仍被抑制: %+v", controller.machine.State())
+					case <-collapseDeadline:
+						t.Fatalf("刷新结果在鼠标离开后未收起: %+v", controller.machine.State())
 					}
 				}
 				return
