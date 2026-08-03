@@ -38,6 +38,7 @@ type View struct {
 	RunningCount       int          `json:"runningCount"`
 	Today              string       `json:"today"`
 	SevenDays          string       `json:"sevenDays"`
+	ThirtyDays         string       `json:"thirtyDays"`
 	AllTime            string       `json:"allTime"`
 	FiveHour           string       `json:"fiveHour"`
 	SevenDay           string       `json:"sevenDay"`
@@ -64,7 +65,7 @@ type SessionRow struct {
 func BuildView(state *State, machine MachineState, screen ScreenMetrics, now time.Time, refreshing bool, statusOverride string) View {
 	view := View{
 		Expanded: machine.Mode != ModeCompact, Mode: string(machine.Mode),
-		CompactSummary: "Dora", CompactStatus: "0 等待 · 0 运行", Today: "今日 —", SevenDays: "7 日 —", AllTime: "全部 —",
+		CompactSummary: "Dora", CompactStatus: "0 等待 · 0 运行", Today: "今日 —", SevenDays: "近 7 日 —", ThirtyDays: "近 30 日 —", AllTime: "全部 —",
 		FiveHour: "Codex 5 小时配额：暂无数据", SevenDay: "Codex 7 日配额：暂无数据",
 		Status: "正在连接本地服务", Refreshing: refreshing,
 		HighlightSessionID: machine.HighlightSessionID,
@@ -75,7 +76,8 @@ func BuildView(state *State, machine MachineState, screen ScreenMetrics, now tim
 		view.RunningCount = state.Runtime.RunningCount
 		view.CompactStatus = fmt.Sprintf("%d 等待 · %d 运行", view.WaitingCount, view.RunningCount)
 		view.Today = tokenRow("今日", state.Snapshot.Usage.TodayTokens)
-		view.SevenDays = tokenRow("7 日", state.Snapshot.Usage.SevenDayTokens)
+		view.SevenDays = tokenRow("近 7 日", state.Snapshot.Usage.SevenDayTokens)
+		view.ThirtyDays = tokenRow("近 30 日", state.Snapshot.Usage.ThirtyDayTokens)
 		view.AllTime = tokenRow("全部", state.Snapshot.Usage.AllTimeTokens)
 		view.FiveHour = quotaRow("Codex 5 小时配额", "five_hour", state.Quota, now)
 		view.SevenDay = quotaRow("Codex 7 日配额", "seven_day", state.Quota, now)

@@ -470,6 +470,7 @@ type TimeWindow struct {
 
 - 查询使用 `[start, end)`。
 - Web 统一使用 1D、7D、30D、ALL；历史兼容输入只允许在统一时间窗口函数中处理。
+- 7D 与 30D 按用户本地日历日计算，分别从今天之前第 6 日或第 29 日的零点开始，截止当前时刻；它们不是固定 168 小时或 720 小时的滚动窗口。
 - 用量统计统一始于 `2026-07-01`，任何范围都不能读取更早的数据。
 - 统计起始日是产品口径，应使用具名常量集中维护，并由 API 返回给前端，不能在多个页面重复写死。
 - 1D、7D、30D、ALL 的边界由一个函数生成。
@@ -922,6 +923,7 @@ cache read / (input + cache read + cache creation)
   "usage": {
     "todayTokens": 123456,
     "sevenDayTokens": 765432,
+    "thirtyDayTokens": 1765432,
     "allTimeTokens": 9876543,
     "topModel": "gpt-5.6-sol",
     "lastScanAt": "2026-07-30T11:59:20Z",
@@ -1093,7 +1095,7 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 - 紧凑态宽约 360 pt，高度使用主屏 frame 与 visibleFrame 的实际顶部差值；菜单栏自动隐藏时依次使用 safeAreaInsets.top 与系统菜单栏厚度，不写死垂直尺寸。紧凑态固定显示左侧 `Dora` 和右侧 waiting/running session 数，存在 waiting 时右侧状态变红；不显示 token 或错误文案，也不绘制超出实际菜单栏边界的窗口阴影。
 - AppKit 主线程每 50 ms 比较鼠标与当前 `panel.frame`，只在进入或离开整个 panel 时通知状态机；配合 100 ms hover intent，进入紧凑条后最迟约 150 ms 展开。展开后只要鼠标仍在整个 panel 内就保持展开；离开约 450 ms 后才尝试收起，并在 timer 到期时再次复查鼠标位置。
 - hover、attention 和面板内 interaction 是可同时存在的展开原因；新 attention 高亮对应会话约 6 秒，倒计时结束时只要鼠标仍在 panel 内就继续展开。
-- 展开态展示 1D / 7D / ALL token、Codex 5h/7d quota、状态、waiting/running 会话、刷新、仪表盘和退出。
+- 展开态展示今日 / 近 7 日 / 近 30 日 / 全部 token、Codex 5h/7d quota、状态、waiting/running 会话、刷新、仪表盘和退出。
 - waiting 始终排在 running 之前；中部会话列表独立滚动，固定头部和底部操作不滚动，无水平滚动。
 - 点击会话后在跳转结果返回前保持展开；失败或不可跳转时在底部显示脱敏原因，点击仍不解决 waiting。
 - 不创建 `NSStatusItem`、状态栏图标占位或 Dock 图标；panel 不抢应用焦点，只有精确跳转成功时目标 App/终端被激活。

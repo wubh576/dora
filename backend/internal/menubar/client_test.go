@@ -12,7 +12,7 @@ func TestClientLoadsSnapshotQuotaAndUnifiedRuntime(t *testing.T) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/v1/snapshot":
-			_, _ = response.Write([]byte(`{"usage":{"todayTokens":1200},"quotas":[],"errors":[]}`))
+			_, _ = response.Write([]byte(`{"usage":{"todayTokens":1200,"thirtyDayTokens":3400},"quotas":[],"errors":[]}`))
 		case "/api/v1/quotas":
 			_, _ = response.Write([]byte(`{"enabled":true,"status":"ready","items":[]}`))
 		case "/api/v1/runtime":
@@ -24,7 +24,7 @@ func TestClientLoadsSnapshotQuotaAndUnifiedRuntime(t *testing.T) {
 	defer server.Close()
 	client := NewClient(server.URL)
 	state, err := client.Load(context.Background())
-	if err != nil || state.Snapshot.Usage.TodayTokens != 1200 || !state.Quota.Enabled {
+	if err != nil || state.Snapshot.Usage.TodayTokens != 1200 || state.Snapshot.Usage.ThirtyDayTokens != 3400 || !state.Quota.Enabled {
 		t.Fatalf("Load() = %+v, %v", state, err)
 	}
 	runtimeState, err := client.LoadRuntime(context.Background())

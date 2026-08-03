@@ -158,13 +158,14 @@ type snapshotResponse struct {
 }
 
 type snapshotUsage struct {
-	TodayTokens    int64                   `json:"todayTokens"`
-	SevenDayTokens int64                   `json:"sevenDayTokens"`
-	AllTimeTokens  int64                   `json:"allTimeTokens"`
-	TopModel       string                  `json:"topModel"`
-	LastScanAt     *string                 `json:"lastScanAt"`
-	Stale          bool                    `json:"stale"`
-	Providers      []snapshotProviderUsage `json:"providers"`
+	TodayTokens     int64                   `json:"todayTokens"`
+	SevenDayTokens  int64                   `json:"sevenDayTokens"`
+	ThirtyDayTokens int64                   `json:"thirtyDayTokens"`
+	AllTimeTokens   int64                   `json:"allTimeTokens"`
+	TopModel        string                  `json:"topModel"`
+	LastScanAt      *string                 `json:"lastScanAt"`
+	Stale           bool                    `json:"stale"`
+	Providers       []snapshotProviderUsage `json:"providers"`
 }
 
 type snapshotProviderUsage struct {
@@ -763,12 +764,22 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重试")
 		return
 	}
+	thirtyDayWindow, err := analytics.NewTimeWindow(now, s.location, "30D")
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重试")
+		return
+	}
 	today, err := analytics.Summarize(eventsInWindow(allEvents, todayWindow))
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重新扫描本地用量")
 		return
 	}
 	sevenDays, err := analytics.Summarize(eventsInWindow(allEvents, sevenDayWindow))
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重新扫描本地用量")
+		return
+	}
+	thirtyDays, err := analytics.Summarize(eventsInWindow(allEvents, thirtyDayWindow))
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "provider.local", "生成快照", "请重新扫描本地用量")
 		return
@@ -809,12 +820,13 @@ func (s *server) snapshot(w http.ResponseWriter, r *http.Request) {
 	response := snapshotResponse{
 		GeneratedAt: now.UTC().Format(time.RFC3339Nano),
 		Usage: snapshotUsage{
-			TodayTokens:    today.TotalTokens,
-			SevenDayTokens: sevenDays.TotalTokens,
-			AllTimeTokens:  allTotals.TotalTokens,
-			TopModel:       topModel,
-			Stale:          true,
-			Providers:      snapshotProviders,
+			TodayTokens:     today.TotalTokens,
+			SevenDayTokens:  sevenDays.TotalTokens,
+			ThirtyDayTokens: thirtyDays.TotalTokens,
+			AllTimeTokens:   allTotals.TotalTokens,
+			TopModel:        topModel,
+			Stale:           true,
+			Providers:       snapshotProviders,
 		},
 		Quotas: []quotaItem{},
 		Errors: []string{},

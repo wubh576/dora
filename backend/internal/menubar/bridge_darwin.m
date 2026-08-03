@@ -240,8 +240,8 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.expandedTitle = doraLabel(@"Dora", 16, NSFontWeightBold, NSColor.whiteColor);
     self.countLabel = doraLabel(@"0 等待  ·  0 运行", 11, NSFontWeightMedium, doraColor(0.42, 0.70, 1.0, 1.0));
     self.countLabel.alignment = NSTextAlignmentRight;
-    NSMutableArray *tokens = [NSMutableArray arrayWithCapacity:3];
-    for (NSInteger index = 0; index < 3; index++) {
+    NSMutableArray *tokens = [NSMutableArray arrayWithCapacity:4];
+    for (NSInteger index = 0; index < 4; index++) {
         NSTextField *label = doraLabel(@"", 11.5, NSFontWeightMedium, doraColor(0.86, 0.87, 0.90, 1.0));
         [tokens addObject:label];
         [self.expandedView addSubview:label];
@@ -299,8 +299,8 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.expandedView.frame = self.bounds;
     self.expandedTitle.frame = NSMakeRect(18, height - 37, 80, 22);
     self.countLabel.frame = NSMakeRect(width - 210, height - 35, 190, 20);
-    CGFloat tokenWidth = (width - 36) / 3;
-    for (NSInteger index = 0; index < 3; index++) {
+    CGFloat tokenWidth = (width - 36) / 4;
+    for (NSInteger index = 0; index < 4; index++) {
         self.tokenLabels[index].frame = NSMakeRect(18 + tokenWidth * index, height - 67, tokenWidth - 8, 20);
     }
     self.fiveHourLabel.frame = NSMakeRect(18, height - 94, width - 36, 18);
@@ -352,7 +352,8 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.countLabel.textColor = waiting > 0 ? doraColor(1.0, 0.39, 0.42, 1.0) : doraColor(0.42, 0.70, 1.0, 1.0);
     self.tokenLabels[0].stringValue = view[@"today"] ?: @"";
     self.tokenLabels[1].stringValue = view[@"sevenDays"] ?: @"";
-    self.tokenLabels[2].stringValue = view[@"allTime"] ?: @"";
+    self.tokenLabels[2].stringValue = view[@"thirtyDays"] ?: @"";
+    self.tokenLabels[3].stringValue = view[@"allTime"] ?: @"";
     self.fiveHourLabel.stringValue = view[@"fiveHour"] ?: @"";
     self.sevenDayLabel.stringValue = view[@"sevenDay"] ?: @"";
     self.statusLabel.stringValue = view[@"status"] ?: @"";

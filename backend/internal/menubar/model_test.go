@@ -8,7 +8,7 @@ import (
 
 func TestBuildViewShowsWaitingBeforeRunningAndSafePreview(t *testing.T) {
 	state := &State{
-		Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 1_250_000, SevenDayTokens: 2_000_000, AllTimeTokens: 3_000_000}},
+		Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 1_250_000, SevenDayTokens: 2_000_000, ThirtyDayTokens: 2_500_000, AllTimeTokens: 3_000_000}},
 		Runtime: RuntimeState{WaitingCount: 1, RunningCount: 1, Sessions: []RuntimeSession{
 			{ID: 1, State: "waiting", SessionName: "dora", Surface: "codex_app", PromptPreview: "确认命令", Summary: "命令等待授权", WaitSeconds: 90, RequestCount: 2, Jumpable: true},
 			{ID: 2, State: "running", SessionName: "backend", Surface: "codex_cli", TerminalKind: "iterm2", PromptPreview: "实现 API", JumpReason: "Codex CLI 会话缺少精确 TTY"},
@@ -17,6 +17,10 @@ func TestBuildViewShowsWaitingBeforeRunningAndSafePreview(t *testing.T) {
 	view := BuildView(state, MachineState{Mode: ModeAttention, HighlightSessionID: 1}, testScreen(), time.Now(), false, "")
 	if !view.Expanded || view.CompactSummary != "Dora" || view.CompactStatus != "1 等待 · 1 运行" {
 		t.Fatalf("compact 内容错误: %+v", view)
+	}
+	if view.Today != "今日 1.3M tokens" || view.SevenDays != "近 7 日 2M tokens" ||
+		view.ThirtyDays != "近 30 日 2.5M tokens" || view.AllTime != "全部 3M tokens" {
+		t.Fatalf("token 时间范围错误: %+v", view)
 	}
 	if len(view.Sessions) != 2 || view.Sessions[0].State != "waiting" || !view.Sessions[0].Highlight || !view.Sessions[0].Jumpable ||
 		view.Sessions[1].Meta != "iTerm2 · 运行中" || view.Sessions[1].Jumpable || view.Sessions[1].JumpReason == "" {

@@ -492,3 +492,15 @@
 
 - 菜单栏模型、Controller、Runtime 刷新和 AppKit production build 测试通过；`make verify` 与 `git diff --check` 通过。
 - Code Review：独立 Reviewer 发现旧里程碑与当前 compact 说明可能冲突的 P3；增加当前里程碑覆盖说明后复审通过，无剩余 P0/P1/P2/P3。
+
+## 里程碑 26：菜单栏近 30 日用量
+
+已完成：
+
+- compact snapshot 增加 `thirtyDayTokens`，菜单栏展开态第一行按今日、近 7 日、近 30 日、全部四列展示 token。
+- 近 7 日与近 30 日复用统一 `TimeWindow`：按 macOS 本地日历日分别包含今天与此前 6 日或 29 日，截止当前时刻，并受 `2026-07-01` 统计起始日约束。
+
+验证记录：
+
+- Snapshot API、菜单栏 Client/Model、四列 AppKit production build、`make verify`、`go test -race ./...`、`go vet ./...` 与 `git diff --check` 通过。
+- Code Review：独立 Reviewer 发现 README 漏写近 30 日、Snapshot fixture 无法区分 30D 与 ALL 两个 P3；补充文档和 `2026-07-01` 边界事件后复审通过，无剩余 P0/P1/P2/P3。

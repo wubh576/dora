@@ -356,7 +356,7 @@ func TestMultiProviderAPICombinesTotalsAndKeepsSourcesTraceable(t *testing.T) {
 		t.Fatalf("解析 snapshot 失败: %v", err)
 	}
 	if snapshot.Usage.TodayTokens != 170 || snapshot.Usage.SevenDayTokens != 212 ||
-		snapshot.Usage.AllTimeTokens != 222 || len(snapshot.Usage.Providers) != 2 {
+		snapshot.Usage.ThirtyDayTokens != 222 || snapshot.Usage.AllTimeTokens != 222 || len(snapshot.Usage.Providers) != 2 {
 		t.Fatalf("多 provider snapshot 错误: %+v", snapshot)
 	}
 
@@ -480,7 +480,10 @@ func TestSnapshotAndDiagnosticsUsePersistedUsage(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
-	seedAnalyticsUsage(t, store, now)
+	seedAnalyticsUsage(t, store, now, domain.UsageEvent{
+		Source: domain.CodexSource, DedupKey: "tracking-start", OccurredAt: time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC),
+		Model: "gpt-a", Project: "dora", ReportedTotalTokens: 10, TotalTokens: 10,
+	})
 	handler := NewHandler(store, Options{Location: time.UTC, Now: func() time.Time { return now }})
 
 	snapshotRecorder := httptest.NewRecorder()
@@ -491,7 +494,8 @@ func TestSnapshotAndDiagnosticsUsePersistedUsage(t *testing.T) {
 	}
 	if snapshot.Usage.TodayTokens != 120 ||
 		snapshot.Usage.SevenDayTokens != 162 ||
-		snapshot.Usage.AllTimeTokens != 172 ||
+		snapshot.Usage.ThirtyDayTokens != 172 ||
+		snapshot.Usage.AllTimeTokens != 182 ||
 		snapshot.Usage.TopModel != "gpt-a" ||
 		snapshot.Usage.Stale ||
 		snapshot.Usage.LastScanAt == nil {
@@ -501,7 +505,8 @@ func TestSnapshotAndDiagnosticsUsePersistedUsage(t *testing.T) {
 		t.Fatalf("snapshot 数组不能为 null: %+v", snapshot)
 	}
 	if snapshot.Usage.TodayTokens > snapshot.Usage.SevenDayTokens ||
-		snapshot.Usage.SevenDayTokens > snapshot.Usage.AllTimeTokens {
+		snapshot.Usage.SevenDayTokens > snapshot.Usage.ThirtyDayTokens ||
+		snapshot.Usage.ThirtyDayTokens > snapshot.Usage.AllTimeTokens {
 		t.Fatalf("snapshot 窗口不是同一份数据的子集: %+v", snapshot.Usage)
 	}
 
@@ -511,7 +516,7 @@ func TestSnapshotAndDiagnosticsUsePersistedUsage(t *testing.T) {
 	if err := json.NewDecoder(diagnosticsRecorder.Body).Decode(&diagnostics); err != nil {
 		t.Fatalf("解析 diagnostics 失败: %v", err)
 	}
-	if diagnostics.Usage.StoredEvents != 3 || diagnostics.Usage.ParserVersion != codex.ParserVersion {
+	if diagnostics.Usage.StoredEvents != 4 || diagnostics.Usage.ParserVersion != codex.ParserVersion {
 		t.Fatalf("diagnostics usage 错误: %+v", diagnostics)
 	}
 }
@@ -871,7 +876,7 @@ func (p *httpQuotaProvider) callCount() int {
 	return p.calls
 }
 
-func seedAnalyticsUsage(t *testing.T, store *dorasqlite.Store, now time.Time) {
+func seedAnalyticsUsage(t *testing.T, store *dorasqlite.Store, now time.Time, extraEvents ...domain.UsageEvent) {
 	t.Helper()
 	events := []domain.UsageEvent{
 		{
@@ -907,6 +912,7 @@ func seedAnalyticsUsage(t *testing.T, store *dorasqlite.Store, now time.Time) {
 			TotalTokens:         10,
 		},
 	}
+	events = append(events, extraEvents...)
 	finishedAt := now.Add(-time.Minute)
 	if err := store.BeginUsageScan(context.Background(), "analytics-run", "full", finishedAt.Add(-time.Second)); err != nil {
 		t.Fatalf("创建 analytics scan 失败: %v", err)
@@ -918,7 +924,7 @@ func seedAnalyticsUsage(t *testing.T, store *dorasqlite.Store, now time.Time) {
 		events,
 		nil,
 		2,
-		3,
+		len(events),
 		"",
 	); err != nil {
 		t.Fatalf("保存 analytics usage 失败: %v", err)
