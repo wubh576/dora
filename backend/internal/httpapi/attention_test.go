@@ -224,7 +224,7 @@ func TestCodexHookLogsSanitizedStateTransitions(t *testing.T) {
 			t.Fatalf("Hook 状态码 = %d", response.Code)
 		}
 	}
-	postHook(`{"sessionId":"` + sessionID + `","hookEvent":"SessionStart","cwdBasename":"/Users/private/dora","surface":"codex_app"}`)
+	postHook(`{"sessionId":"` + sessionID + `","hookEvent":"SessionStart","source":"startup","cwdBasename":"/Users/private/dora","surface":"codex_app"}`)
 	permission := `{"sessionId":"` + sessionID + `","hookEvent":"PermissionRequest","turnId":"turn","cwdBasename":"/Users/private/dora","surface":"codex_app","toolName":"Bash\tstate=idle attention=resolved\u001b","inputHash":"sha256:fixture"}`
 	for index := 0; index < 2; index++ {
 		postHook(permission)
@@ -237,6 +237,7 @@ func TestCodexHookLogsSanitizedStateTransitions(t *testing.T) {
 	for _, expected := range []string{
 		"session=" + attentiondomain.SessionLabel(sessionID),
 		"event=SessionStart", "attention=reconciled_by_session_start",
+		`source="startup"`,
 		"event=PermissionRequest", "state=waiting", "attention=created", "attention=deduplicated",
 		"event=PostToolUse", "state=running", "attention=reconciled_by_tool_completion",
 		"attention=ignored_resolved_replay",

@@ -426,7 +426,7 @@ func (s *server) codexHook(w http.ResponseWriter, r *http.Request) {
 		toolName = "-"
 	}
 	s.logger.Printf(
-		"Codex Hook: provider=%s session=%s event=%s surface=%s tool=%q state=%s attention=%s",
+		"Codex Hook: provider=%s session=%s event=%s surface=%s tool=%q state=%s attention=%s source=%q",
 		domain.CodexSource,
 		attention.SessionLabel(domainEvent.ExternalSessionID),
 		domainEvent.EventName,
@@ -434,6 +434,7 @@ func (s *server) codexHook(w http.ResponseWriter, r *http.Request) {
 		toolName,
 		state,
 		attentionResult,
+		domainEvent.SessionStartSource,
 	)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
@@ -466,6 +467,9 @@ func codexHookOutcome(event domain.CodexHookEvent, created bool, requestStatus s
 	case "UserPromptSubmit":
 		return "reconciled_by_activity"
 	case "SessionStart":
+		if event.SessionStartSource == "compact" {
+			return "preserved_by_compaction"
+		}
 		return "reconciled_by_session_start"
 	default:
 		return "none"

@@ -13,24 +13,29 @@ import (
 )
 
 type Event struct {
-	SessionID     string `json:"sessionId"`
-	HookEvent     string `json:"hookEvent"`
-	TurnID        string `json:"turnId,omitempty"`
-	CWDBasename   string `json:"cwdBasename,omitempty"`
-	Model         string `json:"model,omitempty"`
-	Surface       string `json:"surface"`
-	TerminalKind  string `json:"terminalKind,omitempty"`
-	TTY           string `json:"tty,omitempty"`
-	ToolName      string `json:"toolName,omitempty"`
-	ToolUseID     string `json:"toolUseId,omitempty"`
-	InputHash     string `json:"inputHash,omitempty"`
-	PromptPreview string `json:"promptPreview,omitempty"`
+	SessionID          string `json:"sessionId"`
+	HookEvent          string `json:"hookEvent"`
+	SessionStartSource string `json:"source,omitempty"`
+	TurnID             string `json:"turnId,omitempty"`
+	CWDBasename        string `json:"cwdBasename,omitempty"`
+	Model              string `json:"model,omitempty"`
+	Surface            string `json:"surface"`
+	TerminalKind       string `json:"terminalKind,omitempty"`
+	TTY                string `json:"tty,omitempty"`
+	ToolName           string `json:"toolName,omitempty"`
+	ToolUseID          string `json:"toolUseId,omitempty"`
+	InputHash          string `json:"inputHash,omitempty"`
+	PromptPreview      string `json:"promptPreview,omitempty"`
 }
 
 func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 	event.SessionID = strings.TrimSpace(event.SessionID)
 	event.TurnID = strings.TrimSpace(event.TurnID)
 	event.ToolName = cleanLabel(event.ToolName, 80)
+	event.SessionStartSource = cleanLabel(event.SessionStartSource, 40)
+	if event.HookEvent != "SessionStart" {
+		event.SessionStartSource = ""
+	}
 	if event.SessionID == "" || event.HookEvent == "" {
 		return domain.CodexHookEvent{}, errors.New("事件缺少 sessionId 或 hookEvent")
 	}
@@ -59,18 +64,19 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 		promptPreview = cleanPromptPreview(event.PromptPreview, 160)
 	}
 	return domain.CodexHookEvent{
-		ExternalSessionID: event.SessionID,
-		EventName:         event.HookEvent,
-		TurnID:            event.TurnID,
-		CWDBasename:       cwdBasename(event.CWDBasename),
-		Model:             cleanLabel(event.Model, 160),
-		Surface:           event.Surface,
-		TerminalKind:      event.TerminalKind,
-		TTY:               cleanLabel(event.TTY, 80),
-		ToolName:          event.ToolName,
-		EventKey:          eventKey,
-		PromptPreview:     promptPreview,
-		ReceivedAt:        receivedAt.UTC(),
+		ExternalSessionID:  event.SessionID,
+		EventName:          event.HookEvent,
+		SessionStartSource: event.SessionStartSource,
+		TurnID:             event.TurnID,
+		CWDBasename:        cwdBasename(event.CWDBasename),
+		Model:              cleanLabel(event.Model, 160),
+		Surface:            event.Surface,
+		TerminalKind:       event.TerminalKind,
+		TTY:                cleanLabel(event.TTY, 80),
+		ToolName:           event.ToolName,
+		EventKey:           eventKey,
+		PromptPreview:      promptPreview,
+		ReceivedAt:         receivedAt.UTC(),
 	}, nil
 }
 

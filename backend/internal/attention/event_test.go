@@ -65,3 +65,26 @@ func TestEventDomainSanitizesPromptPreview(t *testing.T) {
 		t.Fatalf("prompt preview 长度 = %d", count)
 	}
 }
+
+func TestEventDomainKeepsOnlySessionStartSource(t *testing.T) {
+	start, err := (Event{
+		SessionID: "session", HookEvent: "SessionStart", SessionStartSource: " compact\n",
+		Surface: domain.CodexSurfaceApp,
+	}).Domain(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.SessionStartSource != "compact" {
+		t.Fatalf("SessionStart source = %q", start.SessionStartSource)
+	}
+	stop, err := (Event{
+		SessionID: "session", HookEvent: "Stop", SessionStartSource: "compact",
+		Surface: domain.CodexSurfaceApp,
+	}).Domain(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stop.SessionStartSource != "" {
+		t.Fatalf("非 SessionStart 保留 source: %q", stop.SessionStartSource)
+	}
+}

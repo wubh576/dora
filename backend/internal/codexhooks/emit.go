@@ -102,6 +102,7 @@ type rawHookEvent struct {
 	TurnID        string          `json:"turn_id"`
 	AgentID       string          `json:"agent_id"`
 	AgentType     string          `json:"agent_type"`
+	Source        string          `json:"source"`
 	CWD           string          `json:"cwd"`
 	HookEventName string          `json:"hook_event_name"`
 	Model         string          `json:"model"`
@@ -138,16 +139,17 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 		return attention.Event{}, errSubagentEvent
 	}
 	event := attention.Event{
-		SessionID:    raw.SessionID,
-		HookEvent:    raw.HookEventName,
-		TurnID:       strings.TrimSpace(raw.TurnID),
-		CWDBasename:  filepath.Base(strings.TrimSpace(raw.CWD)),
-		Model:        strings.TrimSpace(raw.Model),
-		Surface:      surface.Name,
-		TerminalKind: surface.TerminalKind,
-		TTY:          surface.TTY,
-		ToolName:     strings.TrimSpace(raw.ToolName),
-		ToolUseID:    strings.TrimSpace(raw.ToolUseID),
+		SessionID:          raw.SessionID,
+		HookEvent:          raw.HookEventName,
+		SessionStartSource: strings.TrimSpace(raw.Source),
+		TurnID:             strings.TrimSpace(raw.TurnID),
+		CWDBasename:        filepath.Base(strings.TrimSpace(raw.CWD)),
+		Model:              strings.TrimSpace(raw.Model),
+		Surface:            surface.Name,
+		TerminalKind:       surface.TerminalKind,
+		TTY:                surface.TTY,
+		ToolName:           strings.TrimSpace(raw.ToolName),
+		ToolUseID:          strings.TrimSpace(raw.ToolUseID),
 	}
 	if event.HookEvent == "UserPromptSubmit" {
 		event.PromptPreview = userPrompt(raw.Prompt, surface)
@@ -175,6 +177,7 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 	}
 	// 在 helper 出站前完成脱敏和截断，原始 prompt 不穿过 loopback API。
 	event.SessionID = domainEvent.ExternalSessionID
+	event.SessionStartSource = domainEvent.SessionStartSource
 	event.TurnID = domainEvent.TurnID
 	event.CWDBasename = domainEvent.CWDBasename
 	event.Model = domainEvent.Model

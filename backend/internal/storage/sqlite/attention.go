@@ -64,6 +64,9 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 			}
 			return markWaitingIfActive(ctx, conn, sessionID, event.EventKey, event.ReceivedAt)
 		case "SessionStart":
+			if event.SessionStartSource == "compact" {
+				return nil
+			}
 			return resolveSessionRequests(ctx, conn, sessionID, event.ReceivedAt, "session_started", domain.RuntimeStateIdle)
 		case "UserPromptSubmit":
 			return resolveSessionRequests(ctx, conn, sessionID, event.ReceivedAt, "new_prompt", domain.RuntimeStateRunning)
@@ -513,6 +516,11 @@ func attentionRequestState(ctx context.Context, conn *sql.Conn, eventKey string)
 func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.CodexHookEvent) (int64, error) {
 	state := domain.RuntimeStateIdle
 	promptPreview := ""
+	runtimeTransition := event.EventName
+	if event.EventName == "SessionStart" && event.SessionStartSource == "compact" {
+		// Compaction 发生在 turn 内部，只刷新定位元数据和最近活动时间。
+		runtimeTransition = ""
+	}
 	if event.EventName == "UserPromptSubmit" {
 		state = domain.RuntimeStateRunning
 		promptPreview = event.PromptPreview
@@ -549,9 +557,9 @@ func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.Code
 		state,
 		promptPreview,
 		event.ReceivedAt.UTC().UnixMilli(),
-		event.EventName,
-		event.EventName,
-		event.EventName,
+		runtimeTransition,
+		runtimeTransition,
+		runtimeTransition,
 	); err != nil {
 		return 0, fmt.Errorf("更新 Codex runtime session: %w", err)
 	}

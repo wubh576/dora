@@ -159,6 +159,124 @@ func TestRuntimeSessionsCombineRunningAndWaitingWithSafePreview(t *testing.T) {
 	}
 }
 
+func TestCompactionPreservesRunningAndWaitingState(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 3, 5, 0, 0, 0, time.UTC)
+	start := attentionEvent("SessionStart", now)
+	start.SessionStartSource = "startup"
+	if _, err := store.ApplyCodexHookEvent(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	running := attentionEvent("UserPromptSubmit", now.Add(time.Second))
+	running.PromptPreview = "实现 Goal 7 修复"
+	if _, err := store.ApplyCodexHookEvent(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	compact := attentionEvent("SessionStart", now.Add(2*time.Second))
+	compact.SessionStartSource = "compact"
+	compact.CWDBasename, compact.Model = "updated-project", "gpt-updated"
+	if _, err := store.ApplyCodexHookEvent(ctx, compact); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateRunning ||
+		active[0].Session.PromptPreview != "实现 Goal 7 修复" || active[0].Session.CWDBasename != "updated-project" ||
+		active[0].Session.Model != "gpt-updated" || !active[0].Session.LastSeenAt.Equal(compact.ReceivedAt) {
+		t.Fatalf("compact 破坏 running 状态: %+v, %v", active, err)
+	}
+
+	waiting := attentionEvent("PermissionRequest", now.Add(3*time.Second))
+	waiting.TurnID, waiting.ToolName, waiting.EventKey = "turn-1", "Bash", "codex:compact-waiting"
+	if _, err := store.ApplyCodexHookEvent(ctx, waiting); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.RuntimeSessions(ctx)
+	if err != nil || len(before) != 1 || before[0].Latest == nil {
+		t.Fatalf("建立 waiting fixture 失败: %+v, %v", before, err)
+	}
+	if err := store.MarkAttentionNotified(ctx, before[0].Latest.ID, now.Add(3500*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	before, err = store.RuntimeSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact.ReceivedAt = now.Add(4 * time.Second)
+	compact.CWDBasename = "compacted-project"
+	if _, err := store.ApplyCodexHookEvent(ctx, compact); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.RuntimeSessions(ctx)
+	if err != nil || len(after) != 1 || after[0].Session.State != domain.RuntimeStateWaiting || after[0].Latest == nil ||
+		after[0].Session.PromptPreview != "实现 Goal 7 修复" || after[0].RequestCount != before[0].RequestCount ||
+		after[0].WaitingSince != before[0].WaitingSince || after[0].Latest.ID != before[0].Latest.ID ||
+		after[0].Latest.EventKey != before[0].Latest.EventKey || after[0].Latest.CreatedAt != before[0].Latest.CreatedAt ||
+		after[0].Latest.NotifiedAt == nil || !after[0].Session.LastSeenAt.Equal(compact.ReceivedAt) {
+		t.Fatalf("compact 破坏 waiting 状态: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if unnotified, err := store.UnnotifiedAttention(ctx); err != nil || len(unnotified) != 0 {
+		t.Fatalf("compact 产生了重复提醒: %+v, %v", unnotified, err)
+	}
+
+	first := compact
+	first.ExternalSessionID = "first-seen-compact"
+	first.ReceivedAt = now.Add(5 * time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := store.RuntimeSessionState(ctx, first.ExternalSessionID); err != nil || state != domain.RuntimeStateIdle {
+		t.Fatalf("首次 compact 未创建 idle session: %q, %v", state, err)
+	}
+}
+
+func TestRegularSessionStartSourcesResetPreviousTurn(t *testing.T) {
+	for _, source := range []string{"startup", "resume", "clear", "", "future-source"} {
+		name := source
+		if name == "" {
+			name = "missing"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			now := time.Date(2026, 8, 3, 6, 0, 0, 0, time.UTC)
+			running := attentionEvent("UserPromptSubmit", now)
+			running.PromptPreview = "上一轮任务"
+			waiting := attentionEvent("PermissionRequest", now.Add(time.Second))
+			waiting.ToolName, waiting.EventKey = "Bash", "codex:reset-"+name
+			for _, event := range []domain.CodexHookEvent{running, waiting} {
+				if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			active, err := store.RuntimeSessions(ctx)
+			if err != nil || len(active) != 1 {
+				t.Fatalf("建立 active fixture 失败: %+v, %v", active, err)
+			}
+			start := attentionEvent("SessionStart", now.Add(2*time.Second))
+			start.SessionStartSource = source
+			if _, err := store.ApplyCodexHookEvent(ctx, start); err != nil {
+				t.Fatal(err)
+			}
+			session, err := store.RuntimeSession(ctx, active[0].Session.ID)
+			if err != nil || session.State != domain.RuntimeStateIdle || session.PromptPreview != "" {
+				t.Fatalf("普通 SessionStart 未 reset: %+v, %v", session, err)
+			}
+			if status, err := store.AttentionRequestStatus(ctx, waiting.EventKey); err != nil || status != AttentionRequestResolved {
+				t.Fatalf("普通 SessionStart 未解决旧 request: %q, %v", status, err)
+			}
+		})
+	}
+}
+
 func TestRuntimeSessionNameCacheFollowsSessionLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))

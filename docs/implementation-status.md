@@ -516,3 +516,15 @@
 
 - Emitter 与 SQLite 定向测试及 race 回归测试、`git diff --check` 通过。
 - Code Review：独立 Reviewer 确认 `agent_id`/`agent_type` 均在 helper 出站前成功 no-op，同一父 session 的 running、waiting、prompt 与 request 不受影响，真正根 `SessionEnd` 和 Ambient Suggestions 过滤保持正常；无剩余 P0/P1/P2/P3。
+
+## 里程碑 28：Compaction 状态连续性
+
+已完成：
+
+- `SessionStart.source` 从原始 Codex Hook 经 helper、loopback DTO 和 domain 事件传递到 SQLite 状态转换；不新增数据库列或 migration。
+- `source=compact` 对已有 session 保留 running/waiting/idle、prompt 与未解决 request，只更新非空定位元数据和 `last_seen_at`；首次出现时创建 idle 记录。`startup`、`resume`、`clear`、缺少及未知 source 保持原有 reset 行为。
+
+验证记录：
+
+- 原始 Hook JSON 到 SQLite 的端到端测试、attention/domain、SQLite、HTTP API、app 定向测试及 race 回归测试、`git diff --check` 通过。
+- Code Review：独立 Reviewer 确认 source 传递链路完整，compact 只更新非空定位元数据与 `last_seen_at`，不会改变状态、prompt、request 或提醒；普通和未知 source 兼容行为保持正常，无剩余 P0/P1/P2/P3。

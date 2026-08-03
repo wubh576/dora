@@ -21,18 +21,19 @@ const (
 )
 
 type CodexHookEvent struct {
-	ExternalSessionID string
-	EventName         string
-	TurnID            string
-	CWDBasename       string
-	Model             string
-	Surface           string
-	TerminalKind      string
-	TTY               string
-	ToolName          string
-	EventKey          string
-	PromptPreview     string
-	ReceivedAt        time.Time
+	ExternalSessionID  string
+	EventName          string
+	SessionStartSource string
+	TurnID             string
+	CWDBasename        string
+	Model              string
+	Surface            string
+	TerminalKind       string
+	TTY                string
+	ToolName           string
+	EventKey           string
+	PromptPreview      string
+	ReceivedAt         time.Time
 }
 
 type RuntimeSession struct {

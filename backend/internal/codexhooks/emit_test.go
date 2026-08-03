@@ -18,6 +18,7 @@ import (
 
 	"github.com/wubh576/dora/backend/internal/attention"
 	"github.com/wubh576/dora/backend/internal/domain"
+	"github.com/wubh576/dora/backend/internal/httpapi"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
 
@@ -457,6 +458,46 @@ func TestEmitterIgnoresSubagentEventsWithoutChangingRootSession(t *testing.T) {
 	emit(`{"session_id":"root-session","cwd":"/tmp/dora","hook_event_name":"SessionEnd"}`)
 	if _, err := store.RuntimeSessionState(ctx, sessionID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("真正的根 SessionEnd 未删除 session: %v", err)
+	}
+}
+
+func TestCompactionSourceReachesSQLiteFromRawHookJSON(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	base := time.Date(2026, 8, 3, 7, 0, 0, 0, time.UTC)
+	nowIndex := 0
+	handler := httpapi.NewHandler(store, httpapi.Options{Now: func() time.Time {
+		value := base.Add(time.Duration(nowIndex) * time.Second)
+		nowIndex++
+		return value
+	}})
+	emitter := &Emitter{
+		endpoint: DefaultEndpoint,
+		client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			return recorder.Result(), nil
+		})},
+		detector: fixedDetector{surface: Surface{Name: domain.CodexSurfaceApp}},
+	}
+	for _, input := range []string{
+		`{"session_id":"compact-e2e","source":"startup","cwd":"/tmp/dora","hook_event_name":"SessionStart"}`,
+		`{"session_id":"compact-e2e","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"实现 compaction 修复"}`,
+		`{"session_id":"compact-e2e","source":"compact","cwd":"/tmp/updated","model":"gpt-updated","hook_event_name":"SessionStart"}`,
+	} {
+		if err := emitter.Emit(ctx, strings.NewReader(input)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateRunning ||
+		active[0].Session.PromptPreview != "实现 compaction 修复" || active[0].Session.CWDBasename != "updated" ||
+		active[0].Session.Model != "gpt-updated" || !active[0].Session.LastSeenAt.Equal(base.Add(2*time.Second)) {
+		t.Fatalf("source=compact 端到端传递失败: %+v, %v", active, err)
 	}
 }
 

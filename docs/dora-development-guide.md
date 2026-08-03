@@ -1403,7 +1403,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 ### 25.1 结构化事件和状态机
 
 - 只使用 Codex 官方 `~/.codex/hooks.json` 生命周期事件，不轮询 transcript 猜测前台状态。
-- `SessionStart` 只注册为 idle，不进入活跃列表；`UserPromptSubmit` 进入 running；`PermissionRequest` 与 `request_user_input` 的 `PreToolUse` 进入 waiting；`PostToolUse` 仅在当前 turn 已处于 running/waiting 时回到 running；`Stop` 进入 idle；`SessionEnd` 移除 runtime session。
+- 普通 `SessionStart`（`startup`、`resume`、`clear`、缺少或未知 `source`）注册为 idle，不进入活跃列表，并按既有规则结束上一轮状态；`SessionStart(source=compact)` 对已有 session 只更新定位元数据与 `last_seen_at`，保留 running/waiting/idle、prompt 和未解决 request，首次看到时仅创建 idle 记录。`UserPromptSubmit` 进入 running；`PermissionRequest` 与 `request_user_input` 的 `PreToolUse` 进入 waiting；`PostToolUse` 仅在当前 turn 已处于 running/waiting 时回到 running；`Stop` 进入 idle；`SessionEnd` 移除 runtime session。
 - waiting 数量按 session 计算，不按 request 叠加；同一 session 可以显示 active request 数。
 - attention event key 必须稳定去重。PermissionRequest 在缺少 tool use ID 时使用规范化 JSON 的输入 hash，只存 hash，不存输入正文。
 - notified 与 resolved 分开记录。一次新 request 只发一次声音并自动展开灵动岛；点击会话只跳转，不解决 request；重启不重放历史声音。
