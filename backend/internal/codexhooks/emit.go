@@ -93,6 +93,8 @@ func normalizeCodexAppBackgroundEvent(event attention.Event) attention.Event {
 type rawHookEvent struct {
 	SessionID     string          `json:"session_id"`
 	TurnID        string          `json:"turn_id"`
+	AgentID       string          `json:"agent_id"`
+	AgentType     string          `json:"agent_type"`
 	CWD           string          `json:"cwd"`
 	HookEventName string          `json:"hook_event_name"`
 	Model         string          `json:"model"`
@@ -123,6 +125,11 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 	raw.HookEventName = strings.TrimSpace(raw.HookEventName)
 	if raw.SessionID == "" || raw.HookEventName == "" {
 		return attention.Event{}, errors.New("Codex Hook 事件缺少 session 或事件名")
+	}
+	if strings.TrimSpace(raw.AgentID) != "" || strings.TrimSpace(raw.AgentType) != "" {
+		// Subagent 由用户 turn 内部派生，不单独进入 Dora 的可见运行列表。
+		raw.HookEventName = "SessionEnd"
+		raw.Prompt = ""
 	}
 	event := attention.Event{
 		SessionID:    raw.SessionID,

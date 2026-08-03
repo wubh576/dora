@@ -252,11 +252,12 @@ func TestEmitterBoundsPromptBeforeLoopbackRequest(t *testing.T) {
 	}
 }
 
-func TestEmitterEndsOnlyCodexAppOverviewBackgroundPrompt(t *testing.T) {
+func TestEmitterEndsOnlyVerifiedBackgroundPrompts(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		surface   Surface
 		prompt    string
+		agentJSON string
 		eventName string
 	}{
 		{
@@ -267,6 +268,14 @@ func TestEmitterEndsOnlyCodexAppOverviewBackgroundPrompt(t *testing.T) {
 		{
 			name: "Codex App user prompt", surface: Surface{Name: domain.CodexSurfaceApp},
 			prompt: "帮我修复菜单栏", eventName: "UserPromptSubmit",
+		},
+		{
+			name: "Codex App subagent prompt", surface: Surface{Name: domain.CodexSurfaceApp},
+			prompt: "运行测试", agentJSON: `,"agent_id":"child-1","agent_type":"worker"`, eventName: "SessionEnd",
+		},
+		{
+			name: "CLI subagent prompt", surface: Surface{Name: domain.CodexSurfaceCLI},
+			prompt: "检查实现", agentJSON: `,"agent_id":"child-2"`, eventName: "SessionEnd",
 		},
 		{
 			name: "CLI same prefix", surface: Surface{Name: domain.CodexSurfaceCLI},
@@ -288,7 +297,7 @@ func TestEmitterEndsOnlyCodexAppOverviewBackgroundPrompt(t *testing.T) {
 				})},
 				detector: fixedDetector{surface: test.surface},
 			}
-			input := fmt.Sprintf(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":%q}`, test.prompt)
+			input := fmt.Sprintf(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":%q%s}`, test.prompt, test.agentJSON)
 			if err := emitter.Emit(context.Background(), strings.NewReader(input)); err != nil {
 				t.Fatal(err)
 			}
@@ -306,33 +315,49 @@ func TestEmitterEndsOnlyCodexAppOverviewBackgroundPrompt(t *testing.T) {
 	}
 }
 
-func TestOverviewBackgroundPromptRemovesRegisteredRuntimeSession(t *testing.T) {
-	ctx := context.Background()
-	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
-	apply := func(raw string, at time.Time) {
-		t.Helper()
-		event, err := parseHookEvent(strings.NewReader(raw), Surface{Name: domain.CodexSurfaceApp})
-		if err != nil {
-			t.Fatal(err)
-		}
-		event = normalizeCodexAppBackgroundEvent(event)
-		domainEvent, err := event.Domain(at)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.ApplyCodexHookEvent(ctx, domainEvent); err != nil {
-			t.Fatal(err)
-		}
-	}
-	apply(`{"session_id":"ambient","cwd":"/tmp/dora","hook_event_name":"SessionStart"}`, now)
-	apply(`{"session_id":"ambient","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"# Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/dora"}`, now.Add(time.Second))
-	if _, err := store.RuntimeSessionState(ctx, "ambient"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("Ambient Suggestions runtime 未被移除: %v", err)
+func TestBackgroundPromptsRemoveRegisteredRuntimeSession(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		prompt string
+	}{
+		{
+			name:   "Ambient Suggestions",
+			prompt: `{"session_id":"background","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"# Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/dora"}`,
+		},
+		{
+			name:   "subagent",
+			prompt: `{"session_id":"background","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"运行测试","agent_id":"child-1","agent_type":"worker"}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
+			apply := func(raw string, at time.Time) {
+				t.Helper()
+				event, err := parseHookEvent(strings.NewReader(raw), Surface{Name: domain.CodexSurfaceApp})
+				if err != nil {
+					t.Fatal(err)
+				}
+				event = normalizeCodexAppBackgroundEvent(event)
+				domainEvent, err := event.Domain(at)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.ApplyCodexHookEvent(ctx, domainEvent); err != nil {
+					t.Fatal(err)
+				}
+			}
+			apply(`{"session_id":"background","cwd":"/tmp/dora","hook_event_name":"SessionStart"}`, now)
+			apply(test.prompt, now.Add(time.Second))
+			if _, err := store.RuntimeSessionState(ctx, "background"); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("后台 runtime 未被移除: %v", err)
+			}
+		})
 	}
 }
 

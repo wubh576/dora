@@ -152,7 +152,7 @@ open http://127.0.0.1:8080
 "$HOME/Library/Application Support/Dora/bin/dora" hooks uninstall codex
 ```
 
-Hook helper 只向固定的 `127.0.0.1:8080` 发送有界、脱敏 JSON，不跟随重定向。Dora 不保存完整 prompt、回复、完整命令、工具参数、环境变量、transcript 路径或完整 cwd；仅对 `UserPromptSubmit` 保存去控制字符、压缩空白且最多 160 个 Unicode 字符的一行摘要，用于活跃会话展示，并在 `Stop`、新 `SessionStart` 或 `SessionEnd` 时清除。SQLite 的临时 runtime 记录还包含 external session ID、cwd basename、模型、App/CLI surface、受支持终端的精确 TTY 和等待状态；运行态 API 不返回这些原始定位值，只返回脱敏的 `jumpable` 与 `jumpReason`。`SessionEnd` 或跳转确认目标已消失时会移除 runtime session；Dora 重启时把上次遗留的 running 恢复为 idle，保留尚未解决的 waiting，但不会对历史请求重复发声。Codex App 项目首页生成个性化建议时使用的固定 `# Overview` 后台 prompt 会转换成最小结束事件，不显示成用户会话。
+Hook helper 只向固定的 `127.0.0.1:8080` 发送有界、脱敏 JSON，不跟随重定向。Dora 不保存完整 prompt、回复、完整命令、工具参数、环境变量、transcript 路径或完整 cwd；仅对 `UserPromptSubmit` 保存去控制字符、压缩空白且最多 160 个 Unicode 字符的一行摘要，用于活跃会话展示，并在 `Stop`、新 `SessionStart` 或 `SessionEnd` 时清除。SQLite 的临时 runtime 记录还包含 external session ID、cwd basename、模型、App/CLI surface、受支持终端的精确 TTY 和等待状态；运行态 API 不返回这些原始定位值，只返回脱敏的 `jumpable` 与 `jumpReason`。`SessionEnd` 或跳转确认目标已消失时会移除 runtime session；Dora 重启时把上次遗留的 running 恢复为 idle，保留尚未解决的 waiting，但不会对历史请求重复发声。运行列表只由用户主动提交的 root prompt 启动；Codex 0.146.0 标记了 `agent_id` 或 `agent_type` 的 subagent 事件会转换成最小结束事件，Codex App 固定 `# Overview` Ambient Suggestions 后台 prompt 也会被排除。该规则只影响实时会话与提醒，后台模型实际消耗仍计入 token 和费用。
 
 PermissionRequest 不存在假想的即时 resolved 回调。Codex CLI `0.146.0` 实测 Allow 后最早在 `PostToolUse` 解除；按 Esc 取消后没有即时完成事件，最早在下一次 `UserPromptSubmit` 解除。Dora 也会在 `Stop` 或 `SessionEnd` 清理 waiting。进程异常退出时，瞬时 running 不跨重启延续；未解决的 waiting 继续展示，超过 7 天没有任何 Hook 活动后由最终 stale reconciliation 清理，不会用几秒钟的盲目 timeout 提前解除真实等待。
 
