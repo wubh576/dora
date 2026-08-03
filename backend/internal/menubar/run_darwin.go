@@ -179,7 +179,7 @@ func doraIslandOnEvent(kind C.int, value C.longlong) {
 }
 
 //export doraIslandOnScreen
-func doraIslandOnScreen(x, y, width, height, visibleX, visibleY, visibleWidth, visibleHeight, safeTop C.double) {
+func doraIslandOnScreen(x, y, width, height, visibleX, visibleY, visibleWidth, visibleHeight, safeTop, menuBarThickness C.double) {
 	activeBridge.RLock()
 	events := activeBridge.events
 	activeBridge.RUnlock()
@@ -187,9 +187,10 @@ func doraIslandOnScreen(x, y, width, height, visibleX, visibleY, visibleWidth, v
 		return
 	}
 	metrics := ScreenMetrics{
-		Frame:   Rect{X: float64(x), Y: float64(y), Width: float64(width), Height: float64(height)},
-		Visible: Rect{X: float64(visibleX), Y: float64(visibleY), Width: float64(visibleWidth), Height: float64(visibleHeight)},
-		SafeTop: float64(safeTop),
+		Frame:            Rect{X: float64(x), Y: float64(y), Width: float64(width), Height: float64(height)},
+		Visible:          Rect{X: float64(visibleX), Y: float64(visibleY), Width: float64(visibleWidth), Height: float64(visibleHeight)},
+		SafeTop:          float64(safeTop),
+		MenuBarThickness: float64(menuBarThickness),
 	}
 	select {
 	case events.screen <- metrics:

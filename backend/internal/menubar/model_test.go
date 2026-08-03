@@ -92,7 +92,7 @@ func TestCalculateLayoutAlwaysAnchorsTopAndKeepsCompactCopyFixed(t *testing.T) {
 		}
 		first := CalculateLayout(screen, false, 0, 0, 0)
 		second := CalculateLayout(screen, false, 20, 99, 77)
-		if first.Frame.Width != 360 || second.Frame.Width != first.Frame.Width {
+		if first.Frame.Width != 360 || second.Frame.Width != first.Frame.Width || first.Frame.Height != 35 {
 			t.Fatalf("compact 宽度随状态变化: first=%+v second=%+v", first.Frame, second.Frame)
 		}
 	}
@@ -100,6 +100,50 @@ func TestCalculateLayoutAlwaysAnchorsTopAndKeepsCompactCopyFixed(t *testing.T) {
 		MachineState{Mode: ModeCompact}, testScreen(), time.Now(), false, "连接失败")
 	if view.CompactSummary != "Dora" || view.CompactTokens != "今日 token 24K" {
 		t.Fatalf("compact 固定文案被状态替换: %+v", view)
+	}
+}
+
+func TestCompactHeightFollowsCurrentMenuBarBounds(t *testing.T) {
+	tests := []struct {
+		name   string
+		screen ScreenMetrics
+		want   float64
+	}{
+		{
+			name: "可见菜单栏使用实际上下边界",
+			screen: ScreenMetrics{
+				Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 944},
+				SafeTop: 32, MenuBarThickness: 22,
+			},
+			want: 38,
+		},
+		{
+			name: "自动隐藏菜单栏时使用安全区",
+			screen: ScreenMetrics{
+				Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 982},
+				SafeTop: 32, MenuBarThickness: 22,
+			},
+			want: 32,
+		},
+		{
+			name: "普通屏自动隐藏时使用系统菜单栏厚度",
+			screen: ScreenMetrics{
+				Frame: Rect{Width: 1920, Height: 1080}, Visible: Rect{Width: 1920, Height: 1080},
+				MenuBarThickness: 22,
+			},
+			want: 22,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			layout := CalculateLayout(test.screen, false, 0, 0, 0)
+			if layout.Frame.Height != test.want {
+				t.Fatalf("compact 高度 = %.1f, want %.1f", layout.Frame.Height, test.want)
+			}
+			if layout.Frame.Y+layout.Frame.Height != test.screen.Frame.Y+test.screen.Frame.Height {
+				t.Fatalf("compact 未贴合屏幕顶边: %+v", layout.Frame)
+			}
+		})
 	}
 }
 
@@ -126,8 +170,7 @@ func TestBuildViewDistinguishesSuccessAndErrorStatus(t *testing.T) {
 
 func testScreen() ScreenMetrics {
 	return ScreenMetrics{
-		Frame:   Rect{Width: 1512, Height: 982},
-		Visible: Rect{Width: 1512, Height: 947},
-		SafeTop: 32,
+		Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947},
+		SafeTop: 32, MenuBarThickness: 22,
 	}
 }

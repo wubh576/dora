@@ -15,9 +15,10 @@ type Rect struct {
 }
 
 type ScreenMetrics struct {
-	Frame   Rect
-	Visible Rect
-	SafeTop float64
+	Frame            Rect
+	Visible          Rect
+	SafeTop          float64
+	MenuBarThickness float64
 }
 
 type PanelLayout struct {
@@ -107,7 +108,7 @@ func CalculateLayout(screen ScreenMetrics, expanded bool, sessions, running, wai
 	if visible.Width <= 0 || visible.Height <= 0 {
 		visible = screen.Frame
 	}
-	width, height := 360.0, 40.0
+	width, height := 360.0, compactHeight(screen)
 	if !expanded {
 		width = 360
 	} else {
@@ -125,6 +126,17 @@ func CalculateLayout(screen ScreenMetrics, expanded bool, sessions, running, wai
 		viewport = max(0, height-176)
 	}
 	return PanelLayout{Frame: frame, Scrollable: expanded && float64(sessions)*56 > viewport, SessionViewport: viewport}
+}
+
+func compactHeight(screen ScreenMetrics) float64 {
+	// visibleFrame 的顶边差值是当前屏幕实际被菜单栏占用的高度。
+	if height := screen.Frame.Y + screen.Frame.Height - (screen.Visible.Y + screen.Visible.Height); height > 0 {
+		return height
+	}
+	if screen.SafeTop > 0 {
+		return screen.SafeTop
+	}
+	return max(1, screen.MenuBarThickness)
 }
 
 func sessionRows(runtime RuntimeState, highlight int64, now time.Time) []SessionRow {

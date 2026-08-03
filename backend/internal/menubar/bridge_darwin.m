@@ -3,7 +3,7 @@
 extern void doraIslandOnEvent(int kind, long long value);
 extern void doraIslandOnScreen(double x, double y, double width, double height,
                                double visibleX, double visibleY, double visibleWidth, double visibleHeight,
-                               double safeTop);
+                               double safeTop, double menuBarThickness);
 
 @class DoraIslandPanel;
 static DoraIslandPanel *doraPanel;
@@ -292,8 +292,10 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     CGFloat width = self.bounds.size.width;
     CGFloat height = self.bounds.size.height;
     self.compactView.frame = self.bounds;
-    self.compactTitle.frame = NSMakeRect(18, 8, 110, 24);
-    self.compactTokens.frame = NSMakeRect(width - 172, 8, 154, 24);
+    CGFloat compactLabelHeight = MIN(24, height);
+    CGFloat compactLabelY = (height - compactLabelHeight) / 2;
+    self.compactTitle.frame = NSMakeRect(18, compactLabelY, 110, compactLabelHeight);
+    self.compactTokens.frame = NSMakeRect(width - 172, compactLabelY, 154, compactLabelHeight);
     self.expandedView.frame = self.bounds;
     self.expandedTitle.frame = NSMakeRect(18, height - 37, 80, 22);
     self.countLabel.frame = NSMakeRect(width - 210, height - 35, 190, 20);
@@ -443,7 +445,18 @@ static void doraSendScreen(void) {
     NSRect visible = screen.visibleFrame;
     doraIslandOnScreen(frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
                        visible.origin.x, visible.origin.y, visible.size.width, visible.size.height,
-                       safe.top);
+                       safe.top, NSStatusBar.systemStatusBar.thickness);
+}
+
+static CGFloat doraCompactHeight(NSScreen *screen) {
+    if (screen != nil) {
+        CGFloat visibleMenuBarHeight = NSMaxY(screen.frame) - NSMaxY(screen.visibleFrame);
+        if (visibleMenuBarHeight > 0) return visibleMenuBarHeight;
+        if (@available(macOS 12.0, *)) {
+            if (screen.safeAreaInsets.top > 0) return screen.safeAreaInsets.top;
+        }
+    }
+    return MAX(1, NSStatusBar.systemStatusBar.thickness);
 }
 
 static void doraApplyView(NSDictionary *view) {
@@ -455,6 +468,9 @@ static void doraApplyView(NSDictionary *view) {
     doraPanel.targetFrame = target;
     doraPanel.hasTargetFrame = YES;
     [doraPanel.islandContent applyView:view];
+    BOOL expanded = [view[@"expanded"] boolValue];
+    doraPanel.hasShadow = expanded;
+    doraPanel.islandContent.layer.cornerRadius = MIN(20, target.size.height / 2);
     if (!targetChanged) return;
 
     if (doraFrameAnimation != nil) {
@@ -485,20 +501,21 @@ void doraIslandStart(void) {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     NSScreen *screen = NSScreen.screens.firstObject ?: NSScreen.mainScreen;
     NSRect screenFrame = screen != nil ? screen.frame : NSMakeRect(0, 0, 1512, 982);
-    NSRect initial = NSMakeRect(NSMidX(screenFrame) - 180, NSMaxY(screenFrame) - 40, 360, 40);
+    CGFloat compactHeight = doraCompactHeight(screen);
+    NSRect initial = NSMakeRect(NSMidX(screenFrame) - 180, NSMaxY(screenFrame) - compactHeight, 360, compactHeight);
     doraPanel = [[DoraIslandPanel alloc]
         initWithContentRect:initial styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         backing:NSBackingStoreBuffered defer:NO];
     doraPanel.opaque = NO;
     doraPanel.backgroundColor = NSColor.clearColor;
-    doraPanel.hasShadow = YES;
+    doraPanel.hasShadow = NO;
     doraPanel.hidesOnDeactivate = NO;
     doraPanel.level = NSStatusWindowLevel;
     doraPanel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
                                    NSWindowCollectionBehaviorFullScreenAuxiliary |
                                    NSWindowCollectionBehaviorStationary;
     doraPanel.becomesKeyOnlyIfNeeded = YES;
-    doraPanel.islandContent = [[DoraIslandContentView alloc] initWithFrame:NSMakeRect(0, 0, 360, 40)];
+    doraPanel.islandContent = [[DoraIslandContentView alloc] initWithFrame:NSMakeRect(0, 0, 360, compactHeight)];
     doraPanel.contentView = doraPanel.islandContent;
     doraScreenObserver = [NSNotificationCenter.defaultCenter
         addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue
