@@ -255,7 +255,11 @@ func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID in
 			controller.setStatusLocked(fmt.Sprintf("跳转 Codex 会话失败：%v", err))
 		}
 		controller.mu.Unlock()
-		controller.machine.OperationEnd(err == nil)
+		if err == nil {
+			controller.machine.Dismiss()
+		} else {
+			controller.machine.OperationEnd(false)
+		}
 		controller.publish()
 		controller.LoadRuntimeAsync(ctx)
 	}()

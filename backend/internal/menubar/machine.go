@@ -45,12 +45,13 @@ type Machine struct {
 	onChange      func(MachineState)
 	state         MachineState
 
-	pointerReported bool
-	hoverReady      bool
-	attentionActive bool
-	uiInteraction   bool
-	operationActive bool
-	failureHold     bool
+	pointerReported   bool
+	hoverReady        bool
+	attentionActive   bool
+	uiInteraction     bool
+	operationActive   bool
+	failureHold       bool
+	dismissUntilLeave bool
 
 	hoverTimer          timer
 	collapseTimer       timer
@@ -95,7 +96,9 @@ func (machine *Machine) Hover(inside bool) {
 	if inside {
 		machine.pointerReported = true
 		machine.cancelCollapseLocked()
-		machine.startHoverIntentLocked()
+		if !machine.dismissUntilLeave {
+			machine.startHoverIntentLocked()
+		}
 		state, changed := machine.updateStateLocked()
 		machine.mu.Unlock()
 		machine.changed(state, changed)
@@ -103,6 +106,7 @@ func (machine *Machine) Hover(inside bool) {
 	}
 
 	machine.pointerReported = false
+	machine.dismissUntilLeave = false
 	machine.cancelHoverIntentLocked()
 	if machine.hoverReady || machine.failureHold {
 		machine.startCollapseLocked()
@@ -123,6 +127,7 @@ func (machine *Machine) Attention(requestID, sessionID int64) bool {
 		return false
 	}
 	machine.seenRequests[requestID] = struct{}{}
+	machine.dismissUntilLeave = false
 	machine.attentionActive = true
 	machine.failureHold = false
 	machine.cancelCollapseLocked()
@@ -152,8 +157,11 @@ func (machine *Machine) UIInteraction(active bool) {
 	}
 	machine.uiInteraction = active
 	if active {
+		machine.dismissUntilLeave = false
 		machine.failureHold = false
 		machine.cancelCollapseLocked()
+	} else if machine.dismissUntilLeave {
+		machine.pointerReported = inside
 	} else {
 		machine.pointerReported = inside
 		if inside {
@@ -175,6 +183,7 @@ func (machine *Machine) OperationStart() {
 		return
 	}
 	machine.operationActive = true
+	machine.dismissUntilLeave = false
 	machine.failureHold = false
 	machine.cancelCollapseLocked()
 	state, changed := machine.updateStateLocked()
@@ -211,7 +220,32 @@ func (machine *Machine) HoldFailure() {
 		return
 	}
 	machine.failureHold = true
+	machine.dismissUntilLeave = false
 	machine.cancelCollapseLocked()
+	state, changed := machine.updateStateLocked()
+	machine.mu.Unlock()
+	machine.changed(state, changed)
+}
+
+// Dismiss 用于成功跳转：先收起，并忽略同一次点击留下的 mouse-up/hover。
+func (machine *Machine) Dismiss() {
+	machine.mu.Lock()
+	if machine.stopped {
+		machine.mu.Unlock()
+		return
+	}
+	machine.dismissUntilLeave = true
+	machine.pointerReported = false
+	machine.hoverReady = false
+	machine.attentionActive = false
+	machine.uiInteraction = false
+	machine.operationActive = false
+	machine.failureHold = false
+	machine.state.HighlightSessionID = 0
+	machine.state.HighlightRequestID = 0
+	machine.cancelHoverIntentLocked()
+	machine.cancelCollapseLocked()
+	machine.cancelAttentionLocked()
 	state, changed := machine.updateStateLocked()
 	machine.mu.Unlock()
 	machine.changed(state, changed)
@@ -337,6 +371,10 @@ func (machine *Machine) cancelCollapseLocked() {
 func (machine *Machine) stopTimersLocked() {
 	machine.cancelHoverIntentLocked()
 	machine.cancelCollapseLocked()
+	machine.cancelAttentionLocked()
+}
+
+func (machine *Machine) cancelAttentionLocked() {
 	machine.attentionGeneration++
 	if machine.attentionTimer != nil {
 		machine.attentionTimer.Stop()

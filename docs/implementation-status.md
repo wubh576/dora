@@ -451,13 +451,14 @@
 
 - compact 与 expanded 共用一个持久 `NSPanel`，顶边精确贴合主屏幕顶部，上角保持直角、下角保留圆角；compact 固定为 `360 × 40pt`，只显示 Dora 与今日 token。
 - AppKit 主线程每 50ms 比较鼠标与当前 panel frame，只在内外状态变化时通知状态机；配合 100ms hover intent，进入后最迟约 150ms 展开。展开后只要鼠标仍在整个区域内就保持展开；离开后延迟 450ms 收起，收起和 attention timer 到期时仍会复查鼠标位置。
+- 成功跳转后主动清除所有展开理由并立即收起，在鼠标真正离开前抑制同一次点击的迟到 mouse-up/hover；跳转失败仍保持展开以显示真实原因。
 - AppKit 视图树和 session 行按稳定 ID 增量更新，保留滚动位置；每秒 runtime 刷新不再反复重建子视图、调用 `orderFrontRegardless` 或为相同 frame 启动动画。
 - `SessionStart` 只注册 idle，`UserPromptSubmit` 才进入 running；`PostToolUse` 不会复活已结束 turn，`Stop` 清理 preview 并回到 idle，`SessionEnd` 删除记录。启动时将旧 running 恢复为 idle，同时保留 waiting。
 - `/runtime` 返回脱敏的 `jumpable` 与 `jumpReason`。App 需要 thread ID，iTerm2/Terminal 需要 exact TTY；其他可监控但不可精确跳转的会话仍显示为禁用行，并在底部说明原因。
 
 验证记录：
 
-- 自动测试覆盖贴顶几何、compact 固定文案与尺寸、hover intent/延迟/竞态、pointer 复查、attention 与交互组合、相同布局不重复动画、完整 Hook 状态转换、启动恢复和跳转能力隐私。
+- 自动测试覆盖贴顶几何、compact 固定文案与尺寸、hover intent/延迟/竞态、pointer 复查、成功跳转强制收起与迟到事件抑制、attention 与交互组合、相同布局不重复动画、完整 Hook 状态转换、启动恢复和跳转能力隐私。
 - `make verify`、`go test -race ./...`、`go vet ./...` 和 `git diff --check` 通过；前端 TypeScript/Vite 与原生 Objective-C/Go production build 通过。
 - 当前 Mac 的真实 LaunchAgent 已覆盖本次构建；WindowServer 实测 compact 为 `360 × 40pt`、expanded 为 `760 × 520pt`，两种状态的顶边均为屏幕 `Y=0`。真实截图确认上角直角、下角圆角和连续深色容器。
 - 使用同一 production 二进制的临时 App bundle 完成辅助功能交互验收：panel 内持续操作超过 90 秒没有误收起或闪烁，列表滚动值完成 `0 → 1 → 0`，在多次每秒 runtime 刷新后保持原滚动位置；不可跳转行、底部刷新和真实 Codex App 行点击均返回可读结果。验收后进程、18083 端口、临时数据库和 App bundle 已清理。

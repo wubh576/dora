@@ -285,8 +285,8 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
         owner:self userInfo:nil];
     [self addTrackingArea:self.doraTrackingArea];
 }
-- (void)mouseEntered:(NSEvent *)event { doraPublishPointerState(YES); }
-- (void)mouseExited:(NSEvent *)event { doraPublishPointerState(NO); }
+- (void)mouseEntered:(NSEvent *)event { doraSamplePointer(); }
+- (void)mouseExited:(NSEvent *)event { doraSamplePointer(); }
 - (void)layout {
     [super layout];
     CGFloat width = self.bounds.size.width;

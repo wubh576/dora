@@ -1434,6 +1434,7 @@ dora hooks emit codex
 - 展开态按 session 展示 Codex surface、会话名回退、清洗后的 prompt 摘要、等待时长和 active request 数；实时轮询独立于 usage scan。
 - Codex App 使用参数化 `codex://threads/<external_session_id>` deep link 并前台激活。
 - iTerm2 与 Terminal 使用 AppleScript 精确匹配 TTY；TTY 只能通过 `osascript` argv 传入，不插值进源码，并负责取消最小化和激活窗口。
+- 精确跳转执行期间保持展开；成功后清除 attention、hover、交互和操作等展开理由并立即收起，直到鼠标真正离开后才重新允许 hover 展开，避免同一次点击的 mouse-up 或窗口动画事件把面板重新撑开。失败时继续展开并显示原因。
 - 不使用窗口标题、cwd 或“最近窗口”模糊匹配。目标消失时给出明确错误并解决对应 runtime 状态。
 - runtime API 对每行返回脱敏的 `jumpable/jumpReason`。不可精确定位的活跃行仍可监控，但使用弱化样式并在 tooltip/底部说明原因，不能表现成点击后无反馈。
 - 首次控制 iTerm2/Terminal 时由 macOS Automation 权限保护；拒绝或未授权必须显示可行动错误，不能误判为目标已经结束。

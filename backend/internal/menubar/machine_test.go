@@ -159,6 +159,38 @@ func TestMachineInteractionEndRechecksPointerInsidePanel(t *testing.T) {
 	}
 }
 
+func TestMachineDismissCollapsesAllReasonsUntilPointerLeaves(t *testing.T) {
+	scheduler := &manualScheduler{}
+	pointerInside := true
+	machine := newMachine(scheduler, func() bool { return pointerInside }, nil)
+	machine.Attention(9, 7)
+	machine.UIInteraction(true)
+	machine.OperationStart()
+	machine.Dismiss()
+	if state := machine.State(); state.Mode != ModeCompact || state.HighlightRequestID != 0 || state.HighlightSessionID != 0 {
+		t.Fatalf("成功跳转后未立即收起: %+v", state)
+	}
+
+	// 跳转返回可能早于同一次点击的 mouse-up，旧 hover 也可能在窗口动画期间迟到。
+	machine.UIInteraction(false)
+	machine.Hover(true)
+	for _, timer := range scheduler.timers {
+		timer.forceFire()
+	}
+	if state := machine.State(); state.Mode != ModeCompact {
+		t.Fatalf("迟到交互重新展开面板: %+v", state)
+	}
+
+	pointerInside = false
+	machine.Hover(false)
+	pointerInside = true
+	machine.Hover(true)
+	scheduler.timers[len(scheduler.timers)-1].fire()
+	if state := machine.State(); state.Mode != ModeHover {
+		t.Fatalf("真正离开后无法再次 hover 展开: %+v", state)
+	}
+}
+
 func TestMachineIgnoresLateTimersAndStop(t *testing.T) {
 	scheduler := &manualScheduler{}
 	pointerInside := false

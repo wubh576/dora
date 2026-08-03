@@ -280,6 +280,23 @@ func TestControllerSuccessfulRetryClearsPreviousJumpError(t *testing.T) {
 	}
 }
 
+func TestControllerSuccessfulJumpDismissesWhilePointerRemainsInside(t *testing.T) {
+	controller := NewController(&fakeLoader{}, fakeRefresher{}, "", func(View) {})
+	controller.SetSessionJumper(&fakeJumper{})
+	controller.machine.SetPointerChecker(func() bool { return true })
+	controller.NotifyAttention(9, 7)
+	controller.UIInteraction(true)
+	if !controller.JumpSessionAsync(context.Background(), 7) {
+		t.Fatal("JumpSessionAsync 未启动")
+	}
+	waitForJumpIdle(t, controller)
+	controller.UIInteraction(false)
+	controller.Hover(true)
+	if state := controller.machine.State(); state.Mode != ModeCompact {
+		t.Fatalf("成功跳转后被迟到事件重新展开: %+v", state)
+	}
+}
+
 func TestControllerRuntimeRefreshWithSameLayoutDoesNotAnimateFrame(t *testing.T) {
 	loader := &fakeLoader{
 		state:   State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 1000}}},
