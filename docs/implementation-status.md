@@ -542,3 +542,17 @@
 - 原生测试覆盖 local/global monitor 生命周期、四类 mouse event mask、local event 原样返回、状态去重，以及首显、立即 frame、屏幕变化和动画完成后的采样边界；空 runtime 的 `sessions` JSON 契约固定为 `[]`，避免 AppKit 首次采样收到 `NSNull`。
 - 当前 Mac 的真实 LaunchAgent 已覆盖本次 production 构建：从左、右、下方累计完成 20 次进入/离开，并完成 4 条按住鼠标拖入/拖出路径；控制条持续存活，离开后恢复紧凑态，未出现新权限弹窗。连续 CPU 采样除一次既有数据刷新峰值外为 `0.0%`～`3.4%`，没有固定 20Hz pointer 唤醒。
 - `make verify`、`go vet ./...`、菜单栏 race 测试与 `git diff --check` 通过；独立 Code Review 的首轮两个问题均已修复，复审确认无剩余 P0/P1/P2/P3。
+
+## 里程碑 30：操作按钮完成后收起
+
+已完成：
+
+- 刷新点击被接受后立即进入通用 dismiss-until-leave 状态，后台扫描继续执行；成功只更新数据和状态，不覆盖刷新期间新到的 attention 或用户后续 hover，失败则重新展开显示真实原因。
+- 极快的重复刷新点击即使被 single-flight 拒绝，也会结束完整的 mouse-down/action/mouse-up 交互并保持紧凑，不会因按钮禁用视图尚未应用而重新展开。
+- 仪表盘成功交给默认浏览器后立即收起；启动浏览器失败时保留展开状态和错误提示。
+
+验证记录：
+
+- 状态机回归测试覆盖刷新立即收起、成功后的下一次真实 hover、新 attention 保留、部分失败重新展开、快速重复点击，以及仪表盘成功和失败路径。
+- 当前 Mac 的真实 LaunchAgent 已点击刷新并确认 `lastScanAt` 与 quota `fetchedAt` 更新；点击仪表盘后 Chrome 打开 `127.0.0.1:8080`。两次操作均使用最终 production 构建。
+- `make verify`、`go vet ./...`、菜单栏 race 测试与 `git diff --check` 通过；独立 Code Review 首轮发现的成功回调覆盖新状态和快速重复点击问题均已修复，复审确认无剩余 P0/P1/P2/P3。

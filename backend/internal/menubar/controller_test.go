@@ -93,15 +93,27 @@ func (refresher *blockingRefresher) Refresh(context.Context) (error, error) {
 	return nil, errors.New("quota offline")
 }
 
+type successfulBlockingRefresher struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (refresher *successfulBlockingRefresher) Refresh(context.Context) (error, error) {
+	close(refresher.started)
+	<-refresher.release
+	return nil, nil
+}
+
 type recordingRunner struct {
 	name string
 	args []string
+	err  error
 }
 
 func (runner *recordingRunner) Run(name string, args ...string) error {
 	runner.name = name
 	runner.args = append([]string(nil), args...)
-	return nil
+	return runner.err
 }
 
 func TestControllerLoadsUsageAndRuntimeIntoOneView(t *testing.T) {
@@ -188,12 +200,20 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 	loader := &fakeLoader{state: State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 2000}}}}
 	presented := make(chan View, 8)
 	controller := NewController(loader, refresher, "", func(view View) { presented <- view })
+	controller.SetPointerChecker(func() bool { return true })
+	controller.UIInteraction(true)
 	if !controller.RefreshAsync(context.Background()) {
 		t.Fatal("首次 refresh 未启动")
 	}
 	<-refresher.started
+	controller.UIInteraction(false)
+	controller.UIInteraction(true)
 	if controller.RefreshAsync(context.Background()) {
 		t.Fatal("并发 refresh 被错误接受")
+	}
+	controller.UIInteraction(false)
+	if state := controller.machine.State(); state.Mode != ModeCompact {
+		t.Fatalf("被拒绝的重复刷新点击未收起: %+v", state)
 	}
 	close(refresher.release)
 	deadline := time.After(time.Second)
@@ -201,6 +221,9 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 		select {
 		case view := <-presented:
 			if view.Today == "今日 2K tokens" && view.OperationStatus == "token 已更新，配额刷新失败" {
+				if view.Mode != string(ModeInteraction) {
+					t.Fatalf("刷新失败后未重新展开: %+v", view)
+				}
 				return
 			}
 		case <-deadline:
@@ -209,15 +232,106 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 	}
 }
 
-func TestControllerOpenDashboardUsesConfiguredLoopbackURL(t *testing.T) {
+func TestControllerRefreshDismissesClickAndStaysCompactAfterSuccess(t *testing.T) {
+	refresher := &successfulBlockingRefresher{started: make(chan struct{}), release: make(chan struct{})}
+	presented := make(chan View, 16)
+	controller := NewController(&fakeLoader{}, refresher, "", func(view View) { presented <- view })
+	pointerInside := true
+	controller.SetPointerChecker(func() bool { return pointerInside })
+	controller.UIInteraction(true)
+	if !controller.RefreshAsync(context.Background()) {
+		t.Fatal("refresh 未启动")
+	}
+	<-refresher.started
+	controller.UIInteraction(false)
+	if state := controller.machine.State(); state.Mode != ModeCompact {
+		t.Fatalf("刷新点击结束后未立即收起: %+v", state)
+	}
+	close(refresher.release)
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case view := <-presented:
+			if view.OperationStatus == "刷新完成" {
+				if view.Mode != string(ModeCompact) {
+					t.Fatalf("刷新成功后重新展开: %+v", view)
+				}
+				pointerInside = false
+				controller.Hover(false)
+				pointerInside = true
+				controller.Hover(true)
+				hoverDeadline := time.After(time.Second)
+				for controller.machine.State().Mode != ModeHover {
+					select {
+					case <-time.After(10 * time.Millisecond):
+					case <-hoverDeadline:
+						t.Fatalf("刷新完成后下一次真实进入仍被抑制: %+v", controller.machine.State())
+					}
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("刷新成功状态未发布")
+		}
+	}
+}
+
+func TestControllerSuccessfulRefreshPreservesNewAttention(t *testing.T) {
+	refresher := &successfulBlockingRefresher{started: make(chan struct{}), release: make(chan struct{})}
+	presented := make(chan View, 16)
+	controller := NewController(&fakeLoader{}, refresher, "", func(view View) { presented <- view })
+	if !controller.RefreshAsync(context.Background()) {
+		t.Fatal("refresh 未启动")
+	}
+	<-refresher.started
+	if !controller.NotifyAttention(91, 7) {
+		t.Fatal("刷新期间的新 attention 未被接受")
+	}
+	close(refresher.release)
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case view := <-presented:
+			if view.OperationStatus == "刷新完成" {
+				if view.Mode != string(ModeAttention) || view.HighlightRequestID != 91 || view.HighlightSessionID != 7 {
+					t.Fatalf("刷新成功错误清除了新 attention: %+v", view)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("刷新成功状态未发布")
+		}
+	}
+}
+
+func TestControllerOpenDashboardUsesConfiguredLoopbackURLAndDismissesClick(t *testing.T) {
 	runner := &recordingRunner{}
 	controller := NewController(&fakeLoader{}, fakeRefresher{}, "http://127.0.0.1:18083", func(View) {})
 	controller.runner = runner
+	controller.SetPointerChecker(func() bool { return true })
+	controller.UIInteraction(true)
 	if err := controller.OpenDashboard(); err != nil {
 		t.Fatal(err)
 	}
+	controller.UIInteraction(false)
 	if runner.name != "open" || len(runner.args) != 1 || runner.args[0] != "http://127.0.0.1:18083" {
 		t.Fatalf("open 参数错误: %s %+v", runner.name, runner.args)
+	}
+	if state := controller.machine.State(); state.Mode != ModeCompact {
+		t.Fatalf("打开仪表盘后未收起: %+v", state)
+	}
+}
+
+func TestControllerOpenDashboardFailureKeepsInteractionVisible(t *testing.T) {
+	runner := &recordingRunner{err: errors.New("open failed")}
+	controller := NewController(&fakeLoader{}, fakeRefresher{}, "http://127.0.0.1:18083", func(View) {})
+	controller.runner = runner
+	controller.UIInteraction(true)
+	if err := controller.OpenDashboard(); err == nil {
+		t.Fatal("打开仪表盘失败未返回错误")
+	}
+	if state := controller.machine.State(); state.Mode != ModeInteraction {
+		t.Fatalf("打开仪表盘失败时错误收起: %+v", state)
 	}
 }
 
