@@ -481,3 +481,14 @@
 - 自动测试覆盖真实标题与用户重命名优先级、空名称回退、Unicode 清洗与长度、缺失状态库、migration 8、后台同步失败保留缓存、Runtime API 隐私、App wrapper 与正文 marker 冲突、CLI prompt 保留和标题生命周期。
 - `make verify`、`go test -race ./...`、`go vet ./...`、原生 Objective-C/Go production build 与 `git diff --check` 通过；临时服务已关闭，18084 端口、临时 SQLite 和目录均已清理。
 - Code Review：独立 Reviewer 发现 App 正文重复 marker 会截断前文、控制字符名称不会回退原标题两个 P3；修复并补回归测试后复审通过，无剩余 P0/P1/P2/P3。
+
+## 里程碑 25：紧凑态实时 session 状态
+
+已完成：
+
+- compact 右侧从今日 token 改为 waiting/running session 数；存在 waiting 时状态使用红色，否则使用蓝色。状态沿用每秒 Runtime API 刷新，不被 token 刷新结果或错误文案覆盖。
+
+验证记录：
+
+- 菜单栏模型、Controller、Runtime 刷新和 AppKit production build 测试通过；`make verify` 与 `git diff --check` 通过。
+- Code Review：独立 Reviewer 发现旧里程碑与当前 compact 说明可能冲突的 P3；增加当前里程碑覆盖说明后复审通过，无剩余 P0/P1/P2/P3。

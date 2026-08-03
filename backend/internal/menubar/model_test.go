@@ -15,7 +15,7 @@ func TestBuildViewShowsWaitingBeforeRunningAndSafePreview(t *testing.T) {
 		}},
 	}
 	view := BuildView(state, MachineState{Mode: ModeAttention, HighlightSessionID: 1}, testScreen(), time.Now(), false, "")
-	if !view.Expanded || view.CompactSummary != "Dora" || view.CompactTokens != "今日 token 1.3M" {
+	if !view.Expanded || view.CompactSummary != "Dora" || view.CompactStatus != "1 等待 · 1 运行" {
 		t.Fatalf("compact 内容错误: %+v", view)
 	}
 	if len(view.Sessions) != 2 || view.Sessions[0].State != "waiting" || !view.Sessions[0].Highlight || !view.Sessions[0].Jumpable ||
@@ -98,7 +98,7 @@ func TestCalculateLayoutAlwaysAnchorsTopAndKeepsCompactCopyFixed(t *testing.T) {
 	}
 	view := BuildView(&State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 24_000}}, Runtime: RuntimeState{RunningCount: 3, WaitingCount: 2}},
 		MachineState{Mode: ModeCompact}, testScreen(), time.Now(), false, "连接失败")
-	if view.CompactSummary != "Dora" || view.CompactTokens != "今日 token 24K" {
+	if view.CompactSummary != "Dora" || view.CompactStatus != "2 等待 · 3 运行" {
 		t.Fatalf("compact 固定文案被状态替换: %+v", view)
 	}
 }

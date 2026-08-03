@@ -116,7 +116,7 @@ func TestControllerLoadsUsageAndRuntimeIntoOneView(t *testing.T) {
 	}
 	select {
 	case view := <-presented:
-		if view.CompactTokens != "今日 token 1K" || view.RunningCount != 1 || len(view.Sessions) != 1 {
+		if view.CompactStatus != "0 等待 · 1 运行" || view.RunningCount != 1 || len(view.Sessions) != 1 {
 			t.Fatalf("组合视图错误: %+v", view)
 		}
 	case <-time.After(time.Second):
@@ -153,7 +153,7 @@ func TestControllerDoesNotOverwriteNewRuntimeWithOlderFullLoad(t *testing.T) {
 	for {
 		select {
 		case view := <-presented:
-			if view.CompactTokens == "今日 token 1K" && view.RunningCount == 2 {
+			if view.Today == "今日 1K tokens" && view.CompactStatus == "0 等待 · 2 运行" && view.RunningCount == 2 {
 				return
 			}
 		case <-deadline:
@@ -200,7 +200,7 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 	for {
 		select {
 		case view := <-presented:
-			if view.CompactTokens == "今日 token 2K" && view.OperationStatus == "token 已更新，配额刷新失败" {
+			if view.Today == "今日 2K tokens" && view.OperationStatus == "token 已更新，配额刷新失败" {
 				return
 			}
 		case <-deadline:

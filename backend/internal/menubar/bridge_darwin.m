@@ -191,7 +191,7 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 @property(nonatomic, strong) NSTrackingArea *doraTrackingArea;
 @property(nonatomic, strong) NSView *compactView;
 @property(nonatomic, strong) NSTextField *compactTitle;
-@property(nonatomic, strong) NSTextField *compactTokens;
+@property(nonatomic, strong) NSTextField *compactStatus;
 @property(nonatomic, strong) NSView *expandedView;
 @property(nonatomic, strong) NSTextField *expandedTitle;
 @property(nonatomic, strong) NSTextField *countLabel;
@@ -229,10 +229,10 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 - (void)buildPersistentViews {
     self.compactView = [[NSView alloc] initWithFrame:self.bounds];
     self.compactTitle = doraLabel(@"Dora", 13, NSFontWeightSemibold, NSColor.whiteColor);
-    self.compactTokens = doraLabel(@"今日 token —", 12, NSFontWeightMedium, doraColor(0.72, 0.74, 0.78, 1.0));
-    self.compactTokens.alignment = NSTextAlignmentRight;
+    self.compactStatus = doraLabel(@"0 等待 · 0 运行", 12, NSFontWeightMedium, doraColor(0.42, 0.70, 1.0, 1.0));
+    self.compactStatus.alignment = NSTextAlignmentRight;
     [self.compactView addSubview:self.compactTitle];
-    [self.compactView addSubview:self.compactTokens];
+    [self.compactView addSubview:self.compactStatus];
     [self addSubview:self.compactView];
 
     self.expandedView = [[NSView alloc] initWithFrame:self.bounds];
@@ -295,7 +295,7 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     CGFloat compactLabelHeight = MIN(24, height);
     CGFloat compactLabelY = (height - compactLabelHeight) / 2;
     self.compactTitle.frame = NSMakeRect(18, compactLabelY, 110, compactLabelHeight);
-    self.compactTokens.frame = NSMakeRect(width - 172, compactLabelY, 154, compactLabelHeight);
+    self.compactStatus.frame = NSMakeRect(width - 172, compactLabelY, 154, compactLabelHeight);
     self.expandedView.frame = self.bounds;
     self.expandedTitle.frame = NSMakeRect(18, height - 37, 80, 22);
     self.countLabel.frame = NSMakeRect(width - 210, height - 35, 190, 20);
@@ -344,9 +344,10 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.compactView.hidden = expanded;
     self.expandedView.hidden = !expanded;
     self.compactTitle.stringValue = @"Dora";
-    self.compactTokens.stringValue = view[@"compactTokens"] ?: @"今日 token —";
+    self.compactStatus.stringValue = view[@"compactStatus"] ?: @"0 等待 · 0 运行";
     NSInteger waiting = [view[@"waitingCount"] integerValue];
     NSInteger running = [view[@"runningCount"] integerValue];
+    self.compactStatus.textColor = waiting > 0 ? doraColor(1.0, 0.39, 0.42, 1.0) : doraColor(0.42, 0.70, 1.0, 1.0);
     self.countLabel.stringValue = [NSString stringWithFormat:@"%ld 等待  ·  %ld 运行", (long)waiting, (long)running];
     self.countLabel.textColor = waiting > 0 ? doraColor(1.0, 0.39, 0.42, 1.0) : doraColor(0.42, 0.70, 1.0, 1.0);
     self.tokenLabels[0].stringValue = view[@"today"] ?: @"";

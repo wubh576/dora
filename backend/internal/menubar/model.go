@@ -33,7 +33,7 @@ type View struct {
 	Layout             PanelLayout  `json:"layout"`
 	AnimateFrame       bool         `json:"animateFrame"`
 	CompactSummary     string       `json:"compactSummary"`
-	CompactTokens      string       `json:"compactTokens"`
+	CompactStatus      string       `json:"compactStatus"`
 	WaitingCount       int          `json:"waitingCount"`
 	RunningCount       int          `json:"runningCount"`
 	Today              string       `json:"today"`
@@ -64,7 +64,7 @@ type SessionRow struct {
 func BuildView(state *State, machine MachineState, screen ScreenMetrics, now time.Time, refreshing bool, statusOverride string) View {
 	view := View{
 		Expanded: machine.Mode != ModeCompact, Mode: string(machine.Mode),
-		CompactSummary: "Dora", CompactTokens: "今日 token —", Today: "今日 —", SevenDays: "7 日 —", AllTime: "全部 —",
+		CompactSummary: "Dora", CompactStatus: "0 等待 · 0 运行", Today: "今日 —", SevenDays: "7 日 —", AllTime: "全部 —",
 		FiveHour: "Codex 5 小时配额：暂无数据", SevenDay: "Codex 7 日配额：暂无数据",
 		Status: "正在连接本地服务", Refreshing: refreshing,
 		HighlightSessionID: machine.HighlightSessionID,
@@ -73,7 +73,7 @@ func BuildView(state *State, machine MachineState, screen ScreenMetrics, now tim
 	if state != nil {
 		view.WaitingCount = state.Runtime.WaitingCount
 		view.RunningCount = state.Runtime.RunningCount
-		view.CompactTokens = "今日 token " + compactTokens(state.Snapshot.Usage.TodayTokens)
+		view.CompactStatus = fmt.Sprintf("%d 等待 · %d 运行", view.WaitingCount, view.RunningCount)
 		view.Today = tokenRow("今日", state.Snapshot.Usage.TodayTokens)
 		view.SevenDays = tokenRow("7 日", state.Snapshot.Usage.SevenDayTokens)
 		view.AllTime = tokenRow("全部", state.Snapshot.Usage.AllTimeTokens)
