@@ -15,11 +15,13 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/attention"
+	"github.com/wubh576/dora/backend/internal/domain"
 )
 
 const (
-	DefaultEndpoint = "http://127.0.0.1:8080/api/v1/hooks/codex"
-	maxInputBytes   = 256 << 10
+	DefaultEndpoint              = "http://127.0.0.1:8080/api/v1/hooks/codex"
+	maxInputBytes                = 256 << 10
+	codexAppOverviewPromptPrefix = "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:"
 )
 
 var ErrServiceUnavailable = errors.New("Dora 服务不可用")
@@ -52,6 +54,7 @@ func (emitter *Emitter) Emit(ctx context.Context, input io.Reader) error {
 	if err != nil {
 		return err
 	}
+	event = normalizeCodexAppBackgroundEvent(event)
 	body, err := json.Marshal(event)
 	if err != nil {
 		return errors.New("编码 Codex Hook 事件失败")
@@ -74,6 +77,17 @@ func (emitter *Emitter) Emit(ctx context.Context, input io.Reader) error {
 		return ErrServiceUnavailable
 	}
 	return fmt.Errorf("Dora 拒绝 Codex Hook 事件（HTTP %d）", response.StatusCode)
+}
+
+func normalizeCodexAppBackgroundEvent(event attention.Event) attention.Event {
+	if event.Surface == domain.CodexSurfaceApp &&
+		event.HookEvent == "UserPromptSubmit" &&
+		strings.HasPrefix(event.PromptPreview, codexAppOverviewPromptPrefix) {
+		// Ambient Suggestions 不发送 Stop；用最小结束事件清除已注册的后台 runtime。
+		event.HookEvent = "SessionEnd"
+		event.PromptPreview = ""
+	}
+	return event
 }
 
 type rawHookEvent struct {

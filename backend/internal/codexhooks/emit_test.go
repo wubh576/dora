@@ -2,6 +2,7 @@ package codexhooks
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wubh576/dora/backend/internal/attention"
 	"github.com/wubh576/dora/backend/internal/domain"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
@@ -247,6 +249,90 @@ func TestEmitterBoundsPromptBeforeLoopbackRequest(t *testing.T) {
 	}
 	if event.PromptPreview != strings.Repeat("x", 160) {
 		t.Fatalf("prompt preview 长度或内容错误: %d", len(event.PromptPreview))
+	}
+}
+
+func TestEmitterEndsOnlyCodexAppOverviewBackgroundPrompt(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		surface   Surface
+		prompt    string
+		eventName string
+	}{
+		{
+			name: "Codex App background", surface: Surface{Name: domain.CodexSurfaceApp},
+			prompt:    "# Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /Users/example/dora",
+			eventName: "SessionEnd",
+		},
+		{
+			name: "Codex App user prompt", surface: Surface{Name: domain.CodexSurfaceApp},
+			prompt: "帮我修复菜单栏", eventName: "UserPromptSubmit",
+		},
+		{
+			name: "CLI same prefix", surface: Surface{Name: domain.CodexSurfaceCLI},
+			prompt:    "# Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/dora",
+			eventName: "UserPromptSubmit",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var body []byte
+			emitter := &Emitter{
+				endpoint: "http://127.0.0.1:8080/api/v1/hooks/codex",
+				client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					var err error
+					body, err = io.ReadAll(request.Body)
+					if err != nil {
+						return nil, err
+					}
+					return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
+				})},
+				detector: fixedDetector{surface: test.surface},
+			}
+			input := fmt.Sprintf(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":%q}`, test.prompt)
+			if err := emitter.Emit(context.Background(), strings.NewReader(input)); err != nil {
+				t.Fatal(err)
+			}
+			var event attention.Event
+			if err := json.Unmarshal(body, &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.HookEvent != test.eventName {
+				t.Fatalf("hookEvent = %q，期望 %q", event.HookEvent, test.eventName)
+			}
+			if test.eventName == "SessionEnd" && event.PromptPreview != "" {
+				t.Fatalf("后台结束事件保留了 prompt preview: %q", event.PromptPreview)
+			}
+		})
+	}
+}
+
+func TestOverviewBackgroundPromptRemovesRegisteredRuntimeSession(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 3, 3, 0, 0, 0, time.UTC)
+	apply := func(raw string, at time.Time) {
+		t.Helper()
+		event, err := parseHookEvent(strings.NewReader(raw), Surface{Name: domain.CodexSurfaceApp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event = normalizeCodexAppBackgroundEvent(event)
+		domainEvent, err := event.Domain(at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ApplyCodexHookEvent(ctx, domainEvent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply(`{"session_id":"ambient","cwd":"/tmp/dora","hook_event_name":"SessionStart"}`, now)
+	apply(`{"session_id":"ambient","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"# Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project: /tmp/dora"}`, now.Add(time.Second))
+	if _, err := store.RuntimeSessionState(ctx, "ambient"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("Ambient Suggestions runtime 未被移除: %v", err)
 	}
 }
 

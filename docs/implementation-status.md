@@ -462,5 +462,6 @@
 - 当前 Mac 的真实 LaunchAgent 已覆盖本次构建；WindowServer 实测 compact 为 `360 × 40pt`、expanded 为 `760 × 520pt`，两种状态的顶边均为屏幕 `Y=0`。真实截图确认上角直角、下角圆角和连续深色容器。
 - 使用同一 production 二进制的临时 App bundle 完成辅助功能交互验收：panel 内持续操作超过 90 秒没有误收起或闪烁，列表滚动值完成 `0 → 1 → 0`，在多次每秒 runtime 刷新后保持原滚动位置；不可跳转行、底部刷新和真实 Codex App 行点击均返回可读结果。验收后进程、18083 端口、临时数据库和 App bundle 已清理。
 - 修复贴顶 compact 偶发收不到 tracking-area enter 的回归：新增基于真实 `NSEvent.mouseLocation` 的 50ms 边界采样；自动测试、Objective-C production build 与真实 LaunchAgent 启动均通过。
+- 将 Codex App 项目首页固定 `# Overview` Ambient Suggestions prompt 转换为最小 `SessionEnd` tombstone，避免其缺少 `Stop` 时长期显示为 running；只匹配 App surface 和已确认前缀，普通 App prompt、CLI 与其他事件保持原行为。
 - 本机异常记录来自一次 Codex App Server 探针：收到了 `SessionStart` 与 `UserPromptSubmit`，但探针退出时缺少 `Stop`/`SessionEnd`，旧版本将其永久保留为 running。其 App surface 与 thread ID 形状正常，点击 deep link 只能说明系统接受 URL，已结束的临时 thread 实际无法恢复。启动恢复现在将这类旧 running 立即归零，而不是等 7 天。
 - Code Review：分离自审修复了交互结束依赖 tracking-area enter、滚轮重复排入 interaction start、不可跳转原因错误色和 failure hold 提前清除问题；本次回归复审确认采样只在内外状态变化时通知状态机，不会触发周期性重绘，复审未发现剩余 P0/P1/P2/P3。
