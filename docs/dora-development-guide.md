@@ -1416,6 +1416,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 - Codex App 项目首页会用固定 `# Overview` prompt 启动 Ambient Suggestions 后台任务，且当前可能只发送 `UserPromptSubmit`、不发送 `Stop`（`openai/codex#18541`）。该 Ambient Hook payload 暂无稳定的用户/后台来源字段，因此 helper 仅在 `codex_app + UserPromptSubmit + 已确认前缀` 同时匹配时把事件改写为无 prompt 的 `SessionEnd` tombstone，立即移除内部 runtime；CLI、普通 App prompt 和其他事件不受影响。
 - 可见 runtime 只由用户主动提交的 root prompt 启动。Codex subagent Hook 的 `session_id` 仍指向父 session，`agent_id`/`agent_type` 才用于标识 subagent；helper 遇到任一非空 subagent 字段时直接成功忽略，不发送 loopback 事件，也不改变根 runtime 或 waiting request。用户 turn 内的工具调用和推理不创建额外 session，后台任务的实际模型消耗仍进入 token 与费用统计。
 - Codex CLI `0.146.0` 实机探针确认：Allow 的事件顺序为 `PermissionRequest → PostToolUse → Stop`；TUI 按 Esc 取消后没有即时 resolved Hook，下一次 `UserPromptSubmit` 才解除 waiting；启用当前 CLI 的结构化提问能力后，顺序为 `PreToolUse(request_user_input) → PostToolUse(request_user_input) → Stop`。这三条真实边界作为状态机依据，不能用 UI 文案或自然语言猜测补齐事件。
+- 每次仍在等待 Hook 返回的 `PermissionRequest` 另外注册一个仅存在于当前进程内的 interaction ID，并按 external session ID 排队。SQLite waiting 负责提醒和恢复边界，内存 waiter 负责一次性 allow/deny/handoff；两者不能混为 session 管理，也不能把原始 tool input 写入数据库。
 
 ### 25.2 Hook 生命周期与安全
 
@@ -1430,13 +1431,17 @@ dora hooks emit codex
 - status 报告配置损坏、路径、缺失事件和 Codex trust；Dora 只读 `~/.codex/config.toml` 中的 trust hash，不写入或绕过 Codex trust 状态，用户必须在 Codex `/hooks` 明确授权。
 - trust hash 持久保存；普通 Dora 升级不改变稳定 handler 命令，因此不重复授权。禁止在 Dora 中使用 `--dangerously-bypass-hook-trust` 或自动写入 trust hash。
 - 每个用户和每台 Mac 首次安装后各自授权一次；未授权只关闭实时 waiting 提醒，不阻塞 Codex，也不影响 Dora 的 token、费用、配额和 Web 功能。`dora install` 与 `dora status` 必须把这个降级状态直接展示给用户。
-- emit 限制 stdin 大小，只提取最小字段，并以短超时 POST 到固定 loopback endpoint；禁止 redirect，Dora 未运行时静默成功，不阻塞 Codex。
+- emit 限制 stdin 大小，只提取最小字段并 POST 到固定 loopback endpoint；禁止 redirect。普通 Hook 使用 450ms 内部请求窗口和 1～2 秒配置 timeout；`PermissionRequest` 单独使用 600 秒配置 timeout 与约 570 秒内部等待窗口。
+- `PermissionRequest` 只允许三种一次性结果：allow 输出官方 `hookSpecificOutput.decision.behavior=allow`；deny 输出 `behavior=deny` 和固定消息；handoff、超时、断开、Dora 停止或服务不可用均退出 0 且 stdout 为空，让 Codex 继续原生授权。不得返回 session 级或永久授权，不得直接回答 `request_user_input`。
+- Hook 定义变化会改变 Codex trust hash。install/status 必须识别旧 timeout，Dora 只提示用户在 `/hooks` 复核，不自动写入 hash，也不使用 App Server、私有协议或 UI 自动化替代公开 Hook stdout。
 - surface 依据受控字段、进程 executable/ancestry、TTY 和终端类型识别。只有实际 App ancestry 才标记 Codex App；CLI 只支持 iTerm2 与 Terminal exact TTY。
 
 ### 25.3 灵动岛和跳转
 
 - 紧凑态固定表达 Dora 与活跃 session 总数；新 waiting 通过红色总数、高亮、自动展开和一次性声音获得最高视觉优先级，waiting/running 的准确拆分保留在展开态。
 - 展开态按 session 展示 Codex surface、会话名回退、清洗后的 prompt 摘要、等待时长和 active request 数；实时轮询独立于 usage scan。
+- 只有当前进程内仍有 live waiter 的 `PermissionRequest` 行显示固定分段按钮：主按钮“本次允许”，菜单为“拒绝”和“在 Codex 中处理”。allow/deny 不切换前台；handoff 和可处理 waiting 行点击必须先用空 stdout 释放当前 Hook，再执行已有精确跳转。动作不能冒泡成行点击，菜单交互期间保持展开，动作接受后立即移除当前按钮并显示队列下一条。
+- running、`request_user_input` 和重启前遗留的历史 waiting 只保留提醒/跳转，不显示直接决定按钮。同一 session 的相同请求各自使用唯一 interaction ID，一次提交只能唤醒一个 waiter；重复提交返回明确的已处理结果。
 - Codex App 使用参数化 `codex://threads/<external_session_id>` deep link 并前台激活。
 - iTerm2 与 Terminal 使用 AppleScript 精确匹配 TTY；TTY 只能通过 `osascript` argv 传入，不插值进源码，并负责取消最小化和激活窗口。
 - 精确跳转执行期间保持展开；成功后清除 attention、hover、交互和操作等展开理由并立即收起，直到鼠标真正离开后才重新允许 hover 展开，避免同一次点击的 mouse-up 或窗口动画事件把面板重新撑开。失败时继续展开并显示原因。

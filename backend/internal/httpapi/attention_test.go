@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -76,6 +77,200 @@ func TestCodexHookAndAttentionAPIUsePersistedState(t *testing.T) {
 	if response.Sessions[0].RequestCount != 1 {
 		t.Fatalf("重复事件产生多条 request: %+v", response.Sessions[0])
 	}
+}
+
+func TestPermissionRequestWaitsForExactBrokerActionAndEnrichesRuntime(t *testing.T) {
+	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	broker := attentiondomain.NewPermissionBroker(time.Second)
+	defer broker.Close()
+	handler := NewHandler(store, Options{PermissionBroker: broker})
+	body := `{"sessionId":"live-session","hookEvent":"PermissionRequest","turnId":"turn","cwdBasename":"dora","surface":"codex_app","toolName":"Bash","inputHash":"sha256:live","permissionSummary":"Bash · make verify"}`
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/codex", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		done <- response
+	}()
+	permission := waitHTTPPermission(t, broker, "live-session")
+
+	runtimeRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(runtimeRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
+	var runtime runtimeResponse
+	if err := json.Unmarshal(runtimeRecorder.Body.Bytes(), &runtime); err != nil {
+		t.Fatal(err)
+	}
+	if runtimeRecorder.Code != http.StatusOK || len(runtime.Sessions) != 1 || !runtime.Sessions[0].Respondable ||
+		runtime.Sessions[0].InteractionID != permission.InteractionID || runtime.Sessions[0].PermissionSummary != "Bash · make verify" {
+		t.Fatalf("live runtime 未包含可处理授权: code=%d payload=%+v", runtimeRecorder.Code, runtime)
+	}
+	if err := broker.Submit(context.Background(), permission.InteractionID, attentiondomain.PermissionAllow); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case response := <-done:
+		if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"action":"allow"}` {
+			t.Fatalf("Hook action 响应错误: code=%d body=%q", response.Code, response.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("授权动作未唤醒 Hook handler")
+	}
+
+	runtimeRecorder = httptest.NewRecorder()
+	handler.ServeHTTP(runtimeRecorder, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
+	runtime = runtimeResponse{}
+	if err := json.Unmarshal(runtimeRecorder.Body.Bytes(), &runtime); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Sessions[0].Respondable || runtime.Sessions[0].InteractionID != "" {
+		t.Fatalf("已接受动作后按钮未立即消失: %+v", runtime.Sessions[0])
+	}
+	waiting, err := store.WaitingSessions(context.Background())
+	if err != nil || len(waiting) != 1 || waiting[0].Latest.Summary != "命令等待授权" {
+		t.Fatalf("SQLite 写入了 live 摘要或等待态错误: %+v, %v", waiting, err)
+	}
+}
+
+func TestPermissionRequestDisconnectFallsBackAndHistoricalWaitHasNoButton(t *testing.T) {
+	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	broker := attentiondomain.NewPermissionBroker(time.Second)
+	defer broker.Close()
+	handler := NewHandler(store, Options{PermissionBroker: broker})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/codex", strings.NewReader(`{"sessionId":"disconnect-session","hookEvent":"PermissionRequest","turnId":"turn","surface":"codex_app","toolName":"Bash","inputHash":"sha256:disconnect","permissionSummary":"Bash · safe"}`)).WithContext(ctx)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		done <- response.Code
+	}()
+	waitHTTPPermission(t, broker, "disconnect-session")
+	cancel()
+	select {
+	case code := <-done:
+		if code != http.StatusNoContent {
+			t.Fatalf("断开后的 fallback code = %d", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("断开后 Hook handler 未退出")
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
+	var runtime runtimeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &runtime); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.Sessions) != 1 || runtime.Sessions[0].Respondable {
+		t.Fatalf("历史 waiting 错误显示直接处理按钮: %+v", runtime.Sessions)
+	}
+}
+
+func TestPermissionQueueStaysRespondableAfterFirstPostToolUse(t *testing.T) {
+	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	broker := attentiondomain.NewPermissionBroker(time.Second)
+	defer broker.Close()
+	handler := NewHandler(store, Options{PermissionBroker: broker})
+	const (
+		sessionID  = "parallel-session"
+		firstID    = "11111111111111111111111111111111"
+		secondID   = "22222222222222222222222222222222"
+		permission = `{"sessionId":"parallel-session","hookEvent":"PermissionRequest","turnId":"turn","surface":"codex_app","toolName":"Bash","inputHash":"sha256:same","permissionSummary":"Bash · make verify","interactionId":"%s"}`
+	)
+	postAsync := func(interactionID string) <-chan *httptest.ResponseRecorder {
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/codex", strings.NewReader(fmt.Sprintf(permission, interactionID)))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			done <- response
+		}()
+		return done
+	}
+	firstDone := postAsync(firstID)
+	waitHTTPPermissionCount(t, broker, sessionID, 1)
+	secondDone := postAsync(secondID)
+	waitHTTPPermissionCount(t, broker, sessionID, 2)
+
+	if err := broker.Submit(context.Background(), firstID, attentiondomain.PermissionAllow); err != nil {
+		t.Fatal(err)
+	}
+	if response := <-firstDone; response.Code != http.StatusOK {
+		t.Fatalf("第一条授权响应 = %d: %s", response.Code, response.Body.String())
+	}
+	postHook(t, handler, `{"sessionId":"parallel-session","hookEvent":"PostToolUse","turnId":"turn","surface":"codex_app","toolName":"Bash"}`)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
+	var runtime runtimeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &runtime); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.WaitingCount != 1 || runtime.RunningCount != 0 || len(runtime.Sessions) != 1 {
+		t.Fatalf("第二条 live 授权未继续计入 waiting: %+v", runtime)
+	}
+	session := runtime.Sessions[0]
+	if session.State != "waiting" || !session.Respondable || session.InteractionID != secondID || session.PermissionQueueCount != 1 {
+		t.Fatalf("第二条 live 授权不可处理: %+v", session)
+	}
+	if err := broker.Submit(context.Background(), secondID, attentiondomain.PermissionDeny); err != nil {
+		t.Fatal(err)
+	}
+	if response := <-secondDone; response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"action":"deny"}` {
+		t.Fatalf("第二条授权响应错误: code=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func waitHTTPPermissionCount(t *testing.T, broker *attentiondomain.PermissionBroker, sessionID string, count int) attentiondomain.PermissionRequest {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if request, ok := broker.First(sessionID); ok && request.QueueCount == count {
+			return request
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("等待 %s 注册 %d 条授权请求超时", sessionID, count)
+	return attentiondomain.PermissionRequest{}
+}
+
+func postHook(t *testing.T, handler http.Handler, body string) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/codex", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("Hook 响应 = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func waitHTTPPermission(t *testing.T, broker *attentiondomain.PermissionBroker, sessionID string) attentiondomain.PermissionRequest {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if request, ok := broker.First(sessionID); ok {
+			return request
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("等待 %s 注册授权请求超时", sessionID)
+	return attentiondomain.PermissionRequest{}
 }
 
 func TestRuntimeAPICombinesRunningAndWaitingWithoutPrivateIdentifiers(t *testing.T) {

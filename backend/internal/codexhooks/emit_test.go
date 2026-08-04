@@ -46,7 +46,7 @@ func TestParseHookEventSanitizesSensitiveFields(t *testing.T) {
   "hook_event_name":"PermissionRequest",
   "model":"gpt-test",
   "tool_name":"Bash",
-  "tool_input":{"command":"rm -rf private"},
+  "tool_input":{"command":"curl --token super-secret https://example.test"},
   "prompt":"never store me",
   "transcript_path":"/private/session.jsonl"
 }`
@@ -59,11 +59,84 @@ func TestParseHookEventSanitizesSensitiveFields(t *testing.T) {
 	if event.CWDBasename != "secret-project" || event.InputHash == "" || event.ToolName != "Bash" {
 		t.Fatalf("事件字段错误: %+v", event)
 	}
-	serialized := event.SessionID + event.TurnID + event.CWDBasename + event.Model + event.ToolName + event.InputHash + event.PromptPreview
-	for _, secret := range []string{"rm -rf private", "never store me", "/Users/example"} {
+	serialized := event.SessionID + event.TurnID + event.CWDBasename + event.Model + event.ToolName + event.InputHash + event.PermissionSummary + event.PromptPreview
+	if !strings.Contains(event.PermissionSummary, "curl --token [REDACTED]") {
+		t.Fatalf("授权摘要未保留安全操作信息: %q", event.PermissionSummary)
+	}
+	for _, secret := range []string{"super-secret", "never store me", "/Users/example"} {
 		if strings.Contains(serialized, secret) {
 			t.Fatalf("净化事件泄漏 %q: %+v", secret, event)
 		}
+	}
+}
+
+func TestEmitterWritesExactOfficialPermissionDecision(t *testing.T) {
+	input := `{"session_id":"s","turn_id":"t","cwd":"/tmp/dora","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"make verify"}}`
+	tests := []struct {
+		name   string
+		action PermissionAction
+		want   string
+	}{
+		{name: "allow", action: PermissionAllow, want: permissionAllowOutput},
+		{name: "deny", action: PermissionDeny, want: permissionDenyOutput},
+		{name: "handoff", action: PermissionHandoff, want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			emitter := &Emitter{
+				endpoint: DefaultEndpoint,
+				client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					body := fmt.Sprintf(`{"action":%q}`, test.action)
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+				})},
+				detector: fixedDetector{surface: Surface{Name: domain.CodexSurfaceApp}},
+			}
+			var output strings.Builder
+			if err := emitter.Emit(context.Background(), strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			if output.String() != test.want {
+				t.Fatalf("stdout = %q，期望 %q", output.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestEmitterPermissionCancellationFallsBackWithoutStdout(t *testing.T) {
+	emitter := &Emitter{
+		endpoint: DefaultEndpoint,
+		client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		})},
+		detector: fixedDetector{surface: Surface{Name: domain.CodexSurfaceApp}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var output strings.Builder
+	err := emitter.Emit(ctx, strings.NewReader(`{"session_id":"s","turn_id":"t","cwd":"/tmp/dora","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"make verify"}}`), &output)
+	if !errors.Is(err, ErrServiceUnavailable) || output.Len() != 0 {
+		t.Fatalf("取消结果 = %v, stdout=%q", err, output.String())
+	}
+}
+
+func TestEmitterKeepsOrdinaryHooksShortAndSilent(t *testing.T) {
+	emitter := &Emitter{
+		endpoint: DefaultEndpoint,
+		client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		})},
+		detector: fixedDetector{surface: Surface{Name: domain.CodexSurfaceApp}},
+	}
+	started := time.Now()
+	var output strings.Builder
+	err := emitter.Emit(context.Background(), strings.NewReader(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"Stop"}`), &output)
+	if !errors.Is(err, ErrServiceUnavailable) || output.Len() != 0 {
+		t.Fatalf("普通 Hook fallback = %v, stdout=%q", err, output.String())
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("普通 Hook 等待过久: %s", elapsed)
 	}
 }
 
@@ -157,7 +230,7 @@ func TestVerifiedCancelSequenceResolvesOnNextPrompt(t *testing.T) {
 	}
 }
 
-func TestPermissionRequestHashUsesCanonicalToolInput(t *testing.T) {
+func TestPermissionRequestUsesCanonicalHashAndUniqueInteraction(t *testing.T) {
 	first := `{"session_id":"s","turn_id":"t","cwd":"/tmp/dora","hook_event_name":"PermissionRequest","model":"gpt","tool_name":"Bash","tool_input":{"command":"git status","nested":{"b":2,"a":1}}}`
 	second := `{ "tool_input": { "nested": { "a": 1, "b": 2 }, "command": "git status" }, "tool_name":"Bash", "model":"gpt", "hook_event_name":"PermissionRequest", "cwd":"/tmp/dora", "turn_id":"t", "session_id":"s" }`
 	firstEvent, err := parseHookEvent(strings.NewReader(first), Surface{Name: domain.CodexSurfaceApp})
@@ -171,10 +244,13 @@ func TestPermissionRequestHashUsesCanonicalToolInput(t *testing.T) {
 	if firstEvent.InputHash != secondEvent.InputHash {
 		t.Fatalf("等价 tool_input hash 不稳定: %s != %s", firstEvent.InputHash, secondEvent.InputHash)
 	}
+	if firstEvent.InteractionID == "" || secondEvent.InteractionID == "" || firstEvent.InteractionID == secondEvent.InteractionID {
+		t.Fatalf("独立 Hook invocation 未生成唯一 interaction ID: %q, %q", firstEvent.InteractionID, secondEvent.InteractionID)
+	}
 	firstDomain, _ := firstEvent.Domain(time.Unix(1, 0))
 	secondDomain, _ := secondEvent.Domain(time.Unix(2, 0))
 	if firstDomain.EventKey != secondDomain.EventKey {
-		t.Fatalf("等价授权事件 key 不稳定: %s != %s", firstDomain.EventKey, secondDomain.EventKey)
+		t.Fatalf("等价输入破坏了 SQLite 历史去重: %s != %s", firstDomain.EventKey, secondDomain.EventKey)
 	}
 }
 
@@ -214,7 +290,7 @@ func TestEmitterTreatsUnavailableServiceAsSilentCondition(t *testing.T) {
 		client:   &http.Client{Transport: failingTransport{}},
 		detector: fixedDetector{surface: Surface{Name: domain.CodexSurfaceApp}},
 	}
-	err := emitter.Emit(context.Background(), strings.NewReader(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"Stop","model":"gpt"}`))
+	err := emitter.Emit(context.Background(), strings.NewReader(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"Stop","model":"gpt"}`), io.Discard)
 	if !errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("Emit() = %v，期望 ErrServiceUnavailable", err)
 	}
@@ -236,7 +312,7 @@ func TestEmitterBoundsPromptBeforeLoopbackRequest(t *testing.T) {
 	}
 	rawPrompt := strings.Repeat("x", 100_000)
 	input := `{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"` + rawPrompt + `"}`
-	if err := emitter.Emit(context.Background(), strings.NewReader(input)); err != nil {
+	if err := emitter.Emit(context.Background(), strings.NewReader(input), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if len(body) >= 64<<10 {
@@ -349,7 +425,7 @@ func TestEmitterEndsOnlyVerifiedBackgroundPrompts(t *testing.T) {
 				detector: fixedDetector{surface: test.surface},
 			}
 			input := fmt.Sprintf(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":%q}`, test.prompt)
-			if err := emitter.Emit(context.Background(), strings.NewReader(input)); err != nil {
+			if err := emitter.Emit(context.Background(), strings.NewReader(input), io.Discard); err != nil {
 				t.Fatal(err)
 			}
 			var event attention.Event
@@ -428,7 +504,7 @@ func TestEmitterIgnoresSubagentEventsWithoutChangingRootSession(t *testing.T) {
 	}
 	emit := func(value string) {
 		t.Helper()
-		if err := emitter.Emit(ctx, strings.NewReader(value)); err != nil {
+		if err := emitter.Emit(ctx, strings.NewReader(value), io.Discard); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -489,7 +565,7 @@ func TestCompactionSourceReachesSQLiteFromRawHookJSON(t *testing.T) {
 		`{"session_id":"compact-e2e","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","prompt":"实现 compaction 修复"}`,
 		`{"session_id":"compact-e2e","source":"compact","cwd":"/tmp/updated","model":"gpt-updated","hook_event_name":"SessionStart"}`,
 	} {
-		if err := emitter.Emit(ctx, strings.NewReader(input)); err != nil {
+		if err := emitter.Emit(ctx, strings.NewReader(input), io.Discard); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -515,7 +591,7 @@ func TestEmitterNeverFollowsRedirectsOutsideLoopback(t *testing.T) {
 	emitter := NewEmitter()
 	emitter.endpoint = redirector.URL
 	emitter.detector = fixedDetector{surface: Surface{Name: domain.CodexSurfaceApp}}
-	err := emitter.Emit(context.Background(), strings.NewReader(`{"session_id":"private-session","cwd":"/tmp/dora","hook_event_name":"Stop","model":"gpt"}`))
+	err := emitter.Emit(context.Background(), strings.NewReader(`{"session_id":"private-session","cwd":"/tmp/dora","hook_event_name":"Stop","model":"gpt"}`), io.Discard)
 	if err == nil {
 		t.Fatal("Emit() 接受了重定向响应")
 	}

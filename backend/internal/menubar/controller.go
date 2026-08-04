@@ -2,10 +2,13 @@ package menubar
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/wubh576/dora/backend/internal/attention"
 )
 
 const (
@@ -27,6 +30,10 @@ type SessionJumper interface {
 	JumpAttentionSession(context.Context, int64) error
 }
 
+type PermissionResponder interface {
+	Submit(context.Context, string, attention.PermissionAction) error
+}
+
 type Controller struct {
 	loader       Loader
 	refresher    Refresher
@@ -35,6 +42,7 @@ type Controller struct {
 	present      Presenter
 	now          func() time.Time
 	jumper       SessionJumper
+	permission   PermissionResponder
 	machine      *Machine
 
 	presentMu       sync.Mutex
@@ -47,6 +55,7 @@ type Controller struct {
 	runtimeVersion  uint64
 	refreshing      bool
 	jumping         bool
+	responding      map[int64]bool
 	operationStatus string
 	operationUntil  time.Time
 	runtimeStatus   string
@@ -59,10 +68,17 @@ func NewController(loader Loader, refresher Refresher, dashboardURL string, pres
 	controller := &Controller{
 		loader: loader, refresher: refresher, dashboardURL: dashboardURL,
 		runner: execRunner{}, present: present, now: time.Now,
-		screen: ScreenMetrics{Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947}},
+		responding: make(map[int64]bool),
+		screen:     ScreenMetrics{Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947}},
 	}
 	controller.machine = NewMachine(func(MachineState) { controller.publish() })
 	return controller
+}
+
+func (controller *Controller) SetPermissionResponder(responder PermissionResponder) {
+	controller.mu.Lock()
+	controller.permission = responder
+	controller.mu.Unlock()
 }
 
 func (controller *Controller) SetSessionJumper(jumper SessionJumper) {
@@ -229,14 +245,25 @@ func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 }
 
 func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID int64) bool {
+	return controller.jumpSessionAsync(ctx, sessionID, "")
+}
+
+func (controller *Controller) JumpPermissionSessionAsync(ctx context.Context, sessionID int64, interactionID string) bool {
+	return controller.jumpSessionAsync(ctx, sessionID, interactionID)
+}
+
+func (controller *Controller) jumpSessionAsync(ctx context.Context, sessionID int64, interactionID string) bool {
 	controller.mu.Lock()
 	controller.operationStatus = ""
 	controller.operationUntil = time.Time{}
 	jumper := controller.jumper
-	if jumper == nil || controller.jumping || controller.stopped {
+	responder := controller.permission
+	if jumper == nil || controller.jumping || controller.stopped || (interactionID != "" && responder == nil) {
 		controller.mu.Unlock()
 		if jumper == nil {
 			controller.PresentStatus("Codex 跳转服务未配置")
+		} else if interactionID != "" && responder == nil {
+			controller.PresentStatus("Codex 授权服务未配置")
 		}
 		return false
 	}
@@ -245,6 +272,27 @@ func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID in
 	controller.machine.OperationStart()
 	controller.publish()
 	go func() {
+		if interactionID != "" {
+			err := responder.Submit(ctx, interactionID, attention.PermissionHandoff)
+			if errors.Is(err, attention.ErrPermissionResolved) {
+				err = nil
+			}
+			if err != nil {
+				controller.mu.Lock()
+				controller.jumping = false
+				controller.setStatusLocked(fmt.Sprintf("交回 Codex 处理失败：%v", err))
+				controller.mu.Unlock()
+				controller.machine.OperationEnd(false)
+				controller.publish()
+				controller.LoadRuntimeAsync(ctx)
+				return
+			}
+			controller.mu.Lock()
+			controller.clearPermissionLocked(interactionID)
+			controller.runtimeVersion++
+			controller.mu.Unlock()
+			controller.publish()
+		}
 		jumpContext, cancel := context.WithTimeout(ctx, jumpTimeout)
 		defer cancel()
 		err := jumper.JumpAttentionSession(jumpContext, sessionID)
@@ -263,6 +311,92 @@ func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID in
 		controller.LoadRuntimeAsync(ctx)
 	}()
 	return true
+}
+
+func (controller *Controller) RespondPermissionAsync(ctx context.Context, sessionID int64, interactionID string, action attention.PermissionAction) bool {
+	if action != attention.PermissionAllow && action != attention.PermissionDeny {
+		return false
+	}
+	controller.mu.Lock()
+	responder := controller.permission
+	if interactionID == "" || responder == nil || controller.responding[sessionID] || controller.stopped {
+		controller.mu.Unlock()
+		if responder == nil {
+			controller.PresentStatus("Codex 授权服务未配置")
+		}
+		return false
+	}
+	controller.responding[sessionID] = true
+	controller.mu.Unlock()
+	go func() {
+		err := responder.Submit(ctx, interactionID, action)
+		var reloadVersion uint64
+		controller.mu.Lock()
+		delete(controller.responding, sessionID)
+		if err == nil {
+			controller.clearPermissionLocked(interactionID)
+			controller.runtimeVersion++
+			reloadVersion = controller.runtimeVersion
+		} else {
+			controller.setStatusLocked(fmt.Sprintf("处理 Codex 授权失败：%v", err))
+		}
+		controller.mu.Unlock()
+		controller.publish()
+		if err == nil {
+			controller.loadRuntimeVersion(ctx, reloadVersion)
+		} else {
+			controller.LoadRuntimeAsync(ctx)
+		}
+	}()
+	return true
+}
+
+func (controller *Controller) loadRuntimeVersion(ctx context.Context, version uint64) {
+	runtimeState, err := controller.loader.LoadRuntime(ctx)
+	controller.mu.Lock()
+	if controller.stopped || version != controller.runtimeVersion {
+		controller.mu.Unlock()
+		return
+	}
+	if err == nil {
+		if controller.last == nil {
+			controller.last = &State{}
+		}
+		controller.last.Runtime = runtimeState
+		controller.runtimeStatus = ""
+	} else {
+		controller.runtimeStatus = "实时状态连接失败"
+	}
+	controller.mu.Unlock()
+	controller.publish()
+}
+
+func (controller *Controller) permissionInteractionLocked(sessionID int64) string {
+	if controller.last == nil {
+		return ""
+	}
+	for _, session := range controller.last.Runtime.Sessions {
+		if session.ID == sessionID && session.Respondable {
+			return session.InteractionID
+		}
+	}
+	return ""
+}
+
+func (controller *Controller) clearPermissionLocked(interactionID string) {
+	if controller.last == nil {
+		return
+	}
+	for index := range controller.last.Runtime.Sessions {
+		session := &controller.last.Runtime.Sessions[index]
+		if session.InteractionID != interactionID {
+			continue
+		}
+		session.Respondable = false
+		session.InteractionID = ""
+		session.PermissionSummary = ""
+		session.PermissionQueueCount = 0
+	}
 }
 
 func (controller *Controller) ExplainSession(sessionID int64) {

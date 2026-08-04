@@ -87,9 +87,9 @@ func hooksCommand(args []string) error {
 		return errors.New("用法: dora hooks <install|status|uninstall|emit> codex")
 	}
 	if args[0] == "emit" {
-		ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), codexhooks.PermissionWaitTimeout+5*time.Second)
 		defer cancel()
-		return emitCodexHook(ctx, os.Stdin, codexhooks.NewEmitter())
+		return emitCodexHook(ctx, os.Stdin, os.Stdout, codexhooks.NewEmitter())
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -121,11 +121,11 @@ func hooksCommand(args []string) error {
 }
 
 type codexHookEmitter interface {
-	Emit(context.Context, io.Reader) error
+	Emit(context.Context, io.Reader, io.Writer) error
 }
 
-func emitCodexHook(ctx context.Context, input io.Reader, emitter codexHookEmitter) error {
-	err := emitter.Emit(ctx, input)
+func emitCodexHook(ctx context.Context, input io.Reader, output io.Writer, emitter codexHookEmitter) error {
+	err := emitter.Emit(ctx, input, output)
 	if errors.Is(err, codexhooks.ErrServiceUnavailable) {
 		return nil
 	}
@@ -415,12 +415,13 @@ func runMenubarApplication(ctx context.Context, stop context.CancelFunc, applica
 		}
 	}()
 	menuErr := runMenu(ctx, doramenubar.Config{
-		Loader:          doramenubar.NewClient(application.DashboardURL()),
-		Refresher:       application,
-		DashboardURL:    application.DashboardURL(),
-		Jumper:          application,
-		AttentionEvents: notifier.Events(),
-		Quit:            stop,
+		Loader:              doramenubar.NewClient(application.DashboardURL()),
+		Refresher:           application,
+		DashboardURL:        application.DashboardURL(),
+		Jumper:              application,
+		PermissionResponder: application,
+		AttentionEvents:     notifier.Events(),
+		Quit:                stop,
 	})
 	closeErr := application.Close()
 	select {

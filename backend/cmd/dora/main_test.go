@@ -161,13 +161,17 @@ func TestUninstallComponentsAttemptsBothAndReturnsPartialFailure(t *testing.T) {
 
 type unavailableHookEmitter struct{}
 
-func (unavailableHookEmitter) Emit(context.Context, io.Reader) error {
+func (unavailableHookEmitter) Emit(context.Context, io.Reader, io.Writer) error {
 	return codexhooks.ErrServiceUnavailable
 }
 
 func TestEmitCodexHookSilentlyAcceptsUnavailableService(t *testing.T) {
-	if err := emitCodexHook(context.Background(), strings.NewReader("private input"), unavailableHookEmitter{}); err != nil {
+	var output bytes.Buffer
+	if err := emitCodexHook(context.Background(), strings.NewReader("private input"), &output, unavailableHookEmitter{}); err != nil {
 		t.Fatalf("服务不可用没有静默成功: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("服务不可用写入 stdout: %q", output.String())
 	}
 }
 
