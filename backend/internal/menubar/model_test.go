@@ -30,7 +30,7 @@ func TestBuildViewShowsWaitingBeforeRunningAndSafePreview(t *testing.T) {
 		}},
 	}
 	view := BuildView(state, MachineState{Mode: ModeAttention, HighlightSessionID: 1}, testScreen(), time.Now(), false, "")
-	if !view.Expanded || view.CompactSummary != "Dora" || view.CompactStatus != "1 等待 · 1 运行" {
+	if !view.Expanded || view.CompactSummary != "Dora" || view.CompactStatus != "2" {
 		t.Fatalf("compact 内容错误: %+v", view)
 	}
 	if view.Today != "今日 1.3M tokens" || view.SevenDays != "近 7 日 2M tokens" ||
@@ -111,14 +111,37 @@ func TestCalculateLayoutAlwaysAnchorsTopAndKeepsCompactCopyFixed(t *testing.T) {
 		}
 		first := CalculateLayout(screen, false, 0, 0, 0)
 		second := CalculateLayout(screen, false, 20, 99, 77)
-		if first.Frame.Width != 360 || second.Frame.Width != first.Frame.Width || first.Frame.Height != 35 {
+		if first.Frame.Width != compactMinimumWidth || second.Frame.Width != first.Frame.Width || first.Frame.Height != 35 {
 			t.Fatalf("compact 宽度随状态变化: first=%+v second=%+v", first.Frame, second.Frame)
 		}
 	}
 	view := BuildView(&State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 24_000}}, Runtime: RuntimeState{RunningCount: 3, WaitingCount: 2}},
 		MachineState{Mode: ModeCompact}, testScreen(), time.Now(), false, "连接失败")
-	if view.CompactSummary != "Dora" || view.CompactStatus != "2 等待 · 3 运行" {
+	if view.CompactSummary != "Dora" || view.CompactStatus != "5" {
 		t.Fatalf("compact 固定文案被状态替换: %+v", view)
+	}
+}
+
+func TestCompactLayoutReservesSymmetricNotchWings(t *testing.T) {
+	withoutNotch := CalculateLayout(ScreenMetrics{
+		Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947},
+	}, false, 0, 0, 0)
+	if withoutNotch.Frame.Width != compactMinimumWidth || withoutNotch.CompactCenterGap != 0 {
+		t.Fatalf("普通屏 compact 布局错误: %+v", withoutNotch)
+	}
+	smallNotch := CalculateLayout(ScreenMetrics{
+		Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947}, NotchWidth: 100,
+	}, false, 0, 0, 0)
+	if smallNotch.Frame.Width != compactMinimumWidth || smallNotch.CompactCenterGap != 100 {
+		t.Fatalf("同宽 compact 未更新刘海间隙: %+v", smallNotch)
+	}
+
+	const notchWidth = 160.0
+	withNotch := CalculateLayout(ScreenMetrics{
+		Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947}, NotchWidth: notchWidth,
+	}, false, 0, 0, 0)
+	if withNotch.Frame.Width != notchWidth+2*compactWingWidth || withNotch.CompactCenterGap != notchWidth {
+		t.Fatalf("刘海屏未保留对称左右区域: %+v", withNotch)
 	}
 }
 
@@ -190,6 +213,6 @@ func TestBuildViewDistinguishesSuccessAndErrorStatus(t *testing.T) {
 func testScreen() ScreenMetrics {
 	return ScreenMetrics{
 		Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947},
-		SafeTop: 32, MenuBarThickness: 22,
+		SafeTop: 32, MenuBarThickness: 22, NotchWidth: 160,
 	}
 }

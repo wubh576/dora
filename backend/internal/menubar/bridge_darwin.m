@@ -4,7 +4,7 @@
 extern void doraIslandOnEvent(int kind, long long value);
 extern void doraIslandOnScreen(double x, double y, double width, double height,
                                double visibleX, double visibleY, double visibleWidth, double visibleHeight,
-                               double safeTop, double menuBarThickness);
+                               double safeTop, double menuBarThickness, double notchWidth);
 
 @class DoraIslandPanel;
 static DoraIslandPanel *doraPanel;
@@ -18,6 +18,7 @@ static BOOL doraPointerInside;
 static BOOL doraCurrentPointerInside(void);
 static void doraPublishPointerState(BOOL inside);
 static void doraSamplePointer(void);
+static CGFloat doraScreenNotchWidth(NSScreen *screen);
 
 static NSColor *doraColor(CGFloat red, CGFloat green, CGFloat blue, CGFloat alpha) {
     return [NSColor colorWithSRGBRed:red green:green blue:blue alpha:alpha];
@@ -192,6 +193,7 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 @property(nonatomic, strong) NSView *compactView;
 @property(nonatomic, strong) NSTextField *compactTitle;
 @property(nonatomic, strong) NSTextField *compactStatus;
+@property(nonatomic) CGFloat compactCenterGap;
 @property(nonatomic, strong) NSView *expandedView;
 @property(nonatomic, strong) NSTextField *expandedTitle;
 @property(nonatomic, strong) NSTextField *countLabel;
@@ -229,8 +231,9 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 - (void)buildPersistentViews {
     self.compactView = [[NSView alloc] initWithFrame:self.bounds];
     self.compactTitle = doraLabel(@"Dora", 13, NSFontWeightSemibold, NSColor.whiteColor);
-    self.compactStatus = doraLabel(@"0 等待 · 0 运行", 12, NSFontWeightMedium, doraColor(0.42, 0.70, 1.0, 1.0));
-    self.compactStatus.alignment = NSTextAlignmentRight;
+    self.compactTitle.alignment = NSTextAlignmentCenter;
+    self.compactStatus = doraLabel(@"0", 13, NSFontWeightSemibold, doraColor(0.52, 0.55, 0.61, 1.0));
+    self.compactStatus.alignment = NSTextAlignmentCenter;
     [self.compactView addSubview:self.compactTitle];
     [self.compactView addSubview:self.compactStatus];
     [self addSubview:self.compactView];
@@ -295,8 +298,10 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.compactView.frame = self.bounds;
     CGFloat compactLabelHeight = MIN(24, height);
     CGFloat compactLabelY = (height - compactLabelHeight) / 2;
-    self.compactTitle.frame = NSMakeRect(18, compactLabelY, 110, compactLabelHeight);
-    self.compactStatus.frame = NSMakeRect(width - 172, compactLabelY, 154, compactLabelHeight);
+    CGFloat compactGap = MIN(MAX(0, self.compactCenterGap), width);
+    CGFloat compactWingWidth = MAX(1, (width - compactGap) / 2);
+    self.compactTitle.frame = NSMakeRect(0, compactLabelY, compactWingWidth, compactLabelHeight);
+    self.compactStatus.frame = NSMakeRect(width - compactWingWidth, compactLabelY, compactWingWidth, compactLabelHeight);
     self.expandedView.frame = self.bounds;
     self.expandedTitle.frame = NSMakeRect(18, height - 37, 80, 22);
     self.countLabel.frame = NSMakeRect(width - 210, height - 35, 190, 20);
@@ -345,10 +350,13 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.compactView.hidden = expanded;
     self.expandedView.hidden = !expanded;
     self.compactTitle.stringValue = @"Dora";
-    self.compactStatus.stringValue = view[@"compactStatus"] ?: @"0 等待 · 0 运行";
+    self.compactStatus.stringValue = view[@"compactStatus"] ?: @"0";
+    self.compactCenterGap = [view[@"layout"][@"compactCenterGap"] doubleValue];
     NSInteger waiting = [view[@"waitingCount"] integerValue];
     NSInteger running = [view[@"runningCount"] integerValue];
-    self.compactStatus.textColor = waiting > 0 ? doraColor(1.0, 0.39, 0.42, 1.0) : doraColor(0.42, 0.70, 1.0, 1.0);
+    self.compactStatus.textColor = waiting > 0 ? doraColor(1.0, 0.39, 0.42, 1.0) :
+        (running > 0 ? doraColor(0.42, 0.70, 1.0, 1.0) : doraColor(0.52, 0.55, 0.61, 1.0));
+    self.compactStatus.toolTip = [NSString stringWithFormat:@"%ld 等待 · %ld 运行", (long)waiting, (long)running];
     self.countLabel.stringValue = [NSString stringWithFormat:@"%ld 等待  ·  %ld 运行", (long)waiting, (long)running];
     self.countLabel.textColor = waiting > 0 ? doraColor(1.0, 0.39, 0.42, 1.0) : doraColor(0.42, 0.70, 1.0, 1.0);
     self.tokenLabels[0].stringValue = view[@"today"] ?: @"";
@@ -444,11 +452,24 @@ static void doraSendScreen(void) {
     if (screen == nil) return;
     NSEdgeInsets safe = NSEdgeInsetsMake(0, 0, 0, 0);
     if (@available(macOS 12.0, *)) safe = screen.safeAreaInsets;
+    CGFloat notchWidth = doraScreenNotchWidth(screen);
     NSRect frame = screen.frame;
     NSRect visible = screen.visibleFrame;
     doraIslandOnScreen(frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
                        visible.origin.x, visible.origin.y, visible.size.width, visible.size.height,
-                       safe.top, NSStatusBar.systemStatusBar.thickness);
+                       safe.top, NSStatusBar.systemStatusBar.thickness, notchWidth);
+}
+
+static CGFloat doraScreenNotchWidth(NSScreen *screen) {
+    if (screen == nil) return 0;
+    if (@available(macOS 12.0, *)) {
+        NSRect leftArea = screen.auxiliaryTopLeftArea;
+        NSRect rightArea = screen.auxiliaryTopRightArea;
+        if (!NSIsEmptyRect(leftArea) && !NSIsEmptyRect(rightArea)) {
+            return MAX(0, NSMinX(rightArea) - NSMaxX(leftArea));
+        }
+    }
+    return 0;
 }
 
 static CGFloat doraCompactHeight(NSScreen *screen) {
@@ -502,13 +523,16 @@ static void doraApplyView(NSDictionary *view) {
     [doraFrameAnimation startAnimation];
 }
 
-void doraIslandStart(void) {
+void doraIslandStart(double compactMinimumWidth, double compactWingWidth) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     NSScreen *screen = NSScreen.screens.firstObject ?: NSScreen.mainScreen;
     NSRect screenFrame = screen != nil ? screen.frame : NSMakeRect(0, 0, 1512, 982);
     CGFloat compactHeight = doraCompactHeight(screen);
-    NSRect initial = NSMakeRect(NSMidX(screenFrame) - 180, NSMaxY(screenFrame) - compactHeight, 360, compactHeight);
+    CGFloat initialCompactGap = doraScreenNotchWidth(screen);
+    CGFloat initialCompactWidth = MAX(compactMinimumWidth, initialCompactGap + 2 * compactWingWidth);
+    NSRect initial = NSMakeRect(NSMidX(screenFrame) - initialCompactWidth / 2,
+                                NSMaxY(screenFrame) - compactHeight, initialCompactWidth, compactHeight);
     doraPanel = [[DoraIslandPanel alloc]
         initWithContentRect:initial styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
         backing:NSBackingStoreBuffered defer:NO];
@@ -521,7 +545,8 @@ void doraIslandStart(void) {
                                    NSWindowCollectionBehaviorFullScreenAuxiliary |
                                    NSWindowCollectionBehaviorStationary;
     doraPanel.becomesKeyOnlyIfNeeded = YES;
-    doraPanel.islandContent = [[DoraIslandContentView alloc] initWithFrame:NSMakeRect(0, 0, 360, compactHeight)];
+    doraPanel.islandContent = [[DoraIslandContentView alloc] initWithFrame:NSMakeRect(0, 0, initialCompactWidth, compactHeight)];
+    doraPanel.islandContent.compactCenterGap = initialCompactGap;
     doraPanel.contentView = doraPanel.islandContent;
     doraScreenObserver = [NSNotificationCenter.defaultCenter
         addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue

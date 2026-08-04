@@ -571,3 +571,15 @@
 - 原生测试固定 `mouseDown → AppKit 分发 → interaction end` 的 tracking-loop 边界，并确认独立 `mouseUp` 仍会结束交互、普通鼠标移动不会改变 interaction。
 - `make verify`、`go vet ./...`、菜单栏 race 测试与 `git diff --check` 通过；独立 Code Review 确认无 P0/P1/P2/P3。
 - 当前 Mac 使用同一 production 二进制的临时 App bundle 完成可见面板和刷新动作检查，刷新完成后的部分失败状态正常显示，attention 结束后恢复紧凑态；自动化合成指针不能替代真实物理鼠标离开，因此只把生产实际调用的原生 interaction 分发测试与 controller 离开延迟测试计入该边界的自动验收。临时进程、18085 端口、SQLite、Agent home 和 App bundle 已清理。
+
+## 里程碑 32：刘海安全的紧凑总数
+
+已完成：
+
+- 紧凑态右侧从 waiting/running 完整文案改为两者之和；有 waiting 时为红色，只有 running 时为蓝色，无活跃 session 时为灰色，展开态继续显示准确拆分。
+- 普通屏 compact 最小宽度从 360 pt 收窄为 280 pt；刘海屏从系统顶部左右辅助区域计算物理摄像头宽度，并在两侧各保留 72 pt 对称内容区。`Dora` 与总数分别在左右区域居中，不依赖系统截图判断遮挡。
+
+验证记录：
+
+- model 测试覆盖总数口径、无刘海最小宽度、刘海真实间隙和对称左右区域；Objective-C/Go production build 验证系统辅助区域 API 与原生布局可以实际编译。
+- 当前 Mac 返回 185 pt 摄像头间隙，真实 compact 窗口为 329 × 38 pt，较原 360 pt 收窄并在两侧各保留 72 pt；临时 App bundle 可见验收确认灰色 `0`、仅 running 时蓝色 `1`、存在 waiting 时红色 `1`。验收后进程、18085 端口、SQLite、Agent home 与 App bundle 已清理。

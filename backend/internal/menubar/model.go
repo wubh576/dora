@@ -19,12 +19,14 @@ type ScreenMetrics struct {
 	Visible          Rect
 	SafeTop          float64
 	MenuBarThickness float64
+	NotchWidth       float64
 }
 
 type PanelLayout struct {
-	Frame           Rect    `json:"frame"`
-	Scrollable      bool    `json:"scrollable"`
-	SessionViewport float64 `json:"sessionViewport"`
+	Frame            Rect    `json:"frame"`
+	CompactCenterGap float64 `json:"compactCenterGap,omitempty"`
+	Scrollable       bool    `json:"scrollable"`
+	SessionViewport  float64 `json:"sessionViewport"`
 }
 
 type View struct {
@@ -65,7 +67,7 @@ type SessionRow struct {
 func BuildView(state *State, machine MachineState, screen ScreenMetrics, now time.Time, refreshing bool, statusOverride string) View {
 	view := View{
 		Expanded: machine.Mode != ModeCompact, Mode: string(machine.Mode),
-		CompactSummary: "Dora", CompactStatus: "0 等待 · 0 运行", Today: "今日 —", SevenDays: "近 7 日 —", ThirtyDays: "近 30 日 —", AllTime: "全部 —",
+		CompactSummary: "Dora", CompactStatus: "0", Today: "今日 —", SevenDays: "近 7 日 —", ThirtyDays: "近 30 日 —", AllTime: "全部 —",
 		FiveHour: "Codex 5 小时配额：暂无数据", SevenDay: "Codex 7 日配额：暂无数据",
 		Status: "正在连接本地服务", Refreshing: refreshing,
 		HighlightSessionID: machine.HighlightSessionID,
@@ -75,7 +77,7 @@ func BuildView(state *State, machine MachineState, screen ScreenMetrics, now tim
 	if state != nil {
 		view.WaitingCount = state.Runtime.WaitingCount
 		view.RunningCount = state.Runtime.RunningCount
-		view.CompactStatus = fmt.Sprintf("%d 等待 · %d 运行", view.WaitingCount, view.RunningCount)
+		view.CompactStatus = fmt.Sprintf("%d", view.WaitingCount+view.RunningCount)
 		view.Today = tokenRow("今日", state.Snapshot.Usage.TodayTokens)
 		view.SevenDays = tokenRow("近 7 日", state.Snapshot.Usage.SevenDayTokens)
 		view.ThirtyDays = tokenRow("近 30 日", state.Snapshot.Usage.ThirtyDayTokens)
@@ -111,9 +113,10 @@ func CalculateLayout(screen ScreenMetrics, expanded bool, sessions, running, wai
 	if visible.Width <= 0 || visible.Height <= 0 {
 		visible = screen.Frame
 	}
-	width, height := 360.0, compactHeight(screen)
+	width, height := compactMinimumWidth, compactHeight(screen)
+	compactCenterGap := max(0, screen.NotchWidth)
 	if !expanded {
-		width = 360
+		width = max(compactMinimumWidth, compactCenterGap+2*compactWingWidth)
 	} else {
 		width = min(760, max(600, visible.Width-32))
 		natural := 244.0 + float64(sessions)*56
@@ -121,6 +124,7 @@ func CalculateLayout(screen ScreenMetrics, expanded bool, sessions, running, wai
 		height = max(244, height)
 	}
 	width = min(width, max(1, visible.Width-16))
+	compactCenterGap = min(compactCenterGap, width)
 	height = min(height, max(1, visible.Height-16))
 	top := screen.Frame.Y + screen.Frame.Height
 	frame := Rect{X: screen.Frame.X + (screen.Frame.Width-width)/2, Y: top - height, Width: width, Height: height}
@@ -128,8 +132,16 @@ func CalculateLayout(screen ScreenMetrics, expanded bool, sessions, running, wai
 	if expanded {
 		viewport = max(0, height-176)
 	}
-	return PanelLayout{Frame: frame, Scrollable: expanded && float64(sessions)*56 > viewport, SessionViewport: viewport}
+	return PanelLayout{
+		Frame: frame, CompactCenterGap: compactCenterGap,
+		Scrollable: expanded && float64(sessions)*56 > viewport, SessionViewport: viewport,
+	}
 }
+
+const (
+	compactMinimumWidth = 280.0
+	compactWingWidth    = 72.0
+)
 
 func compactHeight(screen ScreenMetrics) float64 {
 	// visibleFrame 的顶边差值是当前屏幕实际被菜单栏占用的高度。

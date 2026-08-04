@@ -1092,7 +1092,7 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 ### 20.1 功能与状态
 
 - 同一个持久 `NSPanel` 常驻当前屏幕顶部中央，顶边精确锚定主屏幕顶边；上方两角为直角，只保留下方两个圆角。
-- 紧凑态宽约 360 pt，高度使用主屏 frame 与 visibleFrame 的实际顶部差值；菜单栏自动隐藏时依次使用 safeAreaInsets.top 与系统菜单栏厚度，不写死垂直尺寸。紧凑态固定显示左侧 `Dora` 和右侧 waiting/running session 数，存在 waiting 时右侧状态变红；不显示 token 或错误文案，也不绘制超出实际菜单栏边界的窗口阴影。
+- 紧凑态在普通屏使用 280 pt 最小宽度；刘海屏读取 `auxiliaryTopLeftArea` 与 `auxiliaryTopRightArea` 之间的真实摄像头宽度，并在两侧各保留 72 pt 等宽内容区。`Dora` 与活跃 session 总数分别在左右区域居中，避免系统截图无法体现的物理遮挡。总数为 waiting + running；存在 waiting 时为红色，只有 running 时为蓝色，没有活跃 session 时为灰色，准确拆分只在展开态显示。高度使用主屏 frame 与 visibleFrame 的实际顶部差值；菜单栏自动隐藏时依次使用 safeAreaInsets.top 与系统菜单栏厚度，不写死垂直尺寸。紧凑态不显示 token 或错误文案，也不绘制超出实际菜单栏边界的窗口阴影。
 - 内容视图保留 `NSTrackingArea` 作为进入/离开主路径，local 与 global `NSEvent` mouse monitor 覆盖 Dora 自身和其他应用中的鼠标移动/拖动；首次显示、非动画 frame 应用和 frame 动画完成后单次采样真实 `NSEvent.mouseLocation`。鼠标静止时没有固定频率的位置轮询，inside 状态不变时不通知 Go。配合 100 ms hover intent，进入紧凑条后约 100–150 ms 展开；展开后只要鼠标仍在整个 panel 内就保持展开，离开约 450 ms 后才尝试收起，并在延迟到期时再次复查鼠标位置。
 - hover、attention 和面板内 interaction 是可同时存在的展开原因；新 attention 高亮对应会话约 6 秒，倒计时结束时只要鼠标仍在 panel 内就继续展开。
 - 展开态展示今日 / 近 7 日 / 近 30 日 / 全部 token、Codex 5h/7d quota、状态、waiting/running 会话、刷新、仪表盘和退出。
@@ -1392,7 +1392,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 ### 24.4 第二期 Definition of Done
 
 - macOS 登录后单个 Dora runtime 与灵动岛可自动启动。
-- 灵动岛展开态展示 Codex + Claude Code 合并后的时间范围 token，并明确标注 Codex quota；紧凑态只展示 waiting/running session 数。
+- 灵动岛展开态展示 Codex + Claude Code 合并后的时间范围 token，并明确标注 Codex quota；紧凑态只展示 waiting + running 的活跃 session 总数。
 - Claude Code 历史 token 可在 Web 中查询。
 - Codex 与 Claude 使用统一五类 token DTO。
 - Claude fork 和 streaming 不重复。
@@ -1434,7 +1434,7 @@ dora hooks emit codex
 
 ### 25.3 灵动岛和跳转
 
-- 紧凑态固定表达 Dora 与 waiting/running session 数；新 waiting 通过红色数量、高亮、自动展开和一次性声音获得最高视觉优先级。
+- 紧凑态固定表达 Dora 与活跃 session 总数；新 waiting 通过红色总数、高亮、自动展开和一次性声音获得最高视觉优先级，waiting/running 的准确拆分保留在展开态。
 - 展开态按 session 展示 Codex surface、会话名回退、清洗后的 prompt 摘要、等待时长和 active request 数；实时轮询独立于 usage scan。
 - Codex App 使用参数化 `codex://threads/<external_session_id>` deep link 并前台激活。
 - iTerm2 与 Terminal 使用 AppleScript 精确匹配 TTY；TTY 只能通过 `osascript` argv 传入，不插值进源码，并负责取消最小化和激活窗口。

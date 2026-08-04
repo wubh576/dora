@@ -6,7 +6,7 @@ package menubar
 #cgo CFLAGS: -x objective-c -fobjc-arc
 #cgo LDFLAGS: -framework Cocoa
 #include <stdlib.h>
-void doraIslandStart(void);
+void doraIslandStart(double compactMinimumWidth, double compactWingWidth);
 void doraIslandStop(void);
 void doraIslandPresent(const char *payload);
 void doraIslandPlayAttentionSound(void);
@@ -105,7 +105,7 @@ func Run(ctx context.Context, config Config) error {
 		close(done)
 		C.doraIslandStop()
 	}()
-	C.doraIslandStart()
+	C.doraIslandStart(C.double(compactMinimumWidth), C.double(compactWingWidth))
 	controller.Stop()
 	activeBridge.Lock()
 	activeBridge.events = nil
@@ -179,7 +179,7 @@ func doraIslandOnEvent(kind C.int, value C.longlong) {
 }
 
 //export doraIslandOnScreen
-func doraIslandOnScreen(x, y, width, height, visibleX, visibleY, visibleWidth, visibleHeight, safeTop, menuBarThickness C.double) {
+func doraIslandOnScreen(x, y, width, height, visibleX, visibleY, visibleWidth, visibleHeight, safeTop, menuBarThickness, notchWidth C.double) {
 	activeBridge.RLock()
 	events := activeBridge.events
 	activeBridge.RUnlock()
@@ -191,6 +191,7 @@ func doraIslandOnScreen(x, y, width, height, visibleX, visibleY, visibleWidth, v
 		Visible:          Rect{X: float64(visibleX), Y: float64(visibleY), Width: float64(visibleWidth), Height: float64(visibleHeight)},
 		SafeTop:          float64(safeTop),
 		MenuBarThickness: float64(menuBarThickness),
+		NotchWidth:       float64(notchWidth),
 	}
 	select {
 	case events.screen <- metrics:
