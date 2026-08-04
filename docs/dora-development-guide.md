@@ -888,7 +888,7 @@ cache read / (input + cache read + cache creation)
 ```
 
 - 每日趋势堆叠图。
-- GitHub 风格的 53 周 Token 热力图，明确展示统计起始日；热力图通过统一 API 获取完整活动数据，不跟随当前汇总范围截断。
+- GitHub 风格的 53 周 Token 热力图，明确展示统计起始日；悬浮提示和选中日期详情统一使用 `K`、`M`、`B`、`T` 紧凑格式；热力图通过统一 API 获取完整活动数据，不跟随当前汇总范围截断。
 - 模型分布。
 - 项目分布。
 - Codex 与 Claude Code 各自的 token 总量、事件数和主要模型。

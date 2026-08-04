@@ -92,7 +92,8 @@ export function ActivityHeatmap({ startDate, endDate, days }: ActivityHeatmapPro
                     ? `${formatChineseDate(day.date)}，尚未开始统计`
                     : day.state === "future"
                       ? `${formatChineseDate(day.date)}，未来日期`
-                      : `${formatChineseDate(day.date)}，${formatNumber(day.totalTokens)} token`;
+                      : `${formatChineseDate(day.date)}，${formatTokenCompact(day.totalTokens)} token`;
+                const accessibleDescription = `${formatChineseDate(day.date)}，精确 ${formatNumber(day.totalTokens)} token`;
                 return (
                   <time
                     className={`heatmap-cell ${day.state}`}
@@ -101,7 +102,7 @@ export function ActivityHeatmap({ startDate, endDate, days }: ActivityHeatmapPro
                     key={day.date}
                     title={description}
                     aria-hidden={!isActive}
-                    aria-label={isActive ? description : undefined}
+                    aria-label={isActive ? accessibleDescription : undefined}
                     tabIndex={isActive ? 0 : undefined}
                     onBlur={() => setActiveDescription("")}
                     onFocus={() => setActiveDescription(description)}
