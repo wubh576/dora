@@ -54,17 +54,14 @@ type View struct {
 }
 
 type SessionRow struct {
-	ID                   int64  `json:"id"`
-	State                string `json:"state"`
-	Title                string `json:"title"`
-	Subtitle             string `json:"subtitle"`
-	Meta                 string `json:"meta"`
-	Highlight            bool   `json:"highlight"`
-	Jumpable             bool   `json:"jumpable"`
-	JumpReason           string `json:"jumpReason,omitempty"`
-	Respondable          bool   `json:"respondable"`
-	InteractionID        string `json:"interactionId,omitempty"`
-	PermissionQueueCount int    `json:"permissionQueueCount,omitempty"`
+	ID         int64  `json:"id"`
+	State      string `json:"state"`
+	Title      string `json:"title"`
+	Subtitle   string `json:"subtitle"`
+	Meta       string `json:"meta"`
+	Highlight  bool   `json:"highlight"`
+	Jumpable   bool   `json:"jumpable"`
+	JumpReason string `json:"jumpReason,omitempty"`
 }
 
 func BuildView(state *State, machine MachineState, screen ScreenMetrics, now time.Time, refreshing bool, statusOverride string) View {
@@ -167,15 +164,11 @@ func sessionRows(runtime RuntimeState, highlight int64, now time.Time) []Session
 		}
 		title := "Codex · " + name
 		subtitle := session.PromptPreview
-		waitingSummary := session.Summary
-		if session.Respondable && session.PermissionSummary != "" {
-			waitingSummary = session.PermissionSummary
-		}
-		if session.State == "waiting" && waitingSummary != "" {
+		if session.State == "waiting" && session.Summary != "" {
 			if subtitle == "" {
-				subtitle = waitingSummary
+				subtitle = session.Summary
 			} else {
-				subtitle = waitingSummary + " · " + subtitle
+				subtitle = session.Summary + " · " + subtitle
 			}
 		} else if subtitle == "" {
 			subtitle = "Codex 正在运行"
@@ -186,9 +179,6 @@ func sessionRows(runtime RuntimeState, highlight int64, now time.Time) []Session
 			if session.RequestCount > 1 {
 				meta += fmt.Sprintf(" · %d 个请求", session.RequestCount)
 			}
-			if session.PermissionQueueCount > 1 {
-				meta += fmt.Sprintf(" · %d 个可处理", session.PermissionQueueCount)
-			}
 		} else {
 			meta += " · " + activityLabel(session.LastSeenAt, now)
 		}
@@ -196,8 +186,6 @@ func sessionRows(runtime RuntimeState, highlight int64, now time.Time) []Session
 			ID: session.ID, State: session.State, Title: title, Subtitle: subtitle,
 			Meta: meta, Highlight: session.ID == highlight,
 			Jumpable: session.Jumpable, JumpReason: session.JumpReason,
-			Respondable: session.Respondable, InteractionID: session.InteractionID,
-			PermissionQueueCount: session.PermissionQueueCount,
 		})
 	}
 	return rows

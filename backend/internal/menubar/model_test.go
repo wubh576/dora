@@ -25,7 +25,7 @@ func TestBuildViewShowsWaitingBeforeRunningAndSafePreview(t *testing.T) {
 	state := &State{
 		Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 1_250_000, SevenDayTokens: 2_000_000, ThirtyDayTokens: 2_500_000, AllTimeTokens: 3_000_000}},
 		Runtime: RuntimeState{WaitingCount: 1, RunningCount: 1, Sessions: []RuntimeSession{
-			{ID: 1, State: "waiting", SessionName: "dora", Surface: "codex_app", PromptPreview: "确认命令", Summary: "命令等待授权", WaitSeconds: 90, RequestCount: 2, Jumpable: true, Respondable: true, PermissionSummary: "Bash · make verify", PermissionQueueCount: 2},
+			{ID: 1, State: "waiting", SessionName: "dora", Surface: "codex_app", PromptPreview: "确认命令", Summary: "命令等待授权", WaitSeconds: 90, RequestCount: 2, Jumpable: true},
 			{ID: 2, State: "running", SessionName: "backend", Surface: "codex_cli", TerminalKind: "iterm2", PromptPreview: "实现 API", JumpReason: "Codex CLI 会话缺少精确 TTY"},
 		}},
 	}
@@ -37,31 +37,13 @@ func TestBuildViewShowsWaitingBeforeRunningAndSafePreview(t *testing.T) {
 		view.ThirtyDays != "近 30 日 2.5M tokens" || view.AllTime != "全部 3M tokens" {
 		t.Fatalf("token 时间范围错误: %+v", view)
 	}
-	if len(view.Sessions) != 2 || view.Sessions[0].State != "waiting" || !view.Sessions[0].Highlight || !view.Sessions[0].Jumpable || !view.Sessions[0].Respondable ||
+	if len(view.Sessions) != 2 || view.Sessions[0].State != "waiting" || !view.Sessions[0].Highlight || !view.Sessions[0].Jumpable ||
 		view.Sessions[1].Meta != "iTerm2 · 运行中" || view.Sessions[1].Jumpable || view.Sessions[1].JumpReason == "" {
 		t.Fatalf("session 行错误: %+v", view.Sessions)
 	}
 	serialized := view.Sessions[0].Title + view.Sessions[0].Subtitle + view.Sessions[0].Meta
 	if strings.Contains(serialized, "session-") || strings.Contains(serialized, "/Users/") {
 		t.Fatalf("视图泄露私有定位字段: %s", serialized)
-	}
-}
-
-func TestSessionRowsOnlyExposeDirectActionsForLivePermissionWaiters(t *testing.T) {
-	runtime := RuntimeState{Sessions: []RuntimeSession{
-		{ID: 1, State: "waiting", SessionName: "live", Respondable: true, PermissionSummary: "Bash · git status"},
-		{ID: 2, State: "waiting", SessionName: "historical", Summary: "Codex 等待授权"},
-		{ID: 3, State: "waiting", SessionName: "question", Kind: "user_question", Summary: "Codex 等待回答"},
-		{ID: 4, State: "running", SessionName: "running"},
-	}}
-	rows := sessionRows(runtime, 0, time.Now())
-	if !rows[0].Respondable || !strings.Contains(rows[0].Subtitle, "git status") {
-		t.Fatalf("live PermissionRequest 缺少处理能力: %+v", rows[0])
-	}
-	for _, row := range rows[1:] {
-		if row.Respondable {
-			t.Fatalf("非 live PermissionRequest 错误显示处理能力: %+v", row)
-		}
 	}
 }
 

@@ -2,7 +2,6 @@
 #import "pointer_monitor_darwin.h"
 
 extern void doraIslandOnEvent(int kind, long long value);
-extern void doraIslandOnPermissionEvent(int kind, long long value, const char *interactionID);
 extern void doraIslandOnScreen(double x, double y, double width, double height,
                                double visibleX, double visibleY, double visibleWidth, double visibleHeight,
                                double safeTop, double menuBarThickness, double notchWidth);
@@ -108,14 +107,10 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 @property(nonatomic, strong) NSTextField *subtitleLabel;
 @property(nonatomic, strong) NSTextField *metaLabel;
 @property(nonatomic, strong) NSButton *clickButton;
-@property(nonatomic, strong) DoraActionButton *allowButton;
-@property(nonatomic, strong) DoraActionButton *permissionMenuButton;
 @property(nonatomic, strong) NSTrackingArea *doraTrackingArea;
 @property(nonatomic) BOOL doraHovered;
 @property(nonatomic) BOOL doraHighlighted;
 @property(nonatomic) BOOL doraJumpable;
-@property(nonatomic) BOOL doraRespondable;
-@property(nonatomic, copy) NSString *doraInteractionID;
 - (void)applySession:(NSDictionary *)session;
 @end
 
@@ -142,11 +137,6 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
         self.clickButton.transparent = YES;
         self.clickButton.target = doraPanel;
         [self addSubview:self.clickButton];
-        self.allowButton = [[DoraActionButton alloc] initWithTitle:@"本次允许" toolTip:@"仅允许当前这一次请求" action:@selector(doraAllowPermission:)];
-        self.permissionMenuButton = [[DoraActionButton alloc] initWithTitle:@"⌄" toolTip:@"更多处理方式" action:@selector(doraPermissionMenu:)];
-        self.permissionMenuButton.target = self;
-        [self addSubview:self.allowButton];
-        [self addSubview:self.permissionMenuButton];
     }
     return self;
 }
@@ -155,12 +145,9 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     CGFloat width = self.bounds.size.width;
     self.stateDot.frame = NSMakeRect(8, 32, 7, 7);
     self.titleLabel.frame = NSMakeRect(23, 25, width * 0.52, 18);
-    CGFloat approvalWidth = self.doraRespondable ? 112 : 0;
-    self.subtitleLabel.frame = NSMakeRect(23, 6, width - 34 - approvalWidth, 17);
+    self.subtitleLabel.frame = NSMakeRect(23, 6, width - 34, 17);
     self.metaLabel.frame = NSMakeRect(width * 0.48, 26, width * 0.50 - 10, 16);
     self.clickButton.frame = self.bounds;
-    self.allowButton.frame = NSMakeRect(width - 115, 4, 78, 23);
-    self.permissionMenuButton.frame = NSMakeRect(width - 34, 4, 26, 23);
 }
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
@@ -181,30 +168,11 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
         self.layer.backgroundColor = NSColor.clearColor.CGColor;
     }
 }
-- (void)doraPermissionMenu:(NSButton *)sender {
-    doraIslandOnEvent(7, 0);
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
-    NSMenuItem *deny = [[NSMenuItem alloc] initWithTitle:@"拒绝" action:@selector(doraDenyPermission:) keyEquivalent:@""];
-    deny.target = doraPanel;
-    deny.tag = self.clickButton.tag;
-    deny.representedObject = self.doraInteractionID;
-    [menu addItem:deny];
-    NSMenuItem *handoff = [[NSMenuItem alloc] initWithTitle:@"在 Codex 中处理" action:@selector(doraHandoffPermission:) keyEquivalent:@""];
-    handoff.target = doraPanel;
-    handoff.tag = self.clickButton.tag;
-    handoff.representedObject = self.doraInteractionID;
-    handoff.enabled = self.doraJumpable;
-    [menu addItem:handoff];
-    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSMaxY(sender.bounds)) inView:sender];
-    doraIslandOnEvent(8, 0);
-}
 - (void)applySession:(NSDictionary *)session {
     NSString *state = session[@"state"] ?: @"running";
     long long sessionID = [session[@"id"] longLongValue];
     self.doraHighlighted = [session[@"highlight"] boolValue];
     self.doraJumpable = [session[@"jumpable"] boolValue];
-    self.doraRespondable = [session[@"respondable"] boolValue];
-    self.doraInteractionID = session[@"interactionId"] ?: @"";
     self.titleLabel.stringValue = session[@"title"] ?: @"";
     self.subtitleLabel.stringValue = session[@"subtitle"] ?: @"";
     self.metaLabel.stringValue = session[@"meta"] ?: @"";
@@ -213,15 +181,8 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.stateDot.layer.backgroundColor = (self.doraJumpable ? activeColor : doraColor(0.40, 0.42, 0.47, 1.0)).CGColor;
     self.titleLabel.textColor = self.doraJumpable ? NSColor.whiteColor : doraColor(0.58, 0.60, 0.65, 1.0);
     self.clickButton.tag = (NSInteger)sessionID;
-    self.clickButton.identifier = self.doraInteractionID;
-    self.clickButton.action = self.doraJumpable ? (self.doraRespondable ? @selector(doraPermissionSession:) : @selector(doraSession:)) : @selector(doraUnavailableSession:);
-    self.clickButton.toolTip = self.doraJumpable ? (self.doraRespondable ? @"交回 Codex 并跳转到对应会话" : @"跳转到对应 Codex 会话") : (session[@"jumpReason"] ?: @"当前会话无法精确跳转");
-    self.allowButton.hidden = !self.doraRespondable;
-    self.permissionMenuButton.hidden = !self.doraRespondable;
-    self.allowButton.tag = (NSInteger)sessionID;
-    self.permissionMenuButton.tag = (NSInteger)sessionID;
-    self.allowButton.identifier = self.doraInteractionID;
-    self.permissionMenuButton.identifier = self.doraInteractionID;
+    self.clickButton.action = self.doraJumpable ? @selector(doraSession:) : @selector(doraUnavailableSession:);
+    self.clickButton.toolTip = self.doraJumpable ? @"跳转到对应 Codex 会话" : (session[@"jumpReason"] ?: @"当前会话无法精确跳转");
     [self updateBackground];
     [self setNeedsLayout:YES];
 }
@@ -468,14 +429,6 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 - (void)doraQuit:(id)sender { doraIslandOnEvent(5, 0); }
 - (void)doraSession:(NSButton *)sender { doraIslandOnEvent(6, (long long)sender.tag); }
 - (void)doraUnavailableSession:(NSButton *)sender { doraIslandOnEvent(9, (long long)sender.tag); }
-- (void)doraPermissionEvent:(int)kind sender:(id)sender {
-    NSString *interactionID = [sender isKindOfClass:NSMenuItem.class] ? [sender representedObject] : [sender identifier];
-    doraIslandOnPermissionEvent(kind, (long long)[sender tag], interactionID.UTF8String);
-}
-- (void)doraAllowPermission:(id)sender { [self doraPermissionEvent:10 sender:sender]; }
-- (void)doraDenyPermission:(id)sender { [self doraPermissionEvent:11 sender:sender]; }
-- (void)doraHandoffPermission:(id)sender { [self doraPermissionEvent:12 sender:sender]; }
-- (void)doraPermissionSession:(id)sender { [self doraPermissionEvent:12 sender:sender]; }
 @end
 
 static BOOL doraCurrentPointerInside(void) {

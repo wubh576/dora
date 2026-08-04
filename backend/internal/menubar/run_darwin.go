@@ -21,7 +21,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/wubh576/dora/backend/internal/attention"
 	"github.com/wubh576/dora/backend/internal/domain"
 )
 
@@ -31,13 +30,12 @@ const (
 )
 
 type Config struct {
-	Loader              Loader
-	Refresher           Refresher
-	DashboardURL        string
-	Jumper              SessionJumper
-	PermissionResponder PermissionResponder
-	AttentionEvents     <-chan AttentionSignal
-	Quit                func()
+	Loader          Loader
+	Refresher       Refresher
+	DashboardURL    string
+	Jumper          SessionJumper
+	AttentionEvents <-chan AttentionSignal
+	Quit            func()
 }
 
 type AttentionSignal struct {
@@ -72,7 +70,6 @@ type bridgeEvents struct {
 type bridgeEvent struct {
 	kind  int
 	value int64
-	text  string
 }
 
 var activeBridge struct {
@@ -101,7 +98,6 @@ func Run(ctx context.Context, config Config) error {
 	}
 	controller := NewController(config.Loader, config.Refresher, config.DashboardURL, present)
 	controller.SetSessionJumper(config.Jumper)
-	controller.SetPermissionResponder(config.PermissionResponder)
 	controller.SetPointerChecker(func() bool { return C.doraIslandPointerInside() != 0 })
 	done := make(chan struct{})
 	go func() {
@@ -165,12 +161,6 @@ func runIslandEvents(ctx context.Context, controller *Controller, config Config,
 				controller.UIInteraction(false)
 			case 9:
 				controller.ExplainSession(event.value)
-			case 10:
-				controller.RespondPermissionAsync(ctx, event.value, event.text, attention.PermissionAllow)
-			case 11:
-				controller.RespondPermissionAsync(ctx, event.value, event.text, attention.PermissionDeny)
-			case 12:
-				controller.JumpPermissionSessionAsync(ctx, event.value, event.text)
 			}
 		}
 	}
@@ -197,20 +187,6 @@ func doraIslandOnEvent(kind C.int, value C.longlong) {
 	}
 	select {
 	case events.interaction <- bridgeEvent{kind: int(kind), value: int64(value)}:
-	default:
-	}
-}
-
-//export doraIslandOnPermissionEvent
-func doraIslandOnPermissionEvent(kind C.int, value C.longlong, interactionID *C.char) {
-	activeBridge.RLock()
-	events := activeBridge.events
-	activeBridge.RUnlock()
-	if events == nil || interactionID == nil {
-		return
-	}
-	select {
-	case events.interaction <- bridgeEvent{kind: int(kind), value: int64(value), text: C.GoString(interactionID)}:
 	default:
 	}
 }

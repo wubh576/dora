@@ -54,28 +54,24 @@ type RuntimeState struct {
 }
 
 type RuntimeSession struct {
-	ID                   int64  `json:"id"`
-	Provider             string `json:"provider"`
-	State                string `json:"state"`
-	Surface              string `json:"surface"`
-	TerminalKind         string `json:"terminalKind"`
-	CWDBasename          string `json:"cwdBasename"`
-	SessionName          string `json:"sessionName"`
-	Model                string `json:"model"`
-	PromptPreview        string `json:"promptPreview"`
-	LastSeenAt           string `json:"lastSeenAt"`
-	RequestID            int64  `json:"requestId"`
-	Summary              string `json:"summary"`
-	Kind                 string `json:"kind"`
-	WaitingSince         string `json:"waitingSince"`
-	WaitSeconds          int64  `json:"waitSeconds"`
-	RequestCount         int    `json:"requestCount"`
-	Jumpable             bool   `json:"jumpable"`
-	JumpReason           string `json:"jumpReason"`
-	Respondable          bool   `json:"respondable"`
-	InteractionID        string `json:"interactionId"`
-	PermissionSummary    string `json:"permissionSummary"`
-	PermissionQueueCount int    `json:"permissionQueueCount"`
+	ID            int64  `json:"id"`
+	Provider      string `json:"provider"`
+	State         string `json:"state"`
+	Surface       string `json:"surface"`
+	TerminalKind  string `json:"terminalKind"`
+	CWDBasename   string `json:"cwdBasename"`
+	SessionName   string `json:"sessionName"`
+	Model         string `json:"model"`
+	PromptPreview string `json:"promptPreview"`
+	LastSeenAt    string `json:"lastSeenAt"`
+	RequestID     int64  `json:"requestId"`
+	Summary       string `json:"summary"`
+	Kind          string `json:"kind"`
+	WaitingSince  string `json:"waitingSince"`
+	WaitSeconds   int64  `json:"waitSeconds"`
+	RequestCount  int    `json:"requestCount"`
+	Jumpable      bool   `json:"jumpable"`
+	JumpReason    string `json:"jumpReason"`
 }
 
 type State struct {

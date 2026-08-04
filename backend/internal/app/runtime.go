@@ -73,7 +73,6 @@ type Runtime struct {
 	scanner        *scan.Scanner
 	quota          *quota.Service
 	jump           *jump.Service
-	permission     *attention.PermissionBroker
 	threadTitles   *codex.ThreadTitleReader
 	logger         Logger
 	ctx            context.Context
@@ -172,19 +171,17 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		return nil, fmt.Errorf("恢复 Codex 实时提醒状态: %w", err)
 	}
 	actualAddress := listener.Addr().String()
-	permissionBroker := attention.NewPermissionBroker(attention.PermissionWaitTimeout)
 	server := &http.Server{
 		Addr: actualAddress,
 		Handler: httpapi.NewHandler(store, httpapi.Options{
-			Scanner:          scanner,
-			ControlToken:     controlToken,
-			AllowedOrigins:   []string{"http://" + actualAddress, FrontendOrigin},
-			QuotaService:     quotaService,
-			Settings:         settingsStore,
-			StaticFS:         config.StaticFS,
-			BuildInfo:        config.BuildInfo,
-			Logger:           config.Logger,
-			PermissionBroker: permissionBroker,
+			Scanner:        scanner,
+			ControlToken:   controlToken,
+			AllowedOrigins: []string{"http://" + actualAddress, FrontendOrigin},
+			QuotaService:   quotaService,
+			Settings:       settingsStore,
+			StaticFS:       config.StaticFS,
+			BuildInfo:      config.BuildInfo,
+			Logger:         config.Logger,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -197,7 +194,6 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		scanner:       scanner,
 		quota:         quotaService,
 		jump:          jump.New(jumpRunner),
-		permission:    permissionBroker,
 		threadTitles:  threadTitles,
 		logger:        config.Logger,
 		ctx:           ctx,
@@ -282,10 +278,6 @@ func (r *Runtime) JumpAttentionSession(ctx context.Context, sessionID int64) err
 	return nil
 }
 
-func (r *Runtime) Submit(ctx context.Context, interactionID string, action attention.PermissionAction) error {
-	return r.permission.Submit(ctx, interactionID, action)
-}
-
 // Refresh 先更新本地 token，再刷新配额；配额失败不会回滚已完成的扫描。
 func (r *Runtime) Refresh(ctx context.Context) (usageErr, quotaErr error) {
 	_, usageErr = r.scanner.Scan(ctx, false)
@@ -295,7 +287,6 @@ func (r *Runtime) Refresh(ctx context.Context) (usageErr, quotaErr error) {
 
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
-		r.permission.Close()
 		r.cancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

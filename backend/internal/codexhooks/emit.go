@@ -20,22 +20,9 @@ import (
 
 const (
 	DefaultEndpoint              = "http://127.0.0.1:8080/api/v1/hooks/codex"
-	PermissionWaitTimeout        = attention.PermissionWaitTimeout
 	maxInputBytes                = 256 << 10
-	ordinaryRequestTimeout       = 450 * time.Millisecond
-	permissionRequestTimeout     = PermissionWaitTimeout
 	codexAppOverviewPromptPrefix = "# Overview Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:"
 	codexAppUserRequestMarker    = "## My request for Codex:"
-	permissionAllowOutput        = "{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}\n"
-	permissionDenyOutput         = "{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\",\"message\":\"User denied this request in Dora.\"}}}\n"
-)
-
-type PermissionAction = attention.PermissionAction
-
-const (
-	PermissionAllow   = attention.PermissionAllow
-	PermissionDeny    = attention.PermissionDeny
-	PermissionHandoff = attention.PermissionHandoff
 )
 
 var (
@@ -57,6 +44,7 @@ func NewEmitter() *Emitter {
 	return &Emitter{
 		endpoint: DefaultEndpoint,
 		client: &http.Client{
+			Timeout: 450 * time.Millisecond,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -65,7 +53,7 @@ func NewEmitter() *Emitter {
 	}
 }
 
-func (emitter *Emitter) Emit(ctx context.Context, input io.Reader, output io.Writer) error {
+func (emitter *Emitter) Emit(ctx context.Context, input io.Reader) error {
 	event, err := parseHookEvent(input, emitter.detector.Detect())
 	if errors.Is(err, errSubagentEvent) {
 		return nil
@@ -74,17 +62,11 @@ func (emitter *Emitter) Emit(ctx context.Context, input io.Reader, output io.Wri
 		return err
 	}
 	event = normalizeCodexAppBackgroundEvent(event)
-	requestTimeout := ordinaryRequestTimeout
-	if event.HookEvent == "PermissionRequest" {
-		requestTimeout = permissionRequestTimeout
-	}
-	requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
 	body, err := json.Marshal(event)
 	if err != nil {
 		return errors.New("编码 Codex Hook 事件失败")
 	}
-	request, err := http.NewRequestWithContext(requestContext, http.MethodPost, emitter.endpoint, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, emitter.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return errors.New("创建 Dora Hook 请求失败")
 	}
@@ -94,43 +76,14 @@ func (emitter *Emitter) Emit(ctx context.Context, input io.Reader, output io.Wri
 		return ErrServiceUnavailable
 	}
 	defer response.Body.Close()
-	if response.StatusCode >= 200 && response.StatusCode < 300 {
-		if event.HookEvent != "PermissionRequest" || response.StatusCode == http.StatusNoContent {
-			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4<<10))
-			return nil
-		}
-		return writePermissionOutput(response.Body, output)
-	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4<<10))
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		return nil
+	}
 	if response.StatusCode >= 500 {
 		return ErrServiceUnavailable
 	}
 	return fmt.Errorf("Dora 拒绝 Codex Hook 事件（HTTP %d）", response.StatusCode)
-}
-
-func writePermissionOutput(input io.Reader, output io.Writer) error {
-	var response struct {
-		Action PermissionAction `json:"action"`
-	}
-	decoder := json.NewDecoder(io.LimitReader(input, 4<<10))
-	if err := decoder.Decode(&response); err != nil {
-		return ErrServiceUnavailable
-	}
-	var value string
-	switch response.Action {
-	case PermissionAllow:
-		value = permissionAllowOutput
-	case PermissionDeny:
-		value = permissionDenyOutput
-	case PermissionHandoff, "":
-		return nil
-	default:
-		return ErrServiceUnavailable
-	}
-	if _, err := io.WriteString(output, value); err != nil {
-		return errors.New("写入 Codex 授权结果失败")
-	}
-	return nil
 }
 
 func normalizeCodexAppBackgroundEvent(event attention.Event) attention.Event {
@@ -217,11 +170,6 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 		}
 		hash := sha256.Sum256(canonicalInput)
 		event.InputHash = hex.EncodeToString(hash[:])
-		event.InteractionID, err = attention.NewPermissionInteractionID()
-		if err != nil {
-			return attention.Event{}, err
-		}
-		event.PermissionSummary = permissionSummary(event.ToolName, inputValue)
 	}
 	domainEvent, err := event.Domain(time.Now().UTC())
 	if err != nil {
@@ -235,40 +183,8 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 	event.Model = domainEvent.Model
 	event.TTY = domainEvent.TTY
 	event.ToolName = domainEvent.ToolName
-	event.PermissionSummary = cleanSummary(event.PermissionSummary, 180)
 	event.PromptPreview = domainEvent.PromptPreview
 	return event, nil
-}
-
-func permissionSummary(toolName string, input any) string {
-	parts := []string{cleanSummary(toolName, 40)}
-	object, _ := input.(map[string]any)
-	for _, key := range []string{"description", "command", "operation"} {
-		value, _ := object[key].(string)
-		value = cleanSummary(value, 120)
-		if value != "" && !containsString(parts, value) {
-			parts = append(parts, value)
-		}
-	}
-	return cleanSummary(strings.Join(parts, " · "), 180)
-}
-
-func cleanSummary(value string, limit int) string {
-	value = attention.SanitizePermissionSummary(value)
-	runes := []rune(value)
-	if len(runes) > limit {
-		value = string(runes[:limit-1]) + "…"
-	}
-	return strings.TrimSpace(value)
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func userPrompt(value string, surface Surface) string {

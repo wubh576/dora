@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -72,66 +71,6 @@ func TestInstallMergesUpdatesAndIsIdempotent(t *testing.T) {
 	if strings.Contains(string(data), "/tmp/Dora App/dora") || strings.Count(string(data), "/tmp/new-dora") != len(observedEvents) {
 		t.Fatalf("Dora 路径没有原子更新: %s", data)
 	}
-}
-
-func TestPermissionRequestUsesLongTimeoutAndStatusRejectsOldConfig(t *testing.T) {
-	home := t.TempDir()
-	manager, _ := NewManager(home, "/tmp/dora")
-	if _, err := manager.Install(); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(home, "hooks.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(data, &root); err != nil {
-		t.Fatal(err)
-	}
-	var hooks map[string]json.RawMessage
-	if err := json.Unmarshal(root["hooks"], &hooks); err != nil {
-		t.Fatal(err)
-	}
-	for _, spec := range observedEvents {
-		groups, err := decodeGroups(hooks[spec.event], spec.event)
-		if err != nil || len(groups) == 0 {
-			t.Fatalf("%s groups = %d, %v", spec.event, len(groups), err)
-		}
-		var group struct {
-			Hooks []struct {
-				Command string `json:"command"`
-				Timeout int    `json:"timeout"`
-			} `json:"hooks"`
-		}
-		if err := json.Unmarshal(groups[len(groups)-1], &group); err != nil || len(group.Hooks) != 1 {
-			t.Fatalf("解析 %s Dora hook: %+v, %v", spec.event, group, err)
-		}
-		if group.Hooks[0].Timeout != spec.timeout {
-			t.Fatalf("%s timeout = %d，期望 %d", spec.event, group.Hooks[0].Timeout, spec.timeout)
-		}
-	}
-
-	updated := regexp.MustCompile(`"timeout"\s*:\s*600`).ReplaceAllString(string(data), `"timeout":2`)
-	if updated == string(data) {
-		t.Fatal("未找到 PermissionRequest 的 600 秒 timeout")
-	}
-	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	status, err := manager.Status()
-	if err != nil || status.Installed || !contains(status.Missing, "PermissionRequest") {
-		t.Fatalf("旧 PermissionRequest 配置未被识别: %+v, %v", status, err)
-	}
-}
-
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func TestUninstallPreservesOtherHooks(t *testing.T) {
@@ -274,7 +213,7 @@ func TestNormalizedHookHashesMatchCodexAppServer(t *testing.T) {
 		"SessionStart":      "sha256:b011bd35b89ee3d7609b1ddb627a9de36079818ed17a8236a89ae02ee5727bb1",
 		"SessionEnd":        "sha256:be1609287b17f598204e6da1281d79459f6ae051e26316dd86b74f03c81af411",
 		"UserPromptSubmit":  "sha256:2808202cae68b19f3b1e4dbf0fb8dd3df36cf7fd939c5cbd7b4b9024ebd65437",
-		"PermissionRequest": "sha256:d92ef569f6756e9918fb5aa140bc8596b428590783a331c87916b70bac237e17",
+		"PermissionRequest": "sha256:4e013c3e2486b6b0b79c5ff0b1c5970e0c907101aba888fd8b6ad105ab4bcc2c",
 		"PreToolUse":        "sha256:34c4533b6d7bbe87aee88fcc5ba28c21aa5ad37faec5e7acc93b2af2955ef3cb",
 		"PostToolUse":       "sha256:8745aea8536fc60ec84b2a51e70c77586ec16d6f986f9bf2c7bf128650715e28",
 		"Stop":              "sha256:288e5de0fc02566cf381b045adf3144efd21bc3bc4792198b460935506dcfd51",

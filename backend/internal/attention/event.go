@@ -5,18 +5,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/wubh576/dora/backend/internal/domain"
-)
-
-var (
-	sensitiveAssignment = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key)[a-z0-9_-]*)\s*([=:])\s*("[^"]*"|'[^']*'|[^\s]+)`)
-	sensitiveFlag       = regexp.MustCompile(`(?i)(--(?:token|secret|password|passwd|api[_-]?key)(?:=|\s+))("[^"]*"|'[^']*'|[^\s]+)`)
-	bearerCredential    = regexp.MustCompile(`(?i)(bearer\s+)[^\s]+`)
 )
 
 type Event struct {
@@ -32,8 +25,6 @@ type Event struct {
 	ToolName           string `json:"toolName,omitempty"`
 	ToolUseID          string `json:"toolUseId,omitempty"`
 	InputHash          string `json:"inputHash,omitempty"`
-	InteractionID      string `json:"interactionId,omitempty"`
-	PermissionSummary  string `json:"permissionSummary,omitempty"`
 	PromptPreview      string `json:"promptPreview,omitempty"`
 }
 
@@ -41,18 +32,6 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 	event.SessionID = strings.TrimSpace(event.SessionID)
 	event.TurnID = strings.TrimSpace(event.TurnID)
 	event.ToolName = cleanLabel(event.ToolName, 80)
-	event.InteractionID = strings.TrimSpace(event.InteractionID)
-	if event.InteractionID != "" {
-		decoded, err := hex.DecodeString(event.InteractionID)
-		if err != nil || len(decoded) != 16 {
-			return domain.CodexHookEvent{}, errors.New("授权 interaction ID 无效")
-		}
-	}
-	event.PermissionSummary = SanitizePermissionSummary(event.PermissionSummary)
-	if event.HookEvent != "PermissionRequest" {
-		event.InteractionID = ""
-		event.PermissionSummary = ""
-	}
 	event.SessionStartSource = cleanLabel(event.SessionStartSource, 40)
 	if event.HookEvent != "SessionStart" {
 		event.SessionStartSource = ""
@@ -99,18 +78,6 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 		PromptPreview:      promptPreview,
 		ReceivedAt:         receivedAt.UTC(),
 	}, nil
-}
-
-func SanitizePermissionSummary(value string) string {
-	value = strings.Join(strings.Fields(value), " ")
-	value = sensitiveAssignment.ReplaceAllString(value, "$1$2[REDACTED]")
-	value = sensitiveFlag.ReplaceAllString(value, "$1[REDACTED]")
-	value = bearerCredential.ReplaceAllString(value, "$1[REDACTED]")
-	runes := []rune(value)
-	if len(runes) > 180 {
-		value = string(runes[:179]) + "…"
-	}
-	return strings.TrimSpace(value)
 }
 
 func cleanPromptPreview(value string, limit int) string {

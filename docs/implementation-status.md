@@ -29,7 +29,6 @@
 | 21. Codex 实时等待提醒与精确跳转 | 已完成 | `0778965`、`c40dfce`、`6ff055f`、`e1fd056`、`0a54972`、本次提交 |
 | 22. 原生 macOS 灵动岛控制中心 | 已完成 | 本次提交 |
 | 23. 顶部控制条交互与状态修补 | 已完成 | 本次提交 |
-| 34. 顶部控制条直接处理 Codex 授权 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -596,19 +595,3 @@
 
 - 新增确定性测试覆盖 185 pt 刘海的首个连接态和数据 View 都为 329 pt、普通屏首帧为 280 pt、screen 前取消不加载或发布、后续 screen 变化继续生效且不重复 full load，以及 screen 前排队的 attention/interaction 不丢失。
 - 当前刘海 Mac 使用隔离数据库、空 Agent home 和独立端口连续冷启动 10 次；临时原生 frame 探针每次都记录初始 AppKit panel 和全部首批 Go View 为 `329 × 38 pt`，没有出现 280 pt 中间 frame。诊断代码已从生产源码删除。
-
-## 里程碑 34：顶部控制条直接处理 Codex 授权
-
-已完成：
-
-- 只对当前仍被公开 `PermissionRequest` Hook 阻塞的 waiting 行显示原生分段按钮：`本次允许`、`拒绝`、`在 Codex 中处理`；running、`request_user_input` 和历史 waiting 不显示直接处理入口。
-- 增加不落 SQLite 的内存 permission broker。每次 Hook invocation 生成唯一 interaction ID，同一 session 按队列逐条展示，一次 allow/deny/handoff 只唤醒一个 waiter；重复提交、超时、断开和 shutdown 都有确定清理结果。
-- allow/deny 只通过官方 stdout JSON 决定当前请求，不切换焦点或创建永久规则；handoff 和可处理行点击先以空 stdout 释放 Hook，再复用 Codex App deep link 或 iTerm2/Terminal exact TTY 跳转。
-- `PermissionRequest` Hook timeout 调整为 600 秒，helper 内部等待约 570 秒；其他 Hook 仍为短超时。服务不可用、Dora 停止、断开和超时均空 stdout 成功回退 Codex 原生提示。
-- 只在内存中保存脱敏截断的工具/描述/命令摘要，不向 SQLite 或日志写入 raw tool input；没有新增浏览器写 API、App Server、私有协议或 UI 自动化。
-
-验证记录：
-
-- 自动测试覆盖官方 allow/deny stdout、handoff 空输出、不可用/取消 fallback、唯一 waiter、相同请求隔离、队列顺序、重复提交、timeout、disconnect、shutdown、历史 waiting、`request_user_input`、Runtime API 非阻塞与按钮即时移除。
-- 菜单栏模型和 Controller 测试覆盖 live waiter 按钮、allow/deny 不跳转、handoff 先于精确跳转、普通行点击、下一队列项、重复点击 single-flight，以及 AppKit 按钮与菜单事件边界。
-- Hook 安装测试固定 `PermissionRequest=600s`、其他事件短 timeout、旧配置识别、幂等安装、trust hash 变化和卸载保留用户 handlers。

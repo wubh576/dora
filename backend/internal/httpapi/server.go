@@ -37,7 +37,6 @@ type server struct {
 	settings       *settings.Store
 	buildInfo      buildinfo.Info
 	logger         Logger
-	permission     *attention.PermissionBroker
 }
 
 type Logger interface {
@@ -53,17 +52,16 @@ type healthResponse struct {
 }
 
 type Options struct {
-	Scanner          *scan.Scanner
-	ControlToken     string
-	AllowedOrigins   []string
-	Location         *time.Location
-	Now              func() time.Time
-	QuotaService     *quota.Service
-	Settings         *settings.Store
-	StaticFS         fs.FS
-	BuildInfo        buildinfo.Info
-	Logger           Logger
-	PermissionBroker *attention.PermissionBroker
+	Scanner        *scan.Scanner
+	ControlToken   string
+	AllowedOrigins []string
+	Location       *time.Location
+	Now            func() time.Time
+	QuotaService   *quota.Service
+	Settings       *settings.Store
+	StaticFS       fs.FS
+	BuildInfo      buildinfo.Info
+	Logger         Logger
 }
 
 type scanResponse struct {
@@ -203,28 +201,24 @@ type runtimeResponse struct {
 }
 
 type runtimeSessionResponse struct {
-	ID                   int64  `json:"id"`
-	Provider             string `json:"provider"`
-	State                string `json:"state"`
-	Surface              string `json:"surface"`
-	TerminalKind         string `json:"terminalKind,omitempty"`
-	CWDBasename          string `json:"cwdBasename"`
-	SessionName          string `json:"sessionName"`
-	Model                string `json:"model,omitempty"`
-	PromptPreview        string `json:"promptPreview,omitempty"`
-	LastSeenAt           string `json:"lastSeenAt"`
-	RequestID            int64  `json:"requestId,omitempty"`
-	Summary              string `json:"summary,omitempty"`
-	Kind                 string `json:"kind,omitempty"`
-	WaitingSince         string `json:"waitingSince,omitempty"`
-	WaitSeconds          int64  `json:"waitSeconds,omitempty"`
-	RequestCount         int    `json:"requestCount,omitempty"`
-	Jumpable             bool   `json:"jumpable"`
-	JumpReason           string `json:"jumpReason,omitempty"`
-	Respondable          bool   `json:"respondable"`
-	InteractionID        string `json:"interactionId,omitempty"`
-	PermissionSummary    string `json:"permissionSummary,omitempty"`
-	PermissionQueueCount int    `json:"permissionQueueCount,omitempty"`
+	ID            int64  `json:"id"`
+	Provider      string `json:"provider"`
+	State         string `json:"state"`
+	Surface       string `json:"surface"`
+	TerminalKind  string `json:"terminalKind,omitempty"`
+	CWDBasename   string `json:"cwdBasename"`
+	SessionName   string `json:"sessionName"`
+	Model         string `json:"model,omitempty"`
+	PromptPreview string `json:"promptPreview,omitempty"`
+	LastSeenAt    string `json:"lastSeenAt"`
+	RequestID     int64  `json:"requestId,omitempty"`
+	Summary       string `json:"summary,omitempty"`
+	Kind          string `json:"kind,omitempty"`
+	WaitingSince  string `json:"waitingSince,omitempty"`
+	WaitSeconds   int64  `json:"waitSeconds,omitempty"`
+	RequestCount  int    `json:"requestCount,omitempty"`
+	Jumpable      bool   `json:"jumpable"`
+	JumpReason    string `json:"jumpReason,omitempty"`
 }
 
 func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
@@ -253,7 +247,6 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 		if options[0].Logger != nil {
 			s.logger = options[0].Logger
 		}
-		s.permission = options[0].PermissionBroker
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/health", s.health)
@@ -302,35 +295,13 @@ func (s *server) runtimeSessions(w http.ResponseWriter, r *http.Request) {
 			PromptPreview: item.Session.PromptPreview, LastSeenAt: item.Session.LastSeenAt.Format(time.RFC3339Nano),
 		}
 		value.Jumpable, value.JumpReason = jump.Capability(item.Session)
-		historicalWaiting := item.Session.State == domain.RuntimeStateWaiting && item.Latest != nil
-		permission, livePermission := attention.PermissionRequest{}, false
-		if s.permission != nil {
-			permission, livePermission = s.permission.First(item.Session.ExternalSessionID)
-		}
-		if historicalWaiting {
+		if item.Session.State == domain.RuntimeStateWaiting && item.Latest != nil {
 			value.RequestID = item.Latest.ID
 			value.Summary = item.Latest.Summary
 			value.Kind = item.Latest.Kind
 			value.WaitingSince = item.WaitingSince.Format(time.RFC3339Nano)
 			value.WaitSeconds = max(0, int64(now.Sub(item.WaitingSince).Seconds()))
 			value.RequestCount = item.RequestCount
-		}
-		if livePermission {
-			value.State = domain.RuntimeStateWaiting
-			value.Respondable = true
-			value.InteractionID = permission.InteractionID
-			value.PermissionSummary = permission.Summary
-			value.PermissionQueueCount = permission.QueueCount
-			if !historicalWaiting {
-				value.Kind, value.Summary = domain.AttentionPermission, "Codex 等待授权"
-				if permission.ToolName == "Bash" {
-					value.Kind, value.Summary = domain.AttentionDangerousCommand, "命令等待授权"
-				}
-				value.WaitingSince = permission.RequestedAt.Format(time.RFC3339Nano)
-				value.WaitSeconds = max(0, int64(now.Sub(permission.RequestedAt).Seconds()))
-			}
-		}
-		if historicalWaiting || livePermission {
 			response.WaitingCount++
 		} else {
 			response.RunningCount++
@@ -465,19 +436,6 @@ func (s *server) codexHook(w http.ResponseWriter, r *http.Request) {
 		attentionResult,
 		domainEvent.SessionStartSource,
 	)
-	if domainEvent.EventName == "PermissionRequest" && s.permission != nil {
-		action, waitErr := s.permission.Wait(r.Context(), attention.PermissionRequest{
-			InteractionID:     strings.TrimSpace(event.InteractionID),
-			ExternalSessionID: domainEvent.ExternalSessionID,
-			ToolName:          domainEvent.ToolName,
-			Summary:           attention.SanitizePermissionSummary(event.PermissionSummary),
-			RequestedAt:       domainEvent.ReceivedAt,
-		})
-		if waitErr == nil && (action == attention.PermissionAllow || action == attention.PermissionDeny) {
-			writeNoStoreJSON(w, map[string]attention.PermissionAction{"action": action})
-			return
-		}
-	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
 }
