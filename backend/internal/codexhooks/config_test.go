@@ -154,6 +154,30 @@ func TestStatusReportsTrustedHashes(t *testing.T) {
 	}
 }
 
+func TestStatusReportsPartialTrustAfterAddingSubagentStop(t *testing.T) {
+	home := t.TempDir()
+	manager, _ := NewManager(home, "/tmp/dora")
+	if _, err := manager.Install(); err != nil {
+		t.Fatal(err)
+	}
+	var config strings.Builder
+	for _, spec := range observedEvents {
+		if spec.event == "SubagentStop" {
+			continue
+		}
+		config.WriteString("trusted_hash = \"")
+		config.WriteString(normalizedHookHash(spec, manager.command()))
+		config.WriteString("\"\n")
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Status()
+	if err != nil || !status.Installed || len(status.Missing) != 0 || status.Trust != "partial" {
+		t.Fatalf("新增 SubagentStop 后 trust 状态 = %+v, %v", status, err)
+	}
+}
+
 func TestStatusReportsInvalidExecutablePath(t *testing.T) {
 	home := t.TempDir()
 	executable := filepath.Join(home, "Dora App", "dora")
@@ -216,6 +240,7 @@ func TestNormalizedHookHashesMatchCodexAppServer(t *testing.T) {
 		"PermissionRequest": "sha256:4e013c3e2486b6b0b79c5ff0b1c5970e0c907101aba888fd8b6ad105ab4bcc2c",
 		"PreToolUse":        "sha256:34c4533b6d7bbe87aee88fcc5ba28c21aa5ad37faec5e7acc93b2af2955ef3cb",
 		"PostToolUse":       "sha256:8745aea8536fc60ec84b2a51e70c77586ec16d6f986f9bf2c7bf128650715e28",
+		"SubagentStop":      "sha256:fe19d1fa2ec10b06e9359b22aa8241c5093fbe514fda5903e9b5721aed1095e3",
 		"Stop":              "sha256:288e5de0fc02566cf381b045adf3144efd21bc3bc4792198b460935506dcfd51",
 	}
 	for _, spec := range observedEvents {

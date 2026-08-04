@@ -80,6 +80,8 @@ func TestParseVerifiedHookFixtures(t *testing.T) {
 		{file: "permission-request.json", event: "PermissionRequest", tool: "Bash", needsHash: true},
 		{file: "request-user-input-pre.json", event: "PreToolUse", tool: "request_user_input", toolUseID: "fixture-tool"},
 		{file: "request-user-input-post.json", event: "PostToolUse", tool: "request_user_input", toolUseID: "fixture-tool"},
+		{file: "subagent-permission-request.json", event: "PermissionRequest", tool: "Bash", toolUseID: "fixture-child-tool", needsHash: true},
+		{file: "subagent-stop.json", event: "SubagentStop"},
 		{file: "stop.json", event: "Stop"},
 		{file: "session-end.json", event: "SessionEnd"},
 	}
@@ -97,11 +99,15 @@ func TestParseVerifiedHookFixtures(t *testing.T) {
 				t.Fatalf("解析 fixture 失败: %v", err)
 			}
 			if event.SessionID != "fixture-session" || event.CWDBasename != "dora" ||
-				event.HookEvent != test.event || event.ToolName != test.tool || event.ToolUseID != test.toolUseID {
+				event.HookEvent != test.event || event.ToolName != test.tool ||
+				event.ToolUseKey != opaqueKey("tool-use", test.toolUseID) {
 				t.Fatalf("fixture 解析结果错误: %+v", event)
 			}
 			if (event.InputHash != "") != test.needsHash {
 				t.Fatalf("fixture input hash 错误: %q", event.InputHash)
+			}
+			if strings.HasPrefix(test.file, "subagent-") && event.SubagentScope != subagentScope("fixture-child", "reviewer") {
+				t.Fatalf("subagent scope 未脱敏或不稳定: %q", event.SubagentScope)
 			}
 			if test.event == "UserPromptSubmit" && event.PromptPreview != "帮我实现 灵动岛 状态" {
 				t.Fatalf("fixture prompt 未在 helper 出站前净化: %q", event.PromptPreview)
@@ -193,11 +199,22 @@ func TestPermissionRequestHashDoesNotRoundLargeIntegers(t *testing.T) {
 	}
 }
 
-func TestParseHookEventUsesToolUseIDForQuestion(t *testing.T) {
+func TestParseHookEventHashesToolUseIDForQuestion(t *testing.T) {
 	input := `{"session_id":"s","turn_id":"t","cwd":"/tmp/dora","hook_event_name":"PreToolUse","model":"gpt","tool_name":"request_user_input","tool_use_id":"tool-1","tool_input":{"questions":[]}}`
 	event, err := parseHookEvent(strings.NewReader(input), Surface{Name: domain.CodexSurfaceApp})
-	if err != nil || event.ToolUseID != "tool-1" || event.InputHash != "" {
+	// 该值由升级前公开版本的 raw tool_use_id 去重口径产生，不能随内部脱敏方式改变。
+	const wantEventKey = "codex:5cee1597f41905d06230c5594e470a61070563fb9cc7abba13eb6603d07f6401"
+	if err != nil || event.ToolUseKey != opaqueKey("tool-use", "tool-1") ||
+		event.EventKey != wantEventKey || event.InputHash != "" {
 		t.Fatalf("request_user_input 解析错误: %+v, %v", event, err)
+	}
+	domainEvent, err := event.Domain(time.Now())
+	if err != nil || domainEvent.EventKey != wantEventKey {
+		t.Fatalf("root event key 升级兼容性错误: %+v, %v", domainEvent, err)
+	}
+	serialized, err := json.Marshal(event)
+	if err != nil || strings.Contains(string(serialized), "tool-1") {
+		t.Fatalf("root tool use ID 穿过 loopback: %s, %v", serialized, err)
 	}
 }
 
@@ -217,6 +234,27 @@ func TestEmitterTreatsUnavailableServiceAsSilentCondition(t *testing.T) {
 	err := emitter.Emit(context.Background(), strings.NewReader(`{"session_id":"s","cwd":"/tmp/dora","hook_event_name":"Stop","model":"gpt"}`))
 	if !errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("Emit() = %v，期望 ErrServiceUnavailable", err)
+	}
+}
+
+func TestSubagentPermissionRequestUsesBoundedLoopbackTimeout(t *testing.T) {
+	emitter := NewEmitter()
+	emitter.detector = fixedDetector{surface: Surface{Name: domain.CodexSurfaceApp}}
+	emitter.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})
+	started := time.Now()
+	err := emitter.Emit(context.Background(), strings.NewReader(`{
+		"session_id":"parent","turn_id":"turn","agent_id":"child",
+		"cwd":"/tmp/dora","hook_event_name":"PermissionRequest",
+		"tool_name":"Bash","tool_input":{"command":"git status"}
+	}`))
+	if !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("超时结果 = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 650*time.Millisecond {
+		t.Fatalf("Subagent PermissionRequest 阻塞过久: %s", elapsed)
 	}
 }
 
@@ -398,7 +436,7 @@ func TestBackgroundPromptsRemoveRegisteredRuntimeSession(t *testing.T) {
 	})
 }
 
-func TestEmitterIgnoresSubagentEventsWithoutChangingRootSession(t *testing.T) {
+func TestEmitterAggregatesSubagentAttentionWithoutChangingRootMetadata(t *testing.T) {
 	ctx := context.Background()
 	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
 	if err != nil {
@@ -444,15 +482,45 @@ func TestEmitterIgnoresSubagentEventsWithoutChangingRootSession(t *testing.T) {
 		t.Fatalf("subagent 事件发起了 loopback 请求: %d", requests.Load())
 	}
 
-	emit(`{"session_id":"root-session","turn_id":"turn-1","cwd":"/tmp/dora","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_use_id":"call-1","tool_input":{"command":"make verify"}}`)
-	emit(`{"session_id":"root-session","cwd":"/tmp/dora","hook_event_name":"Stop","agent_type":"explorer"}`)
+	childA := `{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-a","agent_type":"explorer","cwd":"/tmp/child-a","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_use_id":"call-a","tool_input":{"command":"make verify"}}`
+	childB := `{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-b","agent_type":"reviewer","cwd":"/tmp/child-b","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_use_id":"call-b","tool_input":{"command":"go test ./..."}}`
+	emit(childA)
+	emit(childA)
+	emit(childB)
 	active, err = store.RuntimeSessions(ctx)
 	if err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateWaiting ||
-		active[0].Session.PromptPreview != "实现根任务" || active[0].RequestCount != 1 || active[0].Latest == nil {
+		active[0].Session.PromptPreview != "实现根任务" || active[0].Session.CWDBasename != "dora" ||
+		active[0].RequestCount != 2 || active[0].Latest == nil || active[0].Latest.Summary != "Subagent 等待授权" {
 		t.Fatalf("subagent 事件破坏 waiting 根 session: %+v, %v", active, err)
 	}
-	if requests.Load() != 2 {
-		t.Fatalf("waiting 期间 subagent 事件发起了 loopback 请求: %d", requests.Load())
+	if unnotified, err := store.UnnotifiedAttention(ctx); err != nil || len(unnotified) != 2 {
+		t.Fatalf("两个 child request 未各自进入提醒队列: %+v, %v", unnotified, err)
+	}
+	if requests.Load() != 4 {
+		t.Fatalf("subagent attention loopback 次数 = %d", requests.Load())
+	}
+
+	// 普通 child 生命周期不发送 loopback，也不能覆盖父 runtime。
+	emit(`{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-a","cwd":"/tmp/child-a","hook_event_name":"UserPromptSubmit","prompt":"child prompt"}`)
+	emit(`{"session_id":"root-session","agent_id":"child-a","cwd":"/tmp/child-a","hook_event_name":"SessionEnd"}`)
+	if requests.Load() != 4 {
+		t.Fatalf("普通 child 生命周期发起了 loopback 请求: %d", requests.Load())
+	}
+
+	// child A 的工具完成只能解决自己的请求。
+	emit(`{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-a","cwd":"/tmp/child-a","hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"call-a"}`)
+	active, err = store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateWaiting ||
+		active[0].RequestCount != 1 || active[0].Session.PromptPreview != "实现根任务" {
+		t.Fatalf("child A 完成污染 child B 或父 session: %+v, %v", active, err)
+	}
+
+	// 结构化 child 结束只解除同一 scope，最后恢复父任务 running。
+	emit(`{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-b","agent_type":"reviewer","cwd":"/tmp/child-b","hook_event_name":"SubagentStop"}`)
+	active, err = store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateRunning ||
+		active[0].Session.PromptPreview != "实现根任务" || active[0].RequestCount != 0 {
+		t.Fatalf("全部 child 请求解决后的父 session 错误: %+v, %v", active, err)
 	}
 
 	emit(`{"session_id":"root-session","cwd":"/tmp/dora","hook_event_name":"SessionEnd"}`)

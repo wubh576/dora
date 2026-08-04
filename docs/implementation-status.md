@@ -29,6 +29,7 @@
 | 21. Codex 实时等待提醒与精确跳转 | 已完成 | `0778965`、`c40dfce`、`6ff055f`、`e1fd056`、`0a54972`、本次提交 |
 | 22. 原生 macOS 灵动岛控制中心 | 已完成 | 本次提交 |
 | 23. 顶部控制条交互与状态修补 | 已完成 | 本次提交 |
+| 34. Codex Subagent 授权提醒 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -505,17 +506,17 @@
 - Snapshot API、菜单栏 Client/Model、四列 AppKit production build、`make verify`、`go test -race ./...`、`go vet ./...` 与 `git diff --check` 通过。
 - Code Review：独立 Reviewer 发现 README 漏写近 30 日、Snapshot fixture 无法区分 30D 与 ALL 两个 P3；补充文档和 `2026-07-01` 边界事件后复审通过，无剩余 P0/P1/P2/P3。
 
-## 里程碑 27：Subagent Hook 隔离
+## 里程碑 27：Subagent Hook 基础隔离
 
 已完成：
 
-- Codex helper 遇到非空 `agent_id` 或 `agent_type` 时返回成功 no-op，不再把父 session ID 改写为 `SessionEnd`，且不会发起 loopback HTTP 请求。
-- 同一父 session ID 的 subagent 事件不会删除 running 根 session、覆盖 prompt、解决 waiting request 或创建第二条 runtime session；真正的根 `SessionEnd` 保持原行为。
+- 普通 subagent 生命周期不进入 root 状态机，不再把父 session ID 改写为 `SessionEnd`。
+- 同一父 session ID 的 child 事件不能删除 running 根 session、覆盖 prompt 或创建第二条 runtime session；里程碑 34 在此隔离边界内增加 attention-only 授权提醒。
 
 验证记录：
 
 - Emitter 与 SQLite 定向测试及 race 回归测试、`git diff --check` 通过。
-- Code Review：独立 Reviewer 确认 `agent_id`/`agent_type` 均在 helper 出站前成功 no-op，同一父 session 的 running、waiting、prompt 与 request 不受影响，真正根 `SessionEnd` 和 Ambient Suggestions 过滤保持正常；无剩余 P0/P1/P2/P3。
+- Code Review：独立 Reviewer 确认 child 普通生命周期不污染父 runtime，真正 root `SessionEnd` 和 Ambient Suggestions 过滤保持正常；无剩余 P0/P1/P2/P3。
 
 ## 里程碑 28：Compaction 状态连续性
 
@@ -595,3 +596,19 @@
 
 - 新增确定性测试覆盖 185 pt 刘海的首个连接态和数据 View 都为 329 pt、普通屏首帧为 280 pt、screen 前取消不加载或发布、后续 screen 变化继续生效且不重复 full load，以及 screen 前排队的 attention/interaction 不丢失。
 - 当前刘海 Mac 使用隔离数据库、空 Agent home 和独立端口连续冷启动 10 次；临时原生 frame 探针每次都记录初始 AppKit panel 和全部首批 Go View 为 `329 × 38 pt`，没有出现 280 pt 中间 frame。诊断代码已从生产源码删除。
+
+## 里程碑 34：Codex Subagent 授权提醒
+
+已完成：
+
+- subagent `PermissionRequest` 作为 attention request 聚合到父 runtime session，不新增 child session；父标题、prompt、surface、TTY 与跳转目标保持 root 数据。
+- child scope 和 tool use ID 在 helper 出站前转换成不可逆内部 key；`PostToolUse` 优先精确解除，缺少 tool ID 时只在同一 scope 的 turn/tool 内降级，`Stop`/`SubagentStop` 只清理同一 child。
+- migration 9 为父 session 增加基础状态，为 attention request 增加 child scope、tool key 和 tool name；升级不重建表，不删除既有 usage、quota、runtime 或 attention 数据。
+- Hook 配置增加短超时 `SubagentStop` handler。Dora 不输出授权决定，用户仍只在 Codex 原生界面允许或拒绝；Codex 新 Hook hash 的一次信任确认不能由 Dora 静默绕过。
+
+验证记录：
+
+- `make verify`、后端全量 `go test -race ./...`、`go vet ./...` 与 `git diff --check` 通过；测试覆盖父元数据保留、并发 child 聚合与独立解除、root 行为回归、重复提醒去重、短 timeout、空 stdout、Runtime API 隐私和 v8 到 v9 数据保留。
+- production helper loopback 探针确认两个 child 聚合为一条父 session 且 request count 为 2；child A `PostToolUse` 后只剩 child B，child B `SubagentStop` 后父 session 恢复 running。helper stdout 为空，探针 session 已用 root `SessionEnd` 清理。
+- 尝试使用 Codex CLI `0.146.0` 的 ephemeral subagent 做原生授权探针，但该次运行先遇到网络重试，随后因 `collab spawn failed: no thread with id` 未实际创建 child；没有把原生授权框、跳转或 App subagent 路径误报为已通过，探针也未留下 runtime 记录。
+- Code Review：独立 Reviewer 发现 root 旧 event key 兼容和 keyed request/keyless completion 降级两个 P2；自审发现旧迁移记录缺少 tool name 时的类型隔离问题。修复后以固定旧 hash、scope fallback 和 migration 旧记录回归测试复审，无剩余 P0/P1/P2/P3。

@@ -1410,11 +1410,11 @@ DORA_CLAUDE_OAUTH_TOKEN
 - waiting 数量按 session 计算，不按 request 叠加；同一 session 可以显示 active request 数。
 - attention event key 必须稳定去重。PermissionRequest 在缺少 tool use ID 时使用规范化 JSON 的输入 hash，只存 hash，不存输入正文。
 - notified 与 resolved 分开记录。一次新 request 只发一次声音并自动展开灵动岛；点击会话只跳转，不解决 request；重启不重放历史声音。
-- PermissionRequest 没有单独假设 resolved Hook：`PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。
+- root PermissionRequest 没有单独假设 resolved Hook：root `PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。subagent `PostToolUse` 优先按不可逆 tool key 精确解除；缺少精确 ID 时只在同一 child scope 的 turn/tool 内降级匹配，child `Stop`/`SubagentStop` 只解除该 scope 的剩余请求。
 - 不能用几秒钟 timeout 盲目解除 waiting。Dora 启动时把上一进程遗留的 running 恢复为 idle，同时保留真正尚未解决的 waiting；缺失 `SessionEnd` 的 waiting 以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。
 - Codex App `0.146.0-alpha.9.2` 实机探针确认全局 Hook 会产生 `SessionStart → UserPromptSubmit → Stop → SessionEnd`，且无 TTY 的 App 进程祖先会稳定识别为 `codex_app`；原始 thread ID 可直接用于 deep link。
 - Codex App 项目首页会用固定 `# Overview` prompt 启动 Ambient Suggestions 后台任务，且当前可能只发送 `UserPromptSubmit`、不发送 `Stop`（`openai/codex#18541`）。该 Ambient Hook payload 暂无稳定的用户/后台来源字段，因此 helper 仅在 `codex_app + UserPromptSubmit + 已确认前缀` 同时匹配时把事件改写为无 prompt 的 `SessionEnd` tombstone，立即移除内部 runtime；CLI、普通 App prompt 和其他事件不受影响。
-- 可见 runtime 只由用户主动提交的 root prompt 启动。Codex subagent Hook 的 `session_id` 仍指向父 session，`agent_id`/`agent_type` 才用于标识 subagent；helper 遇到任一非空 subagent 字段时直接成功忽略，不发送 loopback 事件，也不改变根 runtime 或 waiting request。用户 turn 内的工具调用和推理不创建额外 session，后台任务的实际模型消耗仍进入 token 与费用统计。
+- 可见 runtime 的基础运行语义只由用户主动提交的 root prompt 启动。Codex subagent Hook 的 `session_id` 指向父 session；helper 把 `agent_id`（缺少时为 `agent_type`）转换成不可逆 child scope。subagent `PermissionRequest` 进入 attention-only 路径并聚合到父 session；对应 `PostToolUse`、child `Stop` 和 `SubagentStop` 只解除同一 scope 的请求，不覆盖父标题、prompt、模型、surface、TTY 或 cwd，也不能把父 session 置为 idle 或删除。其他 child 生命周期成功 no-op。原始 agent ID、tool use ID 不写入 Runtime API 或 UI。用户 turn 内的普通工具调用和推理不创建额外 session，后台任务的实际模型消耗仍进入 token 与费用统计。
 - Codex CLI `0.146.0` 实机探针确认：Allow 的事件顺序为 `PermissionRequest → PostToolUse → Stop`；TUI 按 Esc 取消后没有即时 resolved Hook，下一次 `UserPromptSubmit` 才解除 waiting；启用当前 CLI 的结构化提问能力后，顺序为 `PreToolUse(request_user_input) → PostToolUse(request_user_input) → Stop`。这三条真实边界作为状态机依据，不能用 UI 文案或自然语言猜测补齐事件。
 
 ### 25.2 Hook 生命周期与安全
@@ -1427,7 +1427,7 @@ dora hooks emit codex
 ```
 
 - `dora install` 默认原子合并 `~/.codex/hooks.json`，独立 hooks install 命令保留为修复入口；两者都保留非 Dora 配置，重复安装幂等并使用稳定二进制路径。
-- status 报告配置损坏、路径、缺失事件和 Codex trust；Dora 只读 `~/.codex/config.toml` 中的 trust hash，不写入或绕过 Codex trust 状态，用户必须在 Codex `/hooks` 明确授权。
+- status 报告配置损坏、路径、缺失事件和 Codex trust；Dora 只读 `~/.codex/config.toml` 中的 trust hash，不写入或绕过 Codex trust 状态。安装和升级自动合并全部 handler，但 Codex 要求用户通过 `/hooks` 明确授权新的 Hook hash；Dora 不修改内部信任库，也不使用 UI 自动化代替安全确认。
 - trust hash 持久保存；普通 Dora 升级不改变稳定 handler 命令，因此不重复授权。禁止在 Dora 中使用 `--dangerously-bypass-hook-trust` 或自动写入 trust hash。
 - 每个用户和每台 Mac 首次安装后各自授权一次；未授权只关闭实时 waiting 提醒，不阻塞 Codex，也不影响 Dora 的 token、费用、配额和 Web 功能。`dora install` 与 `dora status` 必须把这个降级状态直接展示给用户。
 - emit 限制 stdin 大小，只提取最小字段，并以短超时 POST 到固定 loopback endpoint；禁止 redirect，Dora 未运行时静默成功，不阻塞 Codex。

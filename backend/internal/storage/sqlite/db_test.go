@@ -653,3 +653,103 @@ func TestOpenMigratesVersionSixWithoutLosingRuntimeSession(t *testing.T) {
 		t.Fatalf("v6 runtime migration 破坏原记录: %+v", session)
 	}
 }
+
+func TestOpenMigratesCurrentRuntimeSchemaForSubagentAttentionWithoutDataLoss(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dora.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			applied_at_ms INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	for index, migration := range []func(context.Context, *sql.Tx, int64) error{
+		migrateDoraState,
+		migrateUsage,
+		migrateQuota,
+		migrateUsageProviderDiagnostics,
+		migrateCacheCreationDurations,
+		migrateRuntimeAttention,
+		migrateRuntimePromptPreview,
+		migrateRuntimeSessionName,
+	} {
+		tx, err := legacy.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := migration(ctx, tx, 1); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations VALUES (?, 1)", index+1); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, statement := range []string{
+		`INSERT INTO usage_events (
+			source, dedup_key, occurred_at_ms, model, project,
+			input_tokens, total_tokens, updated_at_ms
+		) VALUES ('provider.codex', 'v8-usage', 1, 'gpt', 'dora', 7, 7, 1)`,
+		`INSERT INTO quota_snapshots (
+			provider, window_key, label, used_percent, remaining_percent,
+			fetched_at_ms, source, source_state
+		) VALUES ('provider.codex', 'five_hour', '5 小时', 20, 80, 1, 'fixture', 'ready')`,
+		`INSERT INTO runtime_sessions (
+			provider, external_session_id, cwd_basename, session_name, model,
+			surface, terminal_kind, tty, state, prompt_preview, last_seen_at_ms
+		) VALUES (
+			'provider.codex', 'v8-parent', 'dora', '现有任务', 'gpt',
+			'codex_app', '', '', 'waiting', '现有 prompt', 1
+		)`,
+		`INSERT INTO attention_requests (
+			runtime_session_id, event_key, kind, summary, turn_id, created_at_ms
+		) VALUES (1, 'codex:v8-request', 'permission', 'Codex 等待授权', 'turn', 1)`,
+	} {
+		if _, err := legacy.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("升级 v8 数据库失败: %v", err)
+	}
+	defer store.Close()
+	session, err := store.RuntimeSession(ctx, 1)
+	if err != nil || session.ExternalSessionID != "v8-parent" || session.SessionName != "现有任务" ||
+		session.PromptPreview != "现有 prompt" || session.State != domain.RuntimeStateWaiting ||
+		session.BaseState != domain.RuntimeStateRunning {
+		t.Fatalf("v9 migration 破坏 runtime: %+v, %v", session, err)
+	}
+	if status, err := store.AttentionRequestStatus(ctx, "codex:v8-request"); err != nil || status != AttentionRequestActive {
+		t.Fatalf("v9 migration 破坏 attention: %q, %v", status, err)
+	}
+	var scope, toolKey, toolName string
+	if err := store.readDB.QueryRowContext(ctx, `
+		SELECT subagent_scope, tool_use_key, tool_name
+		FROM attention_requests WHERE event_key = 'codex:v8-request'
+	`).Scan(&scope, &toolKey, &toolName); err != nil || scope != "" || toolKey != "" || toolName != "" {
+		t.Fatalf("旧 request migration 默认值错误: scope=%q tool=%q name=%q err=%v", scope, toolKey, toolName, err)
+	}
+	events, err := store.LoadUsageEvents(ctx, domain.CodexSource)
+	if err != nil || len(events) != 1 || events[0].DedupKey != "v8-usage" || events[0].TotalTokens != 7 {
+		t.Fatalf("v9 migration 破坏 usage: %+v, %v", events, err)
+	}
+	quotas, err := store.LatestQuotaSnapshots(ctx, domain.CodexSource)
+	if err != nil || len(quotas) != 1 || quotas[0].RemainingPercent != 80 {
+		t.Fatalf("v9 migration 破坏 quota: %+v, %v", quotas, err)
+	}
+}

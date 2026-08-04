@@ -33,7 +33,7 @@ func TestEventDomainKeepsOnlySafeRuntimeLabels(t *testing.T) {
 
 	for _, invalid := range []Event{
 		{SessionID: "session", HookEvent: "Stop", Surface: domain.CodexSurfaceCLI, TerminalKind: "custom-terminal"},
-		{SessionID: "session", HookEvent: "PreToolUse", Surface: domain.CodexSurfaceCLI, ToolName: "Bash", ToolUseID: "call"},
+		{SessionID: "session", HookEvent: "PreToolUse", Surface: domain.CodexSurfaceCLI, ToolName: "Bash"},
 	} {
 		if _, err := invalid.Domain(time.Now()); err == nil {
 			t.Fatalf("Domain() 接受无效 runtime 元数据: %+v", invalid)
@@ -86,5 +86,48 @@ func TestEventDomainKeepsOnlySessionStartSource(t *testing.T) {
 	}
 	if stop.SessionStartSource != "" {
 		t.Fatalf("非 SessionStart 保留 source: %q", stop.SessionStartSource)
+	}
+}
+
+func TestSubagentEventKeyIncludesValidatedScope(t *testing.T) {
+	scopeA := "sha256:" + strings.Repeat("a", 64)
+	scopeB := "sha256:" + strings.Repeat("b", 64)
+	toolKey := "sha256:" + strings.Repeat("c", 64)
+	base := Event{
+		SessionID: "parent", HookEvent: "PermissionRequest", TurnID: "turn",
+		Surface: domain.CodexSurfaceApp, ToolName: "Bash", ToolUseKey: toolKey,
+	}
+	root := base
+	root.EventKey = RootEventKey("parent", "turn", "PermissionRequest", "Bash", "raw-tool-id")
+	rootEvent, err := root.Domain(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRootKey := RootEventKey("parent", "turn", "PermissionRequest", "Bash", "raw-tool-id")
+	if rootEvent.EventKey != wantRootKey {
+		t.Fatalf("root event key 兼容性被破坏: got=%s want=%s", rootEvent.EventKey, wantRootKey)
+	}
+	base.SubagentScope = scopeA
+	first, err := base.Domain(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.SubagentScope = scopeB
+	second, err := base.Domain(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.EventKey == second.EventKey || first.SubagentScope != scopeA || second.SubagentScope != scopeB {
+		t.Fatalf("child scope 未参与稳定 key: first=%+v second=%+v", first, second)
+	}
+	for _, invalid := range []Event{
+		{SessionID: "parent", HookEvent: "Stop", Surface: domain.CodexSurfaceApp, SubagentScope: "raw-agent-id"},
+		{SessionID: "parent", HookEvent: "PostToolUse", Surface: domain.CodexSurfaceApp, ToolUseKey: "raw-tool-id"},
+		{SessionID: "parent", HookEvent: "PermissionRequest", Surface: domain.CodexSurfaceApp, ToolUseKey: toolKey, EventKey: "raw-event-key"},
+		{SessionID: "parent", HookEvent: "Stop", Surface: domain.CodexSurfaceApp, EventKey: wantRootKey},
+	} {
+		if _, err := invalid.Domain(time.Now()); err == nil {
+			t.Fatalf("Domain() 接受未脱敏 child key: %+v", invalid)
+		}
 	}
 }

@@ -24,6 +24,7 @@ var observedEvents = []hookSpec{
 	{event: "PermissionRequest", keyLabel: "permission_request", timeout: 2},
 	{event: "PreToolUse", keyLabel: "pre_tool_use", matcher: "request_user_input", timeout: 2},
 	{event: "PostToolUse", keyLabel: "post_tool_use", timeout: 2},
+	{event: "SubagentStop", keyLabel: "subagent_stop", timeout: 2},
 	{event: "Stop", keyLabel: "stop", timeout: 2},
 }
 

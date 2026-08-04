@@ -137,6 +137,47 @@ func TestRuntimeAPICombinesRunningAndWaitingWithoutPrivateIdentifiers(t *testing
 	}
 }
 
+func TestRuntimeAPIAggregatesSubagentRequestWithoutExposingScope(t *testing.T) {
+	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	handler := NewHandler(store)
+	post := func(body string) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/codex", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("Hook 状态码 = %d: %s", response.Code, response.Body.String())
+		}
+	}
+	scope := "sha256:" + strings.Repeat("a", 64)
+	toolKey := "sha256:" + strings.Repeat("b", 64)
+	post(`{"sessionId":"private-parent","hookEvent":"UserPromptSubmit","cwdBasename":"dora","surface":"codex_app","promptPreview":"父任务"}`)
+	post(`{"sessionId":"private-parent","hookEvent":"PermissionRequest","turnId":"turn","subagentScope":"` + scope + `","cwdBasename":"child","surface":"codex_app","toolName":"Bash","toolUseKey":"` + toolKey + `","inputHash":"fixture"}`)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
+	var payload runtimeResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.WaitingCount != 1 || len(payload.Sessions) != 1 ||
+		payload.Sessions[0].Summary != "Subagent 等待授权" || payload.Sessions[0].RequestCount != 1 ||
+		payload.Sessions[0].PromptPreview != "父任务" || payload.Sessions[0].CWDBasename != "dora" {
+		t.Fatalf("Subagent runtime API 聚合错误: %+v", payload)
+	}
+	serialized := response.Body.String()
+	for _, private := range []string{"private-parent", scope, toolKey, "agent_id", "agentId"} {
+		if strings.Contains(serialized, private) {
+			t.Fatalf("Runtime API 泄露 child 内部定位 %q: %s", private, serialized)
+		}
+	}
+}
+
 func TestRuntimeAPIMarksUnjumpableSessionWithoutPrivateLocator(t *testing.T) {
 	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
 	if err != nil {

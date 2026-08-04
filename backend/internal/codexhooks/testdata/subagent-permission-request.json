@@ -1,0 +1,14 @@
+{
+  "session_id": "fixture-session",
+  "turn_id": "fixture-turn",
+  "agent_id": "fixture-child",
+  "agent_type": "reviewer",
+  "cwd": "/Users/example/dora",
+  "hook_event_name": "PermissionRequest",
+  "model": "gpt-fixture",
+  "tool_name": "Bash",
+  "tool_use_id": "fixture-child-tool",
+  "tool_input": {
+    "command": "git status"
+  }
+}

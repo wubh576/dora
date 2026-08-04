@@ -27,7 +27,7 @@ const (
 
 var (
 	ErrServiceUnavailable = errors.New("Dora 服务不可用")
-	errSubagentEvent      = errors.New("忽略 Codex subagent 事件")
+	errIgnoredHookEvent   = errors.New("忽略不产生 attention 的 Codex 事件")
 )
 
 type eventSurfaceDetector interface {
@@ -55,7 +55,7 @@ func NewEmitter() *Emitter {
 
 func (emitter *Emitter) Emit(ctx context.Context, input io.Reader) error {
 	event, err := parseHookEvent(input, emitter.detector.Detect())
-	if errors.Is(err, errSubagentEvent) {
+	if errors.Is(err, errIgnoredHookEvent) {
 		return nil
 	}
 	if err != nil {
@@ -134,22 +134,30 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 	if raw.SessionID == "" || raw.HookEventName == "" {
 		return attention.Event{}, errors.New("Codex Hook 事件缺少 session 或事件名")
 	}
-	if strings.TrimSpace(raw.AgentID) != "" || strings.TrimSpace(raw.AgentType) != "" {
-		// Subagent 复用根 session ID，任何状态事件都不能进入 Dora runtime。
-		return attention.Event{}, errSubagentEvent
+	agentID := strings.TrimSpace(raw.AgentID)
+	agentType := strings.TrimSpace(raw.AgentType)
+	isSubagent := agentID != "" || agentType != ""
+	if isSubagent {
+		switch raw.HookEventName {
+		case "PermissionRequest", "PostToolUse", "Stop", "SubagentStop":
+		default:
+			// 普通 child 生命周期不能进入父 runtime 状态机。
+			return attention.Event{}, errIgnoredHookEvent
+		}
 	}
 	event := attention.Event{
 		SessionID:          raw.SessionID,
 		HookEvent:          raw.HookEventName,
 		SessionStartSource: strings.TrimSpace(raw.Source),
 		TurnID:             strings.TrimSpace(raw.TurnID),
+		SubagentScope:      subagentScope(agentID, agentType),
 		CWDBasename:        filepath.Base(strings.TrimSpace(raw.CWD)),
 		Model:              strings.TrimSpace(raw.Model),
 		Surface:            surface.Name,
 		TerminalKind:       surface.TerminalKind,
 		TTY:                surface.TTY,
 		ToolName:           strings.TrimSpace(raw.ToolName),
-		ToolUseID:          strings.TrimSpace(raw.ToolUseID),
+		ToolUseKey:         opaqueKey("tool-use", raw.ToolUseID),
 	}
 	if event.HookEvent == "UserPromptSubmit" {
 		event.PromptPreview = userPrompt(raw.Prompt, surface)
@@ -175,16 +183,46 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 	if err != nil {
 		return attention.Event{}, errors.New("Codex Hook 事件字段无效")
 	}
+	if !isSubagent && (event.HookEvent == "PermissionRequest" ||
+		(event.HookEvent == "PreToolUse" && event.ToolName == "request_user_input")) {
+		stablePart := strings.TrimSpace(raw.ToolUseID)
+		if stablePart == "" {
+			stablePart = event.InputHash
+		}
+		// root key 继续使用旧版 raw tool ID 参与最终 hash，但 raw ID 不穿过 loopback。
+		event.EventKey = attention.RootEventKey(
+			domainEvent.ExternalSessionID, domainEvent.TurnID,
+			domainEvent.EventName, domainEvent.ToolName, stablePart,
+		)
+	}
 	// 在 helper 出站前完成脱敏和截断，原始 prompt 不穿过 loopback API。
 	event.SessionID = domainEvent.ExternalSessionID
 	event.SessionStartSource = domainEvent.SessionStartSource
 	event.TurnID = domainEvent.TurnID
+	event.SubagentScope = domainEvent.SubagentScope
 	event.CWDBasename = domainEvent.CWDBasename
 	event.Model = domainEvent.Model
 	event.TTY = domainEvent.TTY
 	event.ToolName = domainEvent.ToolName
+	event.ToolUseKey = domainEvent.ToolUseKey
 	event.PromptPreview = domainEvent.PromptPreview
 	return event, nil
+}
+
+func subagentScope(agentID, agentType string) string {
+	if agentID != "" {
+		return opaqueKey("agent-id", agentID)
+	}
+	return opaqueKey("agent-type", agentType)
+}
+
+func opaqueKey(kind, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	hash := sha256.Sum256([]byte(kind + "\x00" + value))
+	return "sha256:" + hex.EncodeToString(hash[:])
 }
 
 func userPrompt(value string, surface Surface) string {

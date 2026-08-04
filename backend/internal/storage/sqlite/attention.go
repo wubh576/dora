@@ -23,6 +23,11 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 
 	created := false
 	err := s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
+		if event.SubagentScope != "" {
+			var err error
+			created, err = applySubagentHookEvent(ctx, conn, event)
+			return err
+		}
 		if event.EventName == "SessionEnd" {
 			return endRuntimeSession(ctx, conn, event)
 		}
@@ -51,7 +56,7 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 			if err != nil {
 				return err
 			}
-			return markWaitingIfActive(ctx, conn, sessionID, event.EventKey, event.ReceivedAt)
+			return markWaitingIfActive(ctx, conn, sessionID, event.EventKey, event.ReceivedAt, true)
 		case "PreToolUse":
 			if event.ToolName != "request_user_input" {
 				return nil
@@ -62,7 +67,7 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 			if err != nil {
 				return err
 			}
-			return markWaitingIfActive(ctx, conn, sessionID, event.EventKey, event.ReceivedAt)
+			return markWaitingIfActive(ctx, conn, sessionID, event.EventKey, event.ReceivedAt, true)
 		case "SessionStart":
 			if event.SessionStartSource == "compact" {
 				return nil
@@ -84,6 +89,47 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 	return created, nil
 }
 
+func applySubagentHookEvent(ctx context.Context, conn *sql.Conn, event domain.CodexHookEvent) (bool, error) {
+	switch event.EventName {
+	case "PermissionRequest":
+		exists, resolved, err := attentionRequestState(ctx, conn, event.EventKey)
+		if err != nil || exists && resolved {
+			return false, err
+		}
+		sessionID, err := ensureSubagentParentSession(ctx, conn, event)
+		if err != nil {
+			return false, err
+		}
+		kind := domain.AttentionPermission
+		if event.ToolName == "Bash" {
+			kind = domain.AttentionDangerousCommand
+		}
+		created, err := createAttentionRequest(
+			ctx, conn, sessionID, event, kind, "Subagent 等待授权",
+		)
+		if err != nil {
+			return false, err
+		}
+		return created, markWaitingIfActive(
+			ctx, conn, sessionID, event.EventKey, event.ReceivedAt, false,
+		)
+	case "PostToolUse":
+		sessionID, found, err := runtimeSessionID(ctx, conn, event.ExternalSessionID)
+		if err != nil || !found {
+			return false, err
+		}
+		return false, resolveScopedToolRequest(ctx, conn, sessionID, event)
+	case "Stop", "SubagentStop":
+		sessionID, found, err := runtimeSessionID(ctx, conn, event.ExternalSessionID)
+		if err != nil || !found {
+			return false, err
+		}
+		return false, resolveSubagentRequests(ctx, conn, sessionID, event)
+	default:
+		return false, nil
+	}
+}
+
 func (s *Store) RuntimeSessions(ctx context.Context) ([]domain.ActiveSession, error) {
 	rows, err := s.readDB.QueryContext(ctx, `
 		WITH active AS (
@@ -95,7 +141,8 @@ func (s *Store) RuntimeSessions(ctx context.Context) ([]domain.ActiveSession, er
 		)
 		SELECT
 			s.id, s.provider, s.external_session_id, s.cwd_basename, s.session_name, s.model,
-			s.surface, s.terminal_kind, s.tty, s.state, s.prompt_preview, s.last_seen_at_ms,
+			s.surface, s.terminal_kind, s.tty, s.state, s.base_state,
+			s.prompt_preview, s.last_seen_at_ms,
 			r.id, r.event_key, r.kind, r.summary, r.turn_id, r.created_at_ms,
 			r.notified_at_ms, active.waiting_since, active.request_count
 		FROM runtime_sessions s
@@ -137,6 +184,7 @@ func (s *Store) RuntimeSessions(ctx context.Context) ([]domain.ActiveSession, er
 			&item.Session.TerminalKind,
 			&item.Session.TTY,
 			&item.Session.State,
+			&item.Session.BaseState,
 			&item.Session.PromptPreview,
 			&sessionSeen,
 			&requestID,
@@ -320,7 +368,7 @@ func (s *Store) RuntimeSession(ctx context.Context, id int64) (domain.RuntimeSes
 	var lastSeen int64
 	err := s.readDB.QueryRowContext(ctx, `
 		SELECT id, provider, external_session_id, cwd_basename, session_name, model,
-			surface, terminal_kind, tty, state, prompt_preview, last_seen_at_ms
+			surface, terminal_kind, tty, state, base_state, prompt_preview, last_seen_at_ms
 		FROM runtime_sessions
 		WHERE id = ?
 	`, id).Scan(
@@ -334,6 +382,7 @@ func (s *Store) RuntimeSession(ctx context.Context, id int64) (domain.RuntimeSes
 		&session.TerminalKind,
 		&session.TTY,
 		&session.State,
+		&session.BaseState,
 		&session.PromptPreview,
 		&lastSeen,
 	)
@@ -458,9 +507,9 @@ func (s *Store) ResolveStaleRuntimeSessions(ctx context.Context, cutoff, at time
 func (s *Store) RestoreRunningSessions(ctx context.Context) (int64, error) {
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE runtime_sessions
-		SET state = ?, prompt_preview = ''
+		SET state = ?, base_state = ?, prompt_preview = ''
 		WHERE state = ?
-	`, domain.RuntimeStateIdle, domain.RuntimeStateRunning)
+	`, domain.RuntimeStateIdle, domain.RuntimeStateIdle, domain.RuntimeStateRunning)
 	if err != nil {
 		return 0, fmt.Errorf("恢复 Codex 历史运行态: %w", err)
 	}
@@ -476,9 +525,12 @@ func validateCodexHookEvent(event domain.CodexHookEvent) error {
 		return errors.New("Codex Hook 事件缺少 session 或时间")
 	}
 	switch event.EventName {
-	case "SessionStart", "SessionEnd", "UserPromptSubmit", "PermissionRequest", "PreToolUse", "PostToolUse", "Stop":
+	case "SessionStart", "SessionEnd", "UserPromptSubmit", "PermissionRequest", "PreToolUse", "PostToolUse", "Stop", "SubagentStop":
 	default:
 		return fmt.Errorf("不支持的 Codex Hook 事件 %q", event.EventName)
+	}
+	if event.EventName == "SubagentStop" && event.SubagentScope == "" {
+		return errors.New("SubagentStop 缺少 child 范围")
 	}
 	if event.Surface != domain.CodexSurfaceApp && event.Surface != domain.CodexSurfaceCLI && event.Surface != domain.CodexSurfaceUnknown {
 		return fmt.Errorf("不支持的 Codex surface %q", event.Surface)
@@ -488,6 +540,9 @@ func validateCodexHookEvent(event domain.CodexHookEvent) error {
 	}
 	if event.EventName == "PreToolUse" && event.ToolName != "request_user_input" {
 		return errors.New("仅接收 request_user_input 的 PreToolUse")
+	}
+	if event.SubagentScope != "" && event.EventName == "PreToolUse" {
+		return errors.New("不接收 Subagent PreToolUse")
 	}
 	if (event.EventName == "PermissionRequest" || (event.EventName == "PreToolUse" && event.ToolName == "request_user_input")) && event.EventKey == "" {
 		return errors.New("Codex 等待事件缺少稳定 key")
@@ -513,8 +568,44 @@ func attentionRequestState(ctx context.Context, conn *sql.Conn, eventKey string)
 	return true, resolvedAt.Valid, nil
 }
 
+func runtimeSessionID(ctx context.Context, conn *sql.Conn, externalSessionID string) (int64, bool, error) {
+	var id int64
+	err := conn.QueryRowContext(ctx, `
+		SELECT id FROM runtime_sessions WHERE provider = ? AND external_session_id = ?
+	`, domain.CodexSource, externalSessionID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("读取 Codex runtime session ID: %w", err)
+	}
+	return id, true, nil
+}
+
+func ensureSubagentParentSession(ctx context.Context, conn *sql.Conn, event domain.CodexHookEvent) (int64, error) {
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO runtime_sessions (
+			provider, external_session_id, cwd_basename, model,
+			surface, terminal_kind, tty, state, base_state,
+			prompt_preview, last_seen_at_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?)
+		ON CONFLICT(provider, external_session_id) DO UPDATE SET
+			last_seen_at_ms = excluded.last_seen_at_ms
+	`,
+		domain.CodexSource, event.ExternalSessionID, event.CWDBasename, event.Model,
+		event.Surface, event.TerminalKind, event.TTY,
+		domain.RuntimeStateWaiting, domain.RuntimeStateRunning,
+		event.ReceivedAt.UTC().UnixMilli(),
+	); err != nil {
+		return 0, fmt.Errorf("建立 Subagent 父 runtime session: %w", err)
+	}
+	id, _, err := runtimeSessionID(ctx, conn, event.ExternalSessionID)
+	return id, err
+}
+
 func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.CodexHookEvent) (int64, error) {
 	state := domain.RuntimeStateIdle
+	baseState := domain.RuntimeStateIdle
 	promptPreview := ""
 	runtimeTransition := event.EventName
 	if event.EventName == "SessionStart" && event.SessionStartSource == "compact" {
@@ -523,13 +614,14 @@ func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.Code
 	}
 	if event.EventName == "UserPromptSubmit" {
 		state = domain.RuntimeStateRunning
+		baseState = domain.RuntimeStateRunning
 		promptPreview = event.PromptPreview
 	}
 	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO runtime_sessions (
 			provider, external_session_id, cwd_basename, model,
-			surface, terminal_kind, tty, state, prompt_preview, last_seen_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			surface, terminal_kind, tty, state, base_state, prompt_preview, last_seen_at_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider, external_session_id) DO UPDATE SET
 			cwd_basename = CASE WHEN excluded.cwd_basename != '' THEN excluded.cwd_basename ELSE runtime_sessions.cwd_basename END,
 			model = CASE WHEN excluded.model != '' THEN excluded.model ELSE runtime_sessions.model END,
@@ -545,6 +637,10 @@ func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.Code
 					WHEN ? IN ('UserPromptSubmit', 'Stop', 'SessionStart') THEN excluded.state
 					ELSE runtime_sessions.state
 				END,
+				base_state = CASE
+					WHEN ? IN ('UserPromptSubmit', 'Stop', 'SessionStart') THEN excluded.base_state
+					ELSE runtime_sessions.base_state
+				END,
 				last_seen_at_ms = excluded.last_seen_at_ms
 	`,
 		domain.CodexSource,
@@ -555,8 +651,10 @@ func upsertRuntimeSession(ctx context.Context, conn *sql.Conn, event domain.Code
 		event.TerminalKind,
 		event.TTY,
 		state,
+		baseState,
 		promptPreview,
 		event.ReceivedAt.UTC().UnixMilli(),
+		runtimeTransition,
 		runtimeTransition,
 		runtimeTransition,
 		runtimeTransition,
@@ -582,10 +680,15 @@ func createAttentionRequest(
 ) (bool, error) {
 	result, err := conn.ExecContext(ctx, `
 		INSERT INTO attention_requests (
-			runtime_session_id, event_key, kind, summary, turn_id, created_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?)
+			runtime_session_id, event_key, kind, summary, turn_id,
+			subagent_scope, tool_use_key, tool_name, created_at_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(event_key) DO NOTHING
-	`, sessionID, event.EventKey, kind, summary, event.TurnID, event.ReceivedAt.UTC().UnixMilli())
+	`,
+		sessionID, event.EventKey, kind, summary, event.TurnID,
+		event.SubagentScope, event.ToolUseKey, event.ToolName,
+		event.ReceivedAt.UTC().UnixMilli(),
+	)
 	if err != nil {
 		return false, fmt.Errorf("创建 Codex 等待请求: %w", err)
 	}
@@ -596,7 +699,14 @@ func createAttentionRequest(
 	return affected == 1, nil
 }
 
-func markWaitingIfActive(ctx context.Context, conn *sql.Conn, sessionID int64, eventKey string, at time.Time) error {
+func markWaitingIfActive(
+	ctx context.Context,
+	conn *sql.Conn,
+	sessionID int64,
+	eventKey string,
+	at time.Time,
+	rootRequest bool,
+) error {
 	var active bool
 	if err := conn.QueryRowContext(ctx, `
 		SELECT EXISTS(
@@ -610,8 +720,15 @@ func markWaitingIfActive(ctx context.Context, conn *sql.Conn, sessionID int64, e
 		return nil
 	}
 	if _, err := conn.ExecContext(ctx, `
-		UPDATE runtime_sessions SET state = ?, last_seen_at_ms = ? WHERE id = ?
-	`, domain.RuntimeStateWaiting, at.UTC().UnixMilli(), sessionID); err != nil {
+		UPDATE runtime_sessions
+		SET state = ?,
+			base_state = CASE WHEN ? THEN ? ELSE base_state END,
+			last_seen_at_ms = ?
+		WHERE id = ?
+	`,
+		domain.RuntimeStateWaiting, rootRequest, domain.RuntimeStateRunning,
+		at.UTC().UnixMilli(), sessionID,
+	); err != nil {
 		return fmt.Errorf("标记 Codex session 等待中: %w", err)
 	}
 	return nil
@@ -633,55 +750,126 @@ func resolveSessionRequests(
 		return fmt.Errorf("解决 Codex 等待请求: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, `
-		UPDATE runtime_sessions SET state = ?, last_seen_at_ms = ? WHERE id = ?
-	`, state, at.UTC().UnixMilli(), sessionID); err != nil {
+		UPDATE runtime_sessions
+		SET state = ?, base_state = ?, last_seen_at_ms = ?
+		WHERE id = ?
+	`, state, state, at.UTC().UnixMilli(), sessionID); err != nil {
 		return fmt.Errorf("更新 Codex runtime session 状态: %w", err)
 	}
 	return nil
 }
 
 func resolveCompletedToolRequests(ctx context.Context, conn *sql.Conn, sessionID int64, event domain.CodexHookEvent) error {
-	var previousState string
-	if err := conn.QueryRowContext(ctx, "SELECT state FROM runtime_sessions WHERE id = ?", sessionID).Scan(&previousState); err != nil {
-		return fmt.Errorf("读取 Codex 工具完成前的 session 状态: %w", err)
-	}
+	return resolveToolRequest(ctx, conn, sessionID, event, "")
+}
+
+func resolveScopedToolRequest(ctx context.Context, conn *sql.Conn, sessionID int64, event domain.CodexHookEvent) error {
+	return resolveToolRequest(ctx, conn, sessionID, event, event.SubagentScope)
+}
+
+func resolveToolRequest(
+	ctx context.Context,
+	conn *sql.Conn,
+	sessionID int64,
+	event domain.CodexHookEvent,
+	scope string,
+) error {
 	firstKind, secondKind := domain.AttentionPermission, domain.AttentionDangerousCommand
 	reason := "tool_completed"
 	if event.ToolName == "request_user_input" {
 		firstKind, secondKind = domain.AttentionUserQuestion, domain.AttentionUserQuestion
 		reason = "question_completed"
 	}
-	if _, err := conn.ExecContext(ctx, `
+	resolved := int64(0)
+	if event.ToolUseKey != "" {
+		result, err := conn.ExecContext(ctx, `
+			UPDATE attention_requests
+			SET resolved_at_ms = ?, resolution_reason = ?
+			WHERE runtime_session_id = ? AND resolved_at_ms IS NULL
+				AND subagent_scope = ? AND tool_use_key = ?
+				AND kind IN (?, ?)
+		`,
+			event.ReceivedAt.UTC().UnixMilli(), reason,
+			sessionID, scope, event.ToolUseKey, firstKind, secondKind,
+		)
+		if err != nil {
+			return fmt.Errorf("按工具调用解决 Codex 等待请求: %w", err)
+		}
+		resolved, err = result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("检查 Codex 工具调用解决结果: %w", err)
+		}
+	}
+	if resolved == 0 {
+		if err := resolveToolRequestFallback(
+			ctx, conn, sessionID, event, scope, firstKind, secondKind, reason,
+		); err != nil {
+			return err
+		}
+	}
+	return refreshRuntimeState(ctx, conn, sessionID, event.ReceivedAt)
+}
+
+func resolveToolRequestFallback(
+	ctx context.Context,
+	conn *sql.Conn,
+	sessionID int64,
+	event domain.CodexHookEvent,
+	scope string,
+	firstKind string,
+	secondKind string,
+	reason string,
+) error {
+	query := `
 		UPDATE attention_requests
 		SET resolved_at_ms = ?, resolution_reason = ?
 		WHERE runtime_session_id = ? AND resolved_at_ms IS NULL
+			AND subagent_scope = ?
 			AND kind IN (?, ?)
 			AND (? = '' OR turn_id = '' OR turn_id = ?)
-	`,
-		event.ReceivedAt.UTC().UnixMilli(), reason, sessionID,
-		firstKind, secondKind, event.TurnID, event.TurnID,
-	); err != nil {
-		return fmt.Errorf("解决完成的 Codex 工具请求: %w", err)
+			AND (? = '' OR tool_name = '' OR tool_name = ?)
+	`
+	arguments := []any{
+		event.ReceivedAt.UTC().UnixMilli(), reason,
+		sessionID, scope, firstKind, secondKind,
+		event.TurnID, event.TurnID,
+		event.ToolName, event.ToolName,
 	}
-	var waiting bool
-	if err := conn.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM attention_requests
-			WHERE runtime_session_id = ? AND resolved_at_ms IS NULL
-		)
-	`, sessionID).Scan(&waiting); err != nil {
-		return fmt.Errorf("检查 Codex session 剩余等待请求: %w", err)
+	if event.ToolUseKey != "" {
+		// completion 提供了不匹配的 key 时，只能降级匹配没有 key 的旧请求。
+		query += " AND tool_use_key = ''"
 	}
-	state := previousState
-	if waiting {
-		state = domain.RuntimeStateWaiting
-	} else if previousState == domain.RuntimeStateRunning || previousState == domain.RuntimeStateWaiting {
-		state = domain.RuntimeStateRunning
+	if _, err := conn.ExecContext(ctx, query, arguments...); err != nil {
+		return fmt.Errorf("按 child 范围解决 Codex 等待请求: %w", err)
 	}
+	return nil
+}
+
+func resolveSubagentRequests(ctx context.Context, conn *sql.Conn, sessionID int64, event domain.CodexHookEvent) error {
 	if _, err := conn.ExecContext(ctx, `
-		UPDATE runtime_sessions SET state = ?, last_seen_at_ms = ? WHERE id = ?
-	`, state, event.ReceivedAt.UTC().UnixMilli(), sessionID); err != nil {
-		return fmt.Errorf("更新 Codex 工具完成后的 session 状态: %w", err)
+		UPDATE attention_requests
+		SET resolved_at_ms = ?, resolution_reason = 'subagent_stopped'
+		WHERE runtime_session_id = ? AND resolved_at_ms IS NULL AND subagent_scope = ?
+	`, event.ReceivedAt.UTC().UnixMilli(), sessionID, event.SubagentScope); err != nil {
+		return fmt.Errorf("解决 Subagent 等待请求: %w", err)
+	}
+	return refreshRuntimeState(ctx, conn, sessionID, event.ReceivedAt)
+}
+
+func refreshRuntimeState(ctx context.Context, conn *sql.Conn, sessionID int64, at time.Time) error {
+	if _, err := conn.ExecContext(ctx, `
+		UPDATE runtime_sessions
+		SET state = CASE
+				WHEN EXISTS(
+					SELECT 1 FROM attention_requests
+					WHERE runtime_session_id = ? AND resolved_at_ms IS NULL
+				) THEN ?
+				ELSE base_state
+			END,
+			last_seen_at_ms = ?
+		WHERE id = ?
+	`, sessionID, domain.RuntimeStateWaiting, at.UTC().UnixMilli(), sessionID); err != nil {
+		return fmt.Errorf("重算 Codex runtime session 状态: %w", err)
 	}
 	return nil
 }

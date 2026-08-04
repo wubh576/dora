@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const migrationVersion = 8
+const migrationVersion = 9
 
 type Store struct {
 	db     *sql.DB
@@ -113,6 +113,7 @@ func (s *Store) initialize(ctx context.Context) error {
 		migrateRuntimeAttention,
 		migrateRuntimePromptPreview,
 		migrateRuntimeSessionName,
+		migrateSubagentAttention,
 	}
 	for index, migration := range migrations {
 		version := index + 1
@@ -161,6 +162,28 @@ func migrateRuntimePromptPreview(ctx context.Context, tx *sql.Tx, _ int64) error
 func migrateRuntimeSessionName(ctx context.Context, tx *sql.Tx, _ int64) error {
 	_, err := tx.ExecContext(ctx, "ALTER TABLE runtime_sessions ADD COLUMN session_name TEXT NOT NULL DEFAULT ''")
 	return err
+}
+
+func migrateSubagentAttention(ctx context.Context, tx *sql.Tx, _ int64) error {
+	statements := []string{
+		"ALTER TABLE runtime_sessions ADD COLUMN base_state TEXT NOT NULL DEFAULT 'idle'",
+		`UPDATE runtime_sessions
+			SET base_state = CASE WHEN state IN ('running', 'waiting') THEN 'running' ELSE 'idle' END`,
+		"ALTER TABLE attention_requests ADD COLUMN subagent_scope TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE attention_requests ADD COLUMN tool_use_key TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE attention_requests ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''",
+		`CREATE INDEX idx_attention_requests_scope_active
+			ON attention_requests (
+				runtime_session_id, subagent_scope, resolved_at_ms,
+				tool_use_key, turn_id, tool_name
+			)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateDoraState(ctx context.Context, tx *sql.Tx, now int64) error {

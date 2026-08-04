@@ -25,12 +25,14 @@ type CodexHookEvent struct {
 	EventName          string
 	SessionStartSource string
 	TurnID             string
+	SubagentScope      string
 	CWDBasename        string
 	Model              string
 	Surface            string
 	TerminalKind       string
 	TTY                string
 	ToolName           string
+	ToolUseKey         string
 	EventKey           string
 	PromptPreview      string
 	ReceivedAt         time.Time
@@ -47,6 +49,7 @@ type RuntimeSession struct {
 	TerminalKind      string
 	TTY               string
 	State             string
+	BaseState         string
 	PromptPreview     string
 	LastSeenAt        time.Time
 }

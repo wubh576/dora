@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -587,6 +589,10 @@ func TestPostToolUseOnlyResolvesMatchingRequestKindAndTurn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 模拟 migration 9 前没有 tool_name 的活跃请求，root fallback 仍须按请求类型隔离。
+	if _, err := store.db.ExecContext(ctx, "UPDATE attention_requests SET tool_name = ''"); err != nil {
+		t.Fatal(err)
+	}
 
 	completedPermission := attentionEvent("PostToolUse", now.Add(3*time.Second))
 	completedPermission.TurnID, completedPermission.ToolName = "turn-1", "Bash"
@@ -621,6 +627,199 @@ func TestPostToolUseOnlyResolvesMatchingRequestKindAndTurn(t *testing.T) {
 	}
 	if state, err := store.RuntimeSessionState(ctx, permissionTurn1.ExternalSessionID); err != nil || state != domain.RuntimeStateRunning {
 		t.Fatalf("所有等待解决后 state = %q, %v", state, err)
+	}
+}
+
+func TestSubagentAttentionStaysScopedAndPreservesParentRuntime(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
+
+	root := attentionEvent("UserPromptSubmit", now)
+	root.ExternalSessionID = "parent-session"
+	root.CWDBasename = "parent-project"
+	root.Model = "parent-model"
+	root.Surface = domain.CodexSurfaceApp
+	root.TerminalKind = domain.TerminalUnknown
+	root.TTY = ""
+	root.PromptPreview = "保留父任务 prompt"
+	if _, err := store.ApplyCodexHookEvent(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+
+	rootPermission := root
+	rootPermission.EventName = "PermissionRequest"
+	rootPermission.TurnID = "root-turn"
+	rootPermission.ToolName = "Bash"
+	rootPermission.EventKey = "codex:root-request"
+	rootPermission.PromptPreview = ""
+	rootPermission.ReceivedAt = now.Add(time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, rootPermission); err != nil {
+		t.Fatal(err)
+	}
+
+	childRequest := func(scope, toolKey, eventKey string, at time.Time) domain.CodexHookEvent {
+		return domain.CodexHookEvent{
+			ExternalSessionID: "parent-session",
+			EventName:         "PermissionRequest",
+			TurnID:            "shared-turn",
+			SubagentScope:     scope,
+			CWDBasename:       "child-project",
+			Model:             "child-model",
+			Surface:           domain.CodexSurfaceCLI,
+			TerminalKind:      domain.TerminalITerm2,
+			TTY:               "/dev/child-tty",
+			ToolName:          "Bash",
+			ToolUseKey:        toolKey,
+			EventKey:          eventKey,
+			ReceivedAt:        at,
+		}
+	}
+	scopeA := "sha256:" + strings.Repeat("a", 64)
+	scopeB := "sha256:" + strings.Repeat("b", 64)
+	toolA := "sha256:" + strings.Repeat("c", 64)
+	toolB := "sha256:" + strings.Repeat("d", 64)
+	childA := childRequest(scopeA, toolA, "codex:child-a", now.Add(2*time.Second))
+	childB := childRequest(scopeB, toolB, "codex:child-b", now.Add(3*time.Second))
+	for _, event := range []domain.CodexHookEvent{childA, childB} {
+		if created, err := store.ApplyCodexHookEvent(ctx, event); err != nil || !created {
+			t.Fatalf("创建 child request 失败: created=%t err=%v", created, err)
+		}
+	}
+
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateWaiting ||
+		active[0].RequestCount != 3 || active[0].Session.CWDBasename != "parent-project" ||
+		active[0].Session.Model != "parent-model" || active[0].Session.Surface != domain.CodexSurfaceApp ||
+		active[0].Session.PromptPreview != "保留父任务 prompt" {
+		t.Fatalf("child request 覆盖父 metadata 或未聚合: %+v, %v", active, err)
+	}
+
+	childAStop := childA
+	childAStop.EventName = "Stop"
+	childAStop.EventKey = ""
+	childAStop.ReceivedAt = now.Add(4 * time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, childAStop); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		childA.EventKey:         AttentionRequestResolved,
+		childB.EventKey:         AttentionRequestActive,
+		rootPermission.EventKey: AttentionRequestActive,
+	} {
+		if got, err := store.AttentionRequestStatus(ctx, key); err != nil || got != want {
+			t.Fatalf("child A Stop 后 request %s = %q, %v；期望 %q", key, got, err, want)
+		}
+	}
+	if state, err := store.RuntimeSessionState(ctx, "parent-session"); err != nil || state != domain.RuntimeStateWaiting {
+		t.Fatalf("child A Stop 错误结束父 session: %q, %v", state, err)
+	}
+
+	childBPost := childB
+	childBPost.EventName = "PostToolUse"
+	childBPost.EventKey = ""
+	childBPost.ReceivedAt = now.Add(5 * time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, childBPost); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.AttentionRequestStatus(ctx, childB.EventKey); err != nil || got != AttentionRequestResolved {
+		t.Fatalf("child B PostToolUse 未精确解除: %q, %v", got, err)
+	}
+	if state, err := store.RuntimeSessionState(ctx, "parent-session"); err != nil || state != domain.RuntimeStateWaiting {
+		t.Fatalf("root request 仍 active 时父状态 = %q, %v", state, err)
+	}
+
+	rootPost := rootPermission
+	rootPost.EventName = "PostToolUse"
+	rootPost.EventKey = ""
+	rootPost.ReceivedAt = now.Add(6 * time.Second)
+	if _, err := store.ApplyCodexHookEvent(ctx, rootPost); err != nil {
+		t.Fatal(err)
+	}
+	active, err = store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateRunning ||
+		active[0].Session.PromptPreview != "保留父任务 prompt" {
+		t.Fatalf("所有 request 解决后未恢复父 running: %+v, %v", active, err)
+	}
+}
+
+func TestSubagentPostToolUseFallsBackWithinSameScope(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 4, 9, 0, 0, 0, time.UTC)
+	scopeA := "sha256:" + strings.Repeat("1", 64)
+	scopeB := "sha256:" + strings.Repeat("2", 64)
+	for index, scope := range []string{scopeA, scopeB} {
+		event := attentionEvent("PermissionRequest", now.Add(time.Duration(index)*time.Second))
+		event.ExternalSessionID = "fallback-parent"
+		event.SubagentScope = scope
+		event.TurnID = "same-turn"
+		event.ToolName = "Bash"
+		event.EventKey = fmt.Sprintf("codex:fallback-%d", index)
+		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	post := attentionEvent("PostToolUse", now.Add(3*time.Second))
+	post.ExternalSessionID = "fallback-parent"
+	post.SubagentScope = scopeA
+	post.TurnID = "same-turn"
+	post.ToolName = "Bash"
+	post.ToolUseKey = "sha256:" + strings.Repeat("3", 64)
+	if _, err := store.ApplyCodexHookEvent(ctx, post); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.AttentionRequestStatus(ctx, "codex:fallback-0"); got != AttentionRequestResolved {
+		t.Fatalf("缺少 request tool ID 时同 scope fallback 未解决: %q", got)
+	}
+	if got, _ := store.AttentionRequestStatus(ctx, "codex:fallback-1"); got != AttentionRequestActive {
+		t.Fatalf("fallback 跨 child scope 误解决: %q", got)
+	}
+}
+
+func TestSubagentPostToolUseWithoutKeyFallsBackWithinSameScope(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
+	scopeA := "sha256:" + strings.Repeat("4", 64)
+	scopeB := "sha256:" + strings.Repeat("5", 64)
+	for index, scope := range []string{scopeA, scopeB} {
+		event := attentionEvent("PermissionRequest", now.Add(time.Duration(index)*time.Second))
+		event.ExternalSessionID = "keyless-completion-parent"
+		event.SubagentScope = scope
+		event.TurnID = "same-turn"
+		event.ToolName = "Bash"
+		event.ToolUseKey = "sha256:" + strings.Repeat(string(rune('6'+index)), 64)
+		event.EventKey = fmt.Sprintf("codex:keyless-completion-%d", index)
+		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	post := attentionEvent("PostToolUse", now.Add(3*time.Second))
+	post.ExternalSessionID = "keyless-completion-parent"
+	post.SubagentScope = scopeA
+	post.TurnID = "same-turn"
+	post.ToolName = "Bash"
+	if _, err := store.ApplyCodexHookEvent(ctx, post); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.AttentionRequestStatus(ctx, "codex:keyless-completion-0"); got != AttentionRequestResolved {
+		t.Fatalf("缺少 completion tool ID 时同 scope fallback 未解决: %q", got)
+	}
+	if got, _ := store.AttentionRequestStatus(ctx, "codex:keyless-completion-1"); got != AttentionRequestActive {
+		t.Fatalf("缺少 completion tool ID 时 fallback 跨 child scope: %q", got)
 	}
 }
 
