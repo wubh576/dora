@@ -274,7 +274,7 @@ func (controller *Controller) jumpSessionAsync(ctx context.Context, sessionID in
 	go func() {
 		if interactionID != "" {
 			err := responder.Submit(ctx, interactionID, attention.PermissionHandoff)
-			if errors.Is(err, attention.ErrPermissionResolved) {
+			if permissionRequestEnded(err) {
 				err = nil
 			}
 			if err != nil {
@@ -333,7 +333,7 @@ func (controller *Controller) RespondPermissionAsync(ctx context.Context, sessio
 		var reloadVersion uint64
 		controller.mu.Lock()
 		delete(controller.responding, sessionID)
-		if err == nil {
+		if err == nil || permissionRequestEnded(err) {
 			controller.clearPermissionLocked(interactionID)
 			controller.runtimeVersion++
 			reloadVersion = controller.runtimeVersion
@@ -342,13 +342,17 @@ func (controller *Controller) RespondPermissionAsync(ctx context.Context, sessio
 		}
 		controller.mu.Unlock()
 		controller.publish()
-		if err == nil {
+		if reloadVersion != 0 {
 			controller.loadRuntimeVersion(ctx, reloadVersion)
 		} else {
 			controller.LoadRuntimeAsync(ctx)
 		}
 	}()
 	return true
+}
+
+func permissionRequestEnded(err error) bool {
+	return errors.Is(err, attention.ErrPermissionResolved) || errors.Is(err, attention.ErrPermissionNotFound)
 }
 
 func (controller *Controller) loadRuntimeVersion(ctx context.Context, version uint64) {

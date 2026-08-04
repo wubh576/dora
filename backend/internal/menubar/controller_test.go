@@ -546,6 +546,55 @@ func TestControllerAllowsCurrentPermissionWithoutJumpAndLoadsNextQueueItem(t *te
 	}
 }
 
+func TestControllerDeniesCurrentPermissionWithoutJump(t *testing.T) {
+	loader := &fakeLoader{runtime: RuntimeState{WaitingCount: 1, Sessions: []RuntimeSession{{
+		ID: 7, State: "waiting", SessionName: "dora", Respondable: false,
+	}}}}
+	presented := make(chan View, 16)
+	controller := NewController(loader, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.last = &State{Runtime: permissionRuntime("interaction-deny", "Bash · deny")}
+	responder := &fakePermissionResponder{}
+	jumper := &fakeJumper{}
+	controller.SetPermissionResponder(responder)
+	controller.SetSessionJumper(jumper)
+
+	if !controller.RespondPermissionAsync(context.Background(), 7, "interaction-deny", attention.PermissionDeny) {
+		t.Fatal("拒绝当前授权未启动")
+	}
+	waitForView(t, presented, func(view View) bool {
+		return len(view.Sessions) == 1 && !view.Sessions[0].Respondable
+	})
+	responder.mu.Lock()
+	interactionID, action, calls := responder.interactionID, responder.action, responder.calls
+	responder.mu.Unlock()
+	jumper.mu.Lock()
+	jumpCalls := jumper.calls
+	jumper.mu.Unlock()
+	if interactionID != "interaction-deny" || action != attention.PermissionDeny || calls != 1 || jumpCalls != 0 {
+		t.Fatalf("直接拒绝行为错误: interaction=%q action=%q calls=%d jumps=%d", interactionID, action, calls, jumpCalls)
+	}
+}
+
+func TestControllerStalePermissionActionClearsButtonWithoutError(t *testing.T) {
+	loader := &fakeLoader{runtime: RuntimeState{RunningCount: 1, Sessions: []RuntimeSession{{
+		ID: 7, State: "running", SessionName: "dora",
+	}}}}
+	presented := make(chan View, 16)
+	controller := NewController(loader, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.last = &State{Runtime: permissionRuntime("interaction-ended", "Bash · ended")}
+	controller.SetPermissionResponder(&fakePermissionResponder{err: attention.ErrPermissionResolved})
+
+	if !controller.RespondPermissionAsync(context.Background(), 7, "interaction-ended", attention.PermissionAllow) {
+		t.Fatal("过期授权操作未启动")
+	}
+	view := waitForView(t, presented, func(view View) bool {
+		return len(view.Sessions) == 1 && !view.Sessions[0].Respondable
+	})
+	if view.OperationStatus != "" || view.OperationError {
+		t.Fatalf("已结束请求显示了持久错误: %+v", view)
+	}
+}
+
 func TestControllerOldRuntimeLoadCannotRestoreResolvedPermission(t *testing.T) {
 	loader := &permissionRaceLoader{firstStarted: make(chan struct{}), oldGate: make(chan struct{})}
 	presented := make(chan View, 32)
@@ -600,6 +649,30 @@ func TestControllerHandoffsBeforeExactJumpAndOrdinaryJumpSkipsHandoff(t *testing
 		t.Fatalf("普通 session 错误触发 handoff: %q", event)
 	}
 	waitForJumpIdle(t, controller)
+}
+
+func TestControllerStalePermissionHandoffStillJumps(t *testing.T) {
+	for _, submitErr := range []error{attention.ErrPermissionResolved, attention.ErrPermissionNotFound} {
+		t.Run(submitErr.Error(), func(t *testing.T) {
+			controller := NewController(&fakeLoader{}, fakeRefresher{}, "", func(View) {})
+			controller.last = &State{Runtime: permissionRuntime("interaction-ended", "Bash · ended")}
+			responder := &fakePermissionResponder{err: submitErr}
+			jumper := &fakeJumper{}
+			controller.SetPermissionResponder(responder)
+			controller.SetSessionJumper(jumper)
+
+			if !controller.JumpPermissionSessionAsync(context.Background(), 7, "interaction-ended") {
+				t.Fatal("过期 handoff 未启动")
+			}
+			waitForJumpIdle(t, controller)
+			jumper.mu.Lock()
+			jumpCalls, sessionID := jumper.calls, jumper.session
+			jumper.mu.Unlock()
+			if jumpCalls != 1 || sessionID != 7 {
+				t.Fatalf("过期 handoff 没有继续跳转: calls=%d session=%d", jumpCalls, sessionID)
+			}
+		})
+	}
 }
 
 func TestControllerRejectsDuplicatePermissionClickWhileFirstIsPending(t *testing.T) {

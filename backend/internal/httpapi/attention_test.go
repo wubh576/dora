@@ -176,6 +176,48 @@ func TestPermissionRequestDisconnectFallsBackAndHistoricalWaitHasNoButton(t *tes
 	}
 }
 
+func TestWaitingPermissionDoesNotBlockOtherLocalEndpoints(t *testing.T) {
+	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	broker := attentiondomain.NewPermissionBroker(time.Second)
+	defer broker.Close()
+	handler := NewHandler(store, Options{PermissionBroker: broker})
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/hooks/codex", strings.NewReader(
+			`{"sessionId":"blocking-session","hookEvent":"PermissionRequest","turnId":"turn","surface":"codex_app","toolName":"Bash","inputHash":"sha256:blocking"}`,
+		))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		done <- response
+	}()
+	permission := waitHTTPPermission(t, broker, "blocking-session")
+
+	for _, path := range []string{"/api/v1/health", "/api/v1/runtime", "/api/v1/snapshot"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s 被长时授权请求阻塞: code=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	postHook(t, handler, `{"sessionId":"ordinary-session","hookEvent":"SessionStart","source":"startup","surface":"codex_app"}`)
+	if err := broker.Submit(context.Background(), permission.InteractionID, attentiondomain.PermissionHandoff); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case response := <-done:
+		if response.Code != http.StatusNoContent || response.Body.Len() != 0 {
+			t.Fatalf("handoff 响应错误: code=%d body=%q", response.Code, response.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handoff 未解除 Hook handler")
+	}
+}
+
 func TestPermissionQueueStaysRespondableAfterFirstPostToolUse(t *testing.T) {
 	store, err := dorasqlite.Open(context.Background(), filepath.Join(t.TempDir(), "dora.db"))
 	if err != nil {
