@@ -269,15 +269,15 @@ func TestStatusIgnoresCommentedTrustedHashes(t *testing.T) {
 }
 
 func TestNormalizedHookHashesMatchCodexAppServer(t *testing.T) {
-	command := "'/Users/wbh/Desktop/dora/bin/dora' hooks emit codex # " + marker
+	command := "'/Users/example/Desktop/dora/bin/dora' hooks emit codex # " + marker
 	want := map[string]string{
-		"SessionStart":      "sha256:6e9bae606f85b3072bcb8bdf8b14d58280575ef9eb3f56fef0b7f124d49415d8",
-		"SessionEnd":        "sha256:b7ef64701404ea53c30d39c7c363a13c79d005d469dd47e1ed5d44598bb8e4b8",
-		"UserPromptSubmit":  "sha256:10fffb0d93c6f2bfbebf6478dacd59601097730f2b2a05b96bcbd302e03d93bb",
-		"PermissionRequest": "sha256:df3c171f7ef9f97bc9b72c1c8849e4107df09216f34077c05f1fab8cf71548f4",
-		"PreToolUse":        "sha256:67ef453a4a5a430b88112cc66edf6dde4a9c1d7817339fa114b04898b3dd408f",
-		"PostToolUse":       "sha256:c4c47fbab38e08a44080a735a6bd60dfaf96c264bbdf3172b7a71f4fb4d28933",
-		"Stop":              "sha256:0433848855d35aa12b97977398df047612a0efb81d989d474a7f90980d525051",
+		"SessionStart":      "sha256:b011bd35b89ee3d7609b1ddb627a9de36079818ed17a8236a89ae02ee5727bb1",
+		"SessionEnd":        "sha256:be1609287b17f598204e6da1281d79459f6ae051e26316dd86b74f03c81af411",
+		"UserPromptSubmit":  "sha256:2808202cae68b19f3b1e4dbf0fb8dd3df36cf7fd939c5cbd7b4b9024ebd65437",
+		"PermissionRequest": "sha256:d92ef569f6756e9918fb5aa140bc8596b428590783a331c87916b70bac237e17",
+		"PreToolUse":        "sha256:34c4533b6d7bbe87aee88fcc5ba28c21aa5ad37faec5e7acc93b2af2955ef3cb",
+		"PostToolUse":       "sha256:8745aea8536fc60ec84b2a51e70c77586ec16d6f986f9bf2c7bf128650715e28",
+		"Stop":              "sha256:288e5de0fc02566cf381b045adf3144efd21bc3bc4792198b460935506dcfd51",
 	}
 	for _, spec := range observedEvents {
 		if got := normalizedHookHash(spec, command); got != want[spec.event] {
