@@ -1093,6 +1093,7 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 
 - 同一个持久 `NSPanel` 常驻当前屏幕顶部中央，顶边精确锚定主屏幕顶边；上方两角为直角，只保留下方两个圆角。
 - 紧凑态在普通屏使用 280 pt 最小宽度；刘海屏读取 `auxiliaryTopLeftArea` 与 `auxiliaryTopRightArea` 之间的真实摄像头宽度，并在两侧各保留 72 pt 等宽内容区。`Dora` 与活跃 session 总数分别在左右区域居中，避免系统截图无法体现的物理遮挡。总数为 waiting + running；存在 waiting 时为红色，只有 running 时为蓝色，没有活跃 session 时为灰色，准确拆分只在展开态显示。高度使用主屏 frame 与 visibleFrame 的实际顶部差值；菜单栏自动隐藏时依次使用 safeAreaInsets.top 与系统菜单栏厚度，不写死垂直尺寸。紧凑态不显示 token 或错误文案，也不绘制超出实际菜单栏边界的窗口阴影。
+- Go 菜单栏事件循环必须先等待 AppKit 发布第一份真实 `ScreenMetrics`，通过 `SetScreen` 发布正确尺寸的连接态后才能首次加载 snapshot/runtime；不能让 Controller 默认屏幕参数覆盖 AppKit 已按真实 `NSScreen` 创建的初始 panel。首次门控完成后继续按 screen 事件更新主屏布局，数据加载不能因后续切屏重复执行。
 - 内容视图保留 `NSTrackingArea` 作为进入/离开主路径，local 与 global `NSEvent` mouse monitor 覆盖 Dora 自身和其他应用中的鼠标移动/拖动；首次显示、非动画 frame 应用和 frame 动画完成后单次采样真实 `NSEvent.mouseLocation`。鼠标静止时没有固定频率的位置轮询，inside 状态不变时不通知 Go。配合 100 ms hover intent，进入紧凑条后约 100–150 ms 展开；展开后只要鼠标仍在整个 panel 内就保持展开，离开约 450 ms 后才尝试收起，并在延迟到期时再次复查鼠标位置。
 - hover、attention 和面板内 interaction 是可同时存在的展开原因；新 attention 高亮对应会话约 6 秒，倒计时结束时只要鼠标仍在 panel 内就继续展开。
 - 展开态展示今日 / 近 7 日 / 近 30 日 / 全部 token、Codex 5h/7d quota、状态、waiting/running 会话、刷新、仪表盘和退出。

@@ -115,11 +115,13 @@ func Run(ctx context.Context, config Config) error {
 }
 
 func runIslandEvents(ctx context.Context, controller *Controller, config Config, events *bridgeEvents) {
+	if !initializeIsland(ctx, controller, events.screen) {
+		return
+	}
 	viewTicker := time.NewTicker(viewReloadInterval)
 	defer viewTicker.Stop()
 	runtimeTicker := time.NewTicker(runtimeReloadInterval)
 	defer runtimeTicker.Stop()
-	controller.LoadAsync(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -162,6 +164,17 @@ func runIslandEvents(ctx context.Context, controller *Controller, config Config,
 			}
 		}
 	}
+}
+
+func initializeIsland(ctx context.Context, controller *Controller, screens <-chan ScreenMetrics) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case screen := <-screens:
+		controller.SetScreen(screen)
+	}
+	controller.LoadAsync(ctx)
+	return true
 }
 
 //export doraIslandOnEvent

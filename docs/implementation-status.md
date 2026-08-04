@@ -583,3 +583,15 @@
 
 - model 测试覆盖总数口径、无刘海最小宽度、刘海真实间隙和对称左右区域；Objective-C/Go production build 验证系统辅助区域 API 与原生布局可以实际编译。
 - 当前 Mac 返回 185 pt 摄像头间隙，真实 compact 窗口为 329 × 38 pt，较原 360 pt 收窄并在两侧各保留 72 pt；临时 App bundle 可见验收确认灰色 `0`、仅 running 时蓝色 `1`、存在 waiting 时红色 `1`。验收后进程、18085 端口、SQLite、Agent home 与 App bundle 已清理。
+
+## 里程碑 33：首屏真实屏幕参数门控
+
+已完成：
+
+- 菜单栏事件循环在首次 snapshot/runtime 加载前等待 AppKit 的第一份真实 `ScreenMetrics`；先以真实 frame、菜单栏高度和刘海宽度发布连接态，再启动异步数据加载。screen 前取消直接退出，定时器也只在首个 screen 就绪后创建。
+- attention 和 interaction channel 继续在启动阶段缓冲事件，首个 screen 就绪后按原事件循环处理；后续 screen 变化仍只更新 Controller 布局，不重复首次数据加载。
+
+验证记录：
+
+- 新增确定性测试覆盖 185 pt 刘海的首个连接态和数据 View 都为 329 pt、普通屏首帧为 280 pt、screen 前取消不加载或发布、后续 screen 变化继续生效且不重复 full load，以及 screen 前排队的 attention/interaction 不丢失。
+- 当前刘海 Mac 使用隔离数据库、空 Agent home 和独立端口连续冷启动 10 次；临时原生 frame 探针每次都记录初始 AppKit panel 和全部首批 Go View 为 `329 × 38 pt`，没有出现 280 pt 中间 frame。诊断代码已从生产源码删除。
