@@ -1408,7 +1408,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 - 只使用 Codex 官方 `~/.codex/hooks.json` 生命周期事件，不轮询 transcript 猜测前台状态。
 - 普通 `SessionStart`（`startup`、`resume`、`clear`、缺少或未知 `source`）注册为 idle，不进入活跃列表，并按既有规则结束上一轮状态；`SessionStart(source=compact)` 对已有 session 只更新定位元数据与 `last_seen_at`，保留 running/waiting/idle、prompt 和未解决 request，首次看到时仅创建 idle 记录。`UserPromptSubmit` 进入 running；`PermissionRequest` 与 `request_user_input` 的 `PreToolUse` 进入 waiting；`PostToolUse` 仅在当前 turn 已处于 running/waiting 时回到 running；`Stop` 进入 idle；`SessionEnd` 移除 runtime session。
 - waiting 数量按 session 计算，不按 request 叠加；同一 session 可以显示 active request 数。
-- attention event key 必须稳定去重。`PermissionRequest` 在缺少 tool use ID 时使用规范化 JSON 的输入 hash 生成既有兼容 event key；同时与 `PostToolUse` 共享带命名空间的不可逆 `tool_input_key`，原始 `tool_input` 不通过 loopback API，也不写入 SQLite 或日志。
+- attention event key 必须稳定去重。`PermissionRequest` 在缺少 tool use ID 时继续使用完整规范化 JSON 的输入 hash 生成既有兼容 event key。跨事件关联使用职责独立、带命名空间的不可逆 `tool_input_key`：Bash 只规范化 `command`，忽略仅解释授权原因的顶层 `description`；MCP 和其他工具仍规范化完整输入，不能全局删除同名业务参数。原始 `tool_input` 不通过 loopback API，也不写入 SQLite 或日志。
 - notified 与 resolved 分开记录。一次新 request 只发一次声音并自动展开灵动岛；点击会话只跳转，不解决 request；重启不重放历史声音。
 - root PermissionRequest 没有单独假设 resolved Hook：root `PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。`PostToolUse` 依次按不可逆 `tool_use_key`、`tool_input_key` 精确关联；精确键均不可用时，只能解除同 parent、同 scope、兼容 turn/tool/kind 的唯一候选，命中多个 active request 时一个也不解除。候选检查和按 ID 更新在同一 SQLite immediate transaction 内完成。
 - 不能用几秒钟 timeout 盲目解除 waiting。Dora 启动时把上一进程遗留的 running 恢复为 idle，同时保留真正尚未解决的 waiting；缺失 `SessionEnd` 的 waiting 以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。

@@ -31,6 +31,7 @@
 | 23. 顶部控制条交互与状态修补 | 已完成 | 本次提交 |
 | 34. Codex Subagent 授权提醒 | 已完成 | 本次提交 |
 | 35. 真实 Hook Schema 授权关联 | 已完成 | 本次提交 |
+| 36. Bash 授权说明关联兼容 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -629,3 +630,17 @@
 - 自动化测试覆盖 tool use 不匹配时按 tool input 精确解除、input key 不一致不误清、唯一与歧义 fallback、空 scope 与 child scope 隔离、重复去重、旧 root event key、Runtime API/菜单栏/日志隐私、v9→v10 数据保留和既有 App/CLI 父跳转。
 - 使用隔离 SQLite、当前生产 helper 与 Codex CLI `0.146.0` 发起真实 ephemeral 探针；CLI 产生了真实 `SessionStart → UserPromptSubmit → SessionEnd`，但模型请求持续网络超时，在创建两个 subagent 前终止，因此没有把双授权计数和父跳转误报为原生验收通过。探针服务、临时数据库与目录均已删除，日常 LaunchAgent 已恢复。
 - `make verify`、后端全量 `go test -race ./...`、`go vet ./...`、`go mod tidy -diff` 与 `git diff --check` 通过。独立 Review 发现空 scope `SubagentStop` 被前置校验拒绝的 P2；修复为按事件名进入安全 no-op 并增加回归测试后复审通过。
+
+## 里程碑 36：Bash 授权说明关联兼容
+
+已完成：
+
+- 完整输入指纹继续基于 `UseNumber` 解析后的完整规范化 JSON，保持 PermissionRequest event key 和历史去重语义不变。
+- `tool_input_key` 改为按工具生成关联输入：Bash 只使用官方定义的执行字段 `command`，因此 PermissionRequest 独有的顶层 `description` 不影响 PostToolUse 配对；非 Bash 工具仍使用完整输入，业务 `description` 不会被忽略。
+- 关联顺序、SQLite immediate transaction、唯一候选回落、父 session 聚合、Subagent scope、提醒、跳转和 UI 行为均保持不变；没有新增 migration。
+
+验证记录：
+
+- 端到端回归在修复前确认 Bash PostToolUse 到达后 request count 仍为 2；修复后不同 command 分别从 `2 → 1 → 0`，最后恢复父 session 的 running base state。
+- 测试覆盖带/不带 description 的 Bash 关联、固定完整输入指纹、非 Bash description 消歧、相同 command 双候选不误清、Subagent 父 session 聚合和原始 command/description/agent/tool-use 隐私。
+- `make verify`、涉及包的 `go test -race`、`go vet ./...`、`go mod tidy -diff` 与 `git diff --check` 均通过。独立 Review 未发现 P0–P3 问题；若未来 Bash 新增会改变执行身份的字段，需要同步更新关联规则，当前相同 command 的歧义仍会安全保留等待而不会误清。

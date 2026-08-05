@@ -49,7 +49,7 @@ func TestParseHookEventSanitizesSensitiveFields(t *testing.T) {
   "model":"gpt-test",
   "tool_name":"Bash",
 	"tool_use_id":"private-tool-use-id",
-  "tool_input":{"command":"rm -rf private"},
+  "tool_input":{"command":"rm -rf private","description":"private approval reason"},
   "prompt":"never store me",
   "transcript_path":"/private/session.jsonl"
 }`
@@ -68,7 +68,8 @@ func TestParseHookEventSanitizesSensitiveFields(t *testing.T) {
 	}
 	serialized := string(serializedBytes)
 	for _, secret := range []string{
-		"rm -rf private", "never store me", "/Users/example", "private-agent-id", "private-tool-use-id",
+		"rm -rf private", "private approval reason", "never store me", "/Users/example",
+		"private-agent-id", "private-tool-use-id",
 	} {
 		if strings.Contains(serialized, secret) {
 			t.Fatalf("净化事件泄漏 %q: %+v", secret, event)
@@ -198,6 +199,76 @@ func TestPermissionRequestHashUsesCanonicalToolInput(t *testing.T) {
 	secondDomain, _ := secondEvent.Domain(time.Unix(2, 0))
 	if firstDomain.EventKey != secondDomain.EventKey {
 		t.Fatalf("等价授权事件 key 不稳定: %s != %s", firstDomain.EventKey, secondDomain.EventKey)
+	}
+}
+
+func TestBashCorrelationKeyUsesCommandWithoutChangingCompleteFingerprint(t *testing.T) {
+	withDescription := `{"session_id":"s","turn_id":"t","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"make verify","description":"需要在沙箱外运行验证"}}`
+	withoutDescription := `{"session_id":"s","turn_id":"t","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"make verify"}}`
+	post := `{"session_id":"s","turn_id":"t","hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"call-1","tool_input":{"command":"make verify"}}`
+	parse := func(raw string) attention.Event {
+		t.Helper()
+		event, err := parseHookEvent(strings.NewReader(raw), Surface{Name: domain.CodexSurfaceCLI})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return event
+	}
+	permissionWithDescription := parse(withDescription)
+	permissionWithoutDescription := parse(withoutDescription)
+	completion := parse(post)
+
+	if permissionWithDescription.ToolInputKey == "" ||
+		permissionWithDescription.ToolInputKey != permissionWithoutDescription.ToolInputKey ||
+		permissionWithDescription.ToolInputKey != completion.ToolInputKey {
+		t.Fatalf(
+			"Bash command 关联键不一致: with=%q without=%q post=%q",
+			permissionWithDescription.ToolInputKey,
+			permissionWithoutDescription.ToolInputKey,
+			completion.ToolInputKey,
+		)
+	}
+	const historicalCorrelationKey = "sha256:01f2388d28fe96acab0f731794dd8c300bfc9e025fcc3c85f5f512e610e6c210"
+	if permissionWithoutDescription.ToolInputKey != historicalCorrelationKey {
+		t.Fatalf("既有 Bash command 关联键发生变化: %q", permissionWithoutDescription.ToolInputKey)
+	}
+	const historicalFingerprint = "9bafe45b5c4eb8a4c38297d4f0f8e6db16418c1615ee697e67a43504d5d6cce2"
+	if permissionWithDescription.InputHash != historicalFingerprint ||
+		permissionWithDescription.InputHash == permissionWithoutDescription.InputHash {
+		t.Fatalf(
+			"完整输入指纹语义被改变: with=%q without=%q",
+			permissionWithDescription.InputHash, permissionWithoutDescription.InputHash,
+		)
+	}
+	withDomain, err := permissionWithDescription.Domain(time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutDomain, err := permissionWithoutDescription.Domain(time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withDomain.EventKey == withoutDomain.EventKey {
+		t.Fatal("完整输入不同的 PermissionRequest 被错误合并为同一历史 event key")
+	}
+}
+
+func TestNonBashCorrelationKeyKeepsDescription(t *testing.T) {
+	base := `{"session_id":"s","turn_id":"t","hook_event_name":"PermissionRequest","tool_name":"mcp__server__tool","tool_input":{"query":"same","description":%q}}`
+	first, err := parseHookEvent(
+		strings.NewReader(fmt.Sprintf(base, "business-a")), Surface{Name: domain.CodexSurfaceCLI},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := parseHookEvent(
+		strings.NewReader(fmt.Sprintf(base, "business-b")), Surface{Name: domain.CodexSurfaceCLI},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ToolInputKey == second.ToolInputKey {
+		t.Fatal("非 Bash 工具的业务 description 被错误忽略")
 	}
 }
 
@@ -523,7 +594,7 @@ func TestEmitterAggregatesSubagentAttentionWithoutChangingRootMetadata(t *testin
 	}
 
 	// 非标准 child 字段仅作为向后兼容增强路径；两条事件使用相同 agent_type，隔离必须来自 agent_id。
-	childA := `{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-a","agent_type":"reviewer","cwd":"/tmp/child-a","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_use_id":"call-a","tool_input":{"command":"make verify"}}`
+	childA := `{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-a","agent_type":"reviewer","cwd":"/tmp/child-a","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"make verify","description":"批准 child A"}}`
 	childB := `{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-b","agent_type":"reviewer","cwd":"/tmp/child-b","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_use_id":"call-b","tool_input":{"command":"go test ./..."}}`
 	emit(childA)
 	emit(childA)
@@ -549,7 +620,7 @@ func TestEmitterAggregatesSubagentAttentionWithoutChangingRootMetadata(t *testin
 	}
 
 	// child A 的工具完成只能解决自己的请求。
-	emit(`{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-a","cwd":"/tmp/child-a","hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"call-a"}`)
+	emit(`{"session_id":"root-session","turn_id":"turn-1","agent_id":"child-a","cwd":"/tmp/child-a","hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"call-a","tool_input":{"command":"make verify"}}`)
 	active, err = store.RuntimeSessions(ctx)
 	if err != nil || len(active) != 1 || active[0].Session.State != domain.RuntimeStateWaiting ||
 		active[0].RequestCount != 1 || active[0].Session.PromptPreview != "实现根任务" {
@@ -606,9 +677,9 @@ func TestSchemaShapedApprovalHooksRemainIndependentlyCorrelated(t *testing.T) {
 	}
 
 	emit(`{"session_id":"schema-parent","cwd":"/tmp/dora","hook_event_name":"UserPromptSubmit","model":"parent-model","prompt":"保留父任务"}`)
-	// 官方 PermissionRequest 形状：没有 agent_id、agent_type 或 tool_use_id，只有 tool_input 可关联请求。
-	emit(`{"session_id":"schema-parent","turn_id":"turn-1","cwd":"/tmp/child-a","hook_event_name":"PermissionRequest","model":"child-model","tool_name":"Bash","tool_input":{"command":"command-a"}}`)
-	emit(`{"session_id":"schema-parent","turn_id":"turn-1","cwd":"/tmp/child-b","hook_event_name":"PermissionRequest","model":"child-model","tool_name":"Bash","tool_input":{"command":"command-b"}}`)
+	// 官方 PermissionRequest 形状：Bash 授权可额外携带给用户看的 description，但没有 child/tool use ID。
+	emit(`{"session_id":"schema-parent","turn_id":"turn-1","cwd":"/tmp/child-a","hook_event_name":"PermissionRequest","model":"child-model","tool_name":"Bash","tool_input":{"command":"command-a","description":"批准命令 A"}}`)
+	emit(`{"session_id":"schema-parent","turn_id":"turn-1","cwd":"/tmp/child-b","hook_event_name":"PermissionRequest","model":"child-model","tool_name":"Bash","tool_input":{"command":"command-b","description":"批准命令 B"}}`)
 	active, err := store.RuntimeSessions(ctx)
 	if err != nil || len(active) != 1 || active[0].RequestCount != 2 || active[0].Session.State != domain.RuntimeStateWaiting ||
 		active[0].Session.CWDBasename != "dora" || active[0].Session.Model != "parent-model" ||

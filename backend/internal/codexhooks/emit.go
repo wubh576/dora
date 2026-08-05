@@ -169,14 +169,14 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 				return attention.Event{}, errors.New("Codex 授权事件缺少工具输入")
 			}
 		} else {
-			inputHash, inputKey, err := toolInputKeys(raw.ToolInput)
+			inputValue, canonicalInput, err := canonicalToolInput(raw.ToolInput)
 			if err != nil {
 				return attention.Event{}, err
 			}
-			event.ToolInputKey = inputKey
+			event.ToolInputKey = toolInputCorrelationKey(event.ToolName, inputValue, canonicalInput)
 			if event.HookEvent == "PermissionRequest" {
 				// 既有 event key 继续使用无命名空间 hash，避免升级后重复提醒。
-				event.InputHash = inputHash
+				event.InputHash = completeToolInputHash(canonicalInput)
 			}
 		}
 	}
@@ -229,19 +229,36 @@ func opaqueBytesKey(kind string, value []byte) string {
 	return "sha256:" + hex.EncodeToString(hash[:])
 }
 
-func toolInputKeys(raw json.RawMessage) (string, string, error) {
+func canonicalToolInput(raw json.RawMessage) (any, []byte, error) {
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
-		return "", "", errors.New("Codex 工具输入无效")
+		return nil, nil, errors.New("Codex 工具输入无效")
 	}
 	canonical, err := json.Marshal(value)
 	if err != nil {
-		return "", "", errors.New("规范化 Codex 工具输入失败")
+		return nil, nil, errors.New("规范化 Codex 工具输入失败")
 	}
-	legacyHash := sha256.Sum256(canonical)
-	return hex.EncodeToString(legacyHash[:]), opaqueBytesKey("tool-input", canonical), nil
+	return value, canonical, nil
+}
+
+func completeToolInputHash(canonical []byte) string {
+	hash := sha256.Sum256(canonical)
+	return hex.EncodeToString(hash[:])
+}
+
+func toolInputCorrelationKey(toolName string, value any, canonical []byte) string {
+	correlationInput := canonical
+	if toolName == "Bash" {
+		if fields, ok := value.(map[string]any); ok {
+			if command, ok := fields["command"].(string); ok {
+				// Bash description 只解释授权原因，真正执行身份由 command 决定。
+				correlationInput, _ = json.Marshal(map[string]string{"command": command})
+			}
+		}
+	}
+	return opaqueBytesKey("tool-input", correlationInput)
 }
 
 func userPrompt(value string, surface Surface) string {

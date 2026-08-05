@@ -877,6 +877,34 @@ func TestToolCompletionRequiresExactOrUniqueCorrelation(t *testing.T) {
 		}
 	})
 
+	t.Run("相同输入键存在两个候选时全部保留", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		now := time.Date(2026, 8, 5, 9, 15, 0, 0, time.UTC)
+		for index := 0; index < 2; index++ {
+			request := attentionEvent("PermissionRequest", now.Add(time.Duration(index)*time.Second))
+			request.TurnID, request.ToolName = "turn", "Bash"
+			request.ToolInputKey = key("f")
+			request.EventKey = fmt.Sprintf("codex:same-input-%d", index)
+			if _, err := store.ApplyCodexHookEvent(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+		}
+		completion := attentionEvent("PostToolUse", now.Add(2*time.Second))
+		completion.TurnID, completion.ToolName, completion.ToolInputKey = "turn", "Bash", key("f")
+		if _, err := store.ApplyCodexHookEvent(ctx, completion); err != nil {
+			t.Fatal(err)
+		}
+		waiting, err := store.WaitingSessions(ctx)
+		if err != nil || len(waiting) != 1 || waiting[0].RequestCount != 2 {
+			t.Fatalf("相同输入的歧义完成事件误清了请求: %+v, %v", waiting, err)
+		}
+	})
+
 	t.Run("无精确键且候选不唯一时全部保留", func(t *testing.T) {
 		ctx := context.Background()
 		store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
