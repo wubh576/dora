@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -654,7 +655,7 @@ func TestOpenMigratesVersionSixWithoutLosingRuntimeSession(t *testing.T) {
 	}
 }
 
-func TestOpenMigratesCurrentRuntimeSchemaForSubagentAttentionWithoutDataLoss(t *testing.T) {
+func TestOpenMigratesVersionNineForToolInputCorrelationWithoutDataLoss(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "dora.db")
 	legacy, err := sql.Open("sqlite", path)
@@ -678,6 +679,7 @@ func TestOpenMigratesCurrentRuntimeSchemaForSubagentAttentionWithoutDataLoss(t *
 		migrateRuntimeAttention,
 		migrateRuntimePromptPreview,
 		migrateRuntimeSessionName,
+		migrateSubagentAttention,
 	} {
 		tx, err := legacy.BeginTx(ctx, nil)
 		if err != nil {
@@ -699,21 +701,27 @@ func TestOpenMigratesCurrentRuntimeSchemaForSubagentAttentionWithoutDataLoss(t *
 		`INSERT INTO usage_events (
 			source, dedup_key, occurred_at_ms, model, project,
 			input_tokens, total_tokens, updated_at_ms
-		) VALUES ('provider.codex', 'v8-usage', 1, 'gpt', 'dora', 7, 7, 1)`,
+		) VALUES ('provider.codex', 'v9-usage', 1, 'gpt', 'dora', 7, 7, 1)`,
 		`INSERT INTO quota_snapshots (
 			provider, window_key, label, used_percent, remaining_percent,
 			fetched_at_ms, source, source_state
 		) VALUES ('provider.codex', 'five_hour', '5 小时', 20, 80, 1, 'fixture', 'ready')`,
 		`INSERT INTO runtime_sessions (
 			provider, external_session_id, cwd_basename, session_name, model,
-			surface, terminal_kind, tty, state, prompt_preview, last_seen_at_ms
+			surface, terminal_kind, tty, state, base_state, prompt_preview, last_seen_at_ms
 		) VALUES (
-			'provider.codex', 'v8-parent', 'dora', '现有任务', 'gpt',
-			'codex_app', '', '', 'waiting', '现有 prompt', 1
+			'provider.codex', 'v9-parent', 'dora', '现有任务', 'gpt',
+			'codex_app', '', '', 'waiting', 'running', '现有 prompt', 1
 		)`,
 		`INSERT INTO attention_requests (
-			runtime_session_id, event_key, kind, summary, turn_id, created_at_ms
-		) VALUES (1, 'codex:v8-request', 'permission', 'Codex 等待授权', 'turn', 1)`,
+			runtime_session_id, event_key, kind, summary, turn_id,
+			subagent_scope, tool_use_key, tool_name, created_at_ms
+		) VALUES (
+			1, 'codex:v9-request', 'permission', 'Subagent 等待授权', 'turn',
+			'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+			'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+			'Bash', 1
+		)`,
 	} {
 		if _, err := legacy.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
@@ -725,31 +733,55 @@ func TestOpenMigratesCurrentRuntimeSchemaForSubagentAttentionWithoutDataLoss(t *
 
 	store, err := Open(ctx, path)
 	if err != nil {
-		t.Fatalf("升级 v8 数据库失败: %v", err)
+		t.Fatalf("升级 v9 数据库失败: %v", err)
 	}
 	defer store.Close()
 	session, err := store.RuntimeSession(ctx, 1)
-	if err != nil || session.ExternalSessionID != "v8-parent" || session.SessionName != "现有任务" ||
+	if err != nil || session.ExternalSessionID != "v9-parent" || session.SessionName != "现有任务" ||
 		session.PromptPreview != "现有 prompt" || session.State != domain.RuntimeStateWaiting ||
 		session.BaseState != domain.RuntimeStateRunning {
-		t.Fatalf("v9 migration 破坏 runtime: %+v, %v", session, err)
+		t.Fatalf("v10 migration 破坏 runtime: %+v, %v", session, err)
 	}
-	if status, err := store.AttentionRequestStatus(ctx, "codex:v8-request"); err != nil || status != AttentionRequestActive {
-		t.Fatalf("v9 migration 破坏 attention: %q, %v", status, err)
+	if status, err := store.AttentionRequestStatus(ctx, "codex:v9-request"); err != nil || status != AttentionRequestActive {
+		t.Fatalf("v10 migration 破坏 attention: %q, %v", status, err)
 	}
-	var scope, toolKey, toolName string
+	var scope, toolKey, inputKey, toolName string
 	if err := store.readDB.QueryRowContext(ctx, `
-		SELECT subagent_scope, tool_use_key, tool_name
-		FROM attention_requests WHERE event_key = 'codex:v8-request'
-	`).Scan(&scope, &toolKey, &toolName); err != nil || scope != "" || toolKey != "" || toolName != "" {
-		t.Fatalf("旧 request migration 默认值错误: scope=%q tool=%q name=%q err=%v", scope, toolKey, toolName, err)
+		SELECT subagent_scope, tool_use_key, tool_input_key, tool_name
+		FROM attention_requests WHERE event_key = 'codex:v9-request'
+	`).Scan(&scope, &toolKey, &inputKey, &toolName); err != nil ||
+		scope == "" || toolKey == "" || inputKey != "" || toolName != "Bash" {
+		t.Fatalf(
+			"v9 request migration 值错误: scope=%q tool=%q input=%q name=%q err=%v",
+			scope, toolKey, inputKey, toolName, err,
+		)
 	}
 	events, err := store.LoadUsageEvents(ctx, domain.CodexSource)
-	if err != nil || len(events) != 1 || events[0].DedupKey != "v8-usage" || events[0].TotalTokens != 7 {
-		t.Fatalf("v9 migration 破坏 usage: %+v, %v", events, err)
+	if err != nil || len(events) != 1 || events[0].DedupKey != "v9-usage" || events[0].TotalTokens != 7 {
+		t.Fatalf("v10 migration 破坏 usage: %+v, %v", events, err)
 	}
 	quotas, err := store.LatestQuotaSnapshots(ctx, domain.CodexSource)
 	if err != nil || len(quotas) != 1 || quotas[0].RemainingPercent != 80 {
-		t.Fatalf("v9 migration 破坏 quota: %+v, %v", quotas, err)
+		t.Fatalf("v10 migration 破坏 quota: %+v, %v", quotas, err)
+	}
+	rows, err := store.readDB.QueryContext(ctx, "PRAGMA index_info(idx_attention_requests_scope_active)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	indexColumns := make([]string, 0)
+	for rows.Next() {
+		var sequence, columnID int
+		var name string
+		if err := rows.Scan(&sequence, &columnID, &name); err != nil {
+			t.Fatal(err)
+		}
+		indexColumns = append(indexColumns, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(indexColumns, "tool_input_key") {
+		t.Fatalf("v10 index 缺少 tool_input_key: %v", indexColumns)
 	}
 }

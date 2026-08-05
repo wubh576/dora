@@ -25,6 +25,7 @@ type CodexHookEvent struct {
 	EventName          string
 	SessionStartSource string
 	TurnID             string
+	SubagentEvent      bool
 	SubagentScope      string
 	CWDBasename        string
 	Model              string
@@ -33,6 +34,7 @@ type CodexHookEvent struct {
 	TTY                string
 	ToolName           string
 	ToolUseKey         string
+	ToolInputKey       string
 	EventKey           string
 	PromptPreview      string
 	ReceivedAt         time.Time

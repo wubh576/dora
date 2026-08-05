@@ -459,7 +459,7 @@ func codexHookOutcome(event domain.CodexHookEvent, created bool, requestStatus s
 			return "unknown"
 		}
 	case "Stop":
-		if event.SubagentScope != "" {
+		if event.SubagentEvent || event.SubagentScope != "" {
 			return "reconciled_by_subagent_stop"
 		}
 		return "resolved_by_stop"
@@ -468,7 +468,7 @@ func codexHookOutcome(event domain.CodexHookEvent, created bool, requestStatus s
 	case "SessionEnd":
 		return "resolved_by_session_end"
 	case "PostToolUse":
-		if event.SubagentScope != "" {
+		if event.SubagentEvent || event.SubagentScope != "" {
 			return "reconciled_by_subagent_tool_completion"
 		}
 		return "reconciled_by_tool_completion"

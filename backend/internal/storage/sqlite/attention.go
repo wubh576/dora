@@ -23,7 +23,7 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 
 	created := false
 	err := s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
-		if event.SubagentScope != "" {
+		if event.EventName == "SubagentStop" || event.SubagentEvent || event.SubagentScope != "" {
 			var err error
 			created, err = applySubagentHookEvent(ctx, conn, event)
 			return err
@@ -32,13 +32,16 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 			return endRuntimeSession(ctx, conn, event)
 		}
 		if waitingEvent(event) {
-			exists, resolved, err := attentionRequestState(ctx, conn, event.EventKey)
-			if err != nil {
+			var err error
+			created, err = applyWaitingHookEvent(ctx, conn, event, true)
+			return err
+		}
+		if event.EventName == "PostToolUse" {
+			sessionID, found, err := runtimeSessionID(ctx, conn, event.ExternalSessionID)
+			if err != nil || !found {
 				return err
 			}
-			if exists && resolved {
-				return nil
-			}
+			return resolveCompletedToolRequests(ctx, conn, sessionID, event)
 		}
 
 		sessionID, err := upsertRuntimeSession(ctx, conn, event)
@@ -47,27 +50,6 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 		}
 
 		switch event.EventName {
-		case "PermissionRequest":
-			kind, summary := domain.AttentionPermission, "Codex 等待授权"
-			if event.ToolName == "Bash" {
-				kind, summary = domain.AttentionDangerousCommand, "命令等待授权"
-			}
-			created, err = createAttentionRequest(ctx, conn, sessionID, event, kind, summary)
-			if err != nil {
-				return err
-			}
-			return markWaitingIfActive(ctx, conn, sessionID, event.EventKey, event.ReceivedAt, true)
-		case "PreToolUse":
-			if event.ToolName != "request_user_input" {
-				return nil
-			}
-			created, err = createAttentionRequest(
-				ctx, conn, sessionID, event, domain.AttentionUserQuestion, "Codex 等待回答",
-			)
-			if err != nil {
-				return err
-			}
-			return markWaitingIfActive(ctx, conn, sessionID, event.EventKey, event.ReceivedAt, true)
 		case "SessionStart":
 			if event.SessionStartSource == "compact" {
 				return nil
@@ -75,8 +57,6 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 			return resolveSessionRequests(ctx, conn, sessionID, event.ReceivedAt, "session_started", domain.RuntimeStateIdle)
 		case "UserPromptSubmit":
 			return resolveSessionRequests(ctx, conn, sessionID, event.ReceivedAt, "new_prompt", domain.RuntimeStateRunning)
-		case "PostToolUse":
-			return resolveCompletedToolRequests(ctx, conn, sessionID, event)
 		case "Stop":
 			return resolveSessionRequests(ctx, conn, sessionID, event.ReceivedAt, "turn_stopped", domain.RuntimeStateIdle)
 		default:
@@ -92,27 +72,7 @@ func (s *Store) ApplyCodexHookEvent(ctx context.Context, event domain.CodexHookE
 func applySubagentHookEvent(ctx context.Context, conn *sql.Conn, event domain.CodexHookEvent) (bool, error) {
 	switch event.EventName {
 	case "PermissionRequest":
-		exists, resolved, err := attentionRequestState(ctx, conn, event.EventKey)
-		if err != nil || exists && resolved {
-			return false, err
-		}
-		sessionID, err := ensureSubagentParentSession(ctx, conn, event)
-		if err != nil {
-			return false, err
-		}
-		kind := domain.AttentionPermission
-		if event.ToolName == "Bash" {
-			kind = domain.AttentionDangerousCommand
-		}
-		created, err := createAttentionRequest(
-			ctx, conn, sessionID, event, kind, "Subagent 等待授权",
-		)
-		if err != nil {
-			return false, err
-		}
-		return created, markWaitingIfActive(
-			ctx, conn, sessionID, event.EventKey, event.ReceivedAt, false,
-		)
+		return applyWaitingHookEvent(ctx, conn, event, false)
 	case "PostToolUse":
 		sessionID, found, err := runtimeSessionID(ctx, conn, event.ExternalSessionID)
 		if err != nil || !found {
@@ -120,6 +80,9 @@ func applySubagentHookEvent(ctx context.Context, conn *sql.Conn, event domain.Co
 		}
 		return false, resolveScopedToolRequest(ctx, conn, sessionID, event)
 	case "Stop", "SubagentStop":
+		if event.SubagentScope == "" {
+			return false, nil
+		}
 		sessionID, found, err := runtimeSessionID(ctx, conn, event.ExternalSessionID)
 		if err != nil || !found {
 			return false, err
@@ -128,6 +91,40 @@ func applySubagentHookEvent(ctx context.Context, conn *sql.Conn, event domain.Co
 	default:
 		return false, nil
 	}
+}
+
+func applyWaitingHookEvent(
+	ctx context.Context,
+	conn *sql.Conn,
+	event domain.CodexHookEvent,
+	rootRequest bool,
+) (bool, error) {
+	exists, resolved, err := attentionRequestState(ctx, conn, event.EventKey)
+	if err != nil || exists && resolved {
+		return false, err
+	}
+	sessionID, err := ensureAttentionParentSession(ctx, conn, event)
+	if err != nil {
+		return false, err
+	}
+	kind, summary := domain.AttentionPermission, "Codex 等待授权"
+	if event.EventName == "PreToolUse" {
+		kind, summary = domain.AttentionUserQuestion, "Codex 等待回答"
+	} else {
+		if event.ToolName == "Bash" {
+			kind = domain.AttentionDangerousCommand
+		}
+		if event.SubagentScope != "" {
+			summary = "Subagent 等待授权"
+		}
+	}
+	created, err := createAttentionRequest(ctx, conn, sessionID, event, kind, summary)
+	if err != nil {
+		return false, err
+	}
+	return created, markWaitingIfActive(
+		ctx, conn, sessionID, event.EventKey, event.ReceivedAt, rootRequest,
+	)
 }
 
 func (s *Store) RuntimeSessions(ctx context.Context) ([]domain.ActiveSession, error) {
@@ -529,9 +526,6 @@ func validateCodexHookEvent(event domain.CodexHookEvent) error {
 	default:
 		return fmt.Errorf("不支持的 Codex Hook 事件 %q", event.EventName)
 	}
-	if event.EventName == "SubagentStop" && event.SubagentScope == "" {
-		return errors.New("SubagentStop 缺少 child 范围")
-	}
 	if event.Surface != domain.CodexSurfaceApp && event.Surface != domain.CodexSurfaceCLI && event.Surface != domain.CodexSurfaceUnknown {
 		return fmt.Errorf("不支持的 Codex surface %q", event.Surface)
 	}
@@ -582,7 +576,7 @@ func runtimeSessionID(ctx context.Context, conn *sql.Conn, externalSessionID str
 	return id, true, nil
 }
 
-func ensureSubagentParentSession(ctx context.Context, conn *sql.Conn, event domain.CodexHookEvent) (int64, error) {
+func ensureAttentionParentSession(ctx context.Context, conn *sql.Conn, event domain.CodexHookEvent) (int64, error) {
 	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO runtime_sessions (
 			provider, external_session_id, cwd_basename, model,
@@ -597,7 +591,7 @@ func ensureSubagentParentSession(ctx context.Context, conn *sql.Conn, event doma
 		domain.RuntimeStateWaiting, domain.RuntimeStateRunning,
 		event.ReceivedAt.UTC().UnixMilli(),
 	); err != nil {
-		return 0, fmt.Errorf("建立 Subagent 父 runtime session: %w", err)
+		return 0, fmt.Errorf("建立 Codex attention 父 runtime session: %w", err)
 	}
 	id, _, err := runtimeSessionID(ctx, conn, event.ExternalSessionID)
 	return id, err
@@ -681,12 +675,12 @@ func createAttentionRequest(
 	result, err := conn.ExecContext(ctx, `
 		INSERT INTO attention_requests (
 			runtime_session_id, event_key, kind, summary, turn_id,
-			subagent_scope, tool_use_key, tool_name, created_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			subagent_scope, tool_use_key, tool_input_key, tool_name, created_at_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(event_key) DO NOTHING
 	`,
 		sessionID, event.EventKey, kind, summary, event.TurnID,
-		event.SubagentScope, event.ToolUseKey, event.ToolName,
+		event.SubagentScope, event.ToolUseKey, event.ToolInputKey, event.ToolName,
 		event.ReceivedAt.UTC().UnixMilli(),
 	)
 	if err != nil {
@@ -780,37 +774,69 @@ func resolveToolRequest(
 		firstKind, secondKind = domain.AttentionUserQuestion, domain.AttentionUserQuestion
 		reason = "question_completed"
 	}
-	resolved := int64(0)
+	matched := requestMatch{}
+	var err error
 	if event.ToolUseKey != "" {
-		result, err := conn.ExecContext(ctx, `
-			UPDATE attention_requests
-			SET resolved_at_ms = ?, resolution_reason = ?
-			WHERE runtime_session_id = ? AND resolved_at_ms IS NULL
-				AND subagent_scope = ? AND tool_use_key = ?
-				AND kind IN (?, ?)
-		`,
-			event.ReceivedAt.UTC().UnixMilli(), reason,
-			sessionID, scope, event.ToolUseKey, firstKind, secondKind,
+		matched, err = findUniqueToolUseRequest(
+			ctx, conn, sessionID, scope, firstKind, secondKind, event.ToolUseKey,
 		)
 		if err != nil {
-			return fmt.Errorf("按工具调用解决 Codex 等待请求: %w", err)
-		}
-		resolved, err = result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("检查 Codex 工具调用解决结果: %w", err)
+			return err
 		}
 	}
-	if resolved == 0 {
-		if err := resolveToolRequestFallback(
-			ctx, conn, sessionID, event, scope, firstKind, secondKind, reason,
-		); err != nil {
+	if matched.count == 0 && event.ToolInputKey != "" {
+		matched, err = findUniqueToolInputRequest(
+			ctx, conn, sessionID, event, scope, firstKind, secondKind,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	if matched.count == 0 {
+		matched, err = findUniqueFallbackRequest(
+			ctx, conn, sessionID, event, scope, firstKind, secondKind,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	if matched.count == 1 {
+		if err := resolveRequestByID(ctx, conn, matched.id, event.ReceivedAt, reason); err != nil {
 			return err
 		}
 	}
 	return refreshRuntimeState(ctx, conn, sessionID, event.ReceivedAt)
 }
 
-func resolveToolRequestFallback(
+type requestMatch struct {
+	id    int64
+	count int
+}
+
+func findUniqueToolUseRequest(
+	ctx context.Context,
+	conn *sql.Conn,
+	sessionID int64,
+	scope string,
+	firstKind string,
+	secondKind string,
+	toolUseKey string,
+) (requestMatch, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT id FROM attention_requests
+		WHERE runtime_session_id = ? AND resolved_at_ms IS NULL
+			AND subagent_scope = ? AND kind IN (?, ?)
+			AND tool_use_key = ?
+		ORDER BY id
+		LIMIT 2
+	`, sessionID, scope, firstKind, secondKind, toolUseKey)
+	if err != nil {
+		return requestMatch{}, fmt.Errorf("查找精确 Codex 等待请求: %w", err)
+	}
+	return scanRequestMatch(rows)
+}
+
+func findUniqueToolInputRequest(
 	ctx context.Context,
 	conn *sql.Conn,
 	sessionID int64,
@@ -818,34 +844,97 @@ func resolveToolRequestFallback(
 	scope string,
 	firstKind string,
 	secondKind string,
-	reason string,
-) error {
-	query := `
-		UPDATE attention_requests
-		SET resolved_at_ms = ?, resolution_reason = ?
+) (requestMatch, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT id FROM attention_requests
 		WHERE runtime_session_id = ? AND resolved_at_ms IS NULL
-			AND subagent_scope = ?
-			AND kind IN (?, ?)
+			AND subagent_scope = ? AND kind IN (?, ?)
+			AND tool_input_key = ?
 			AND (? = '' OR turn_id = '' OR turn_id = ?)
 			AND (? = '' OR tool_name = '' OR tool_name = ?)
-	`
-	arguments := []any{
-		event.ReceivedAt.UTC().UnixMilli(), reason,
+		ORDER BY id
+		LIMIT 2
+	`,
+		sessionID, scope, firstKind, secondKind, event.ToolInputKey,
+		event.TurnID, event.TurnID, event.ToolName, event.ToolName,
+	)
+	if err != nil {
+		return requestMatch{}, fmt.Errorf("按工具输入查找 Codex 等待请求: %w", err)
+	}
+	return scanRequestMatch(rows)
+}
+
+func findUniqueFallbackRequest(
+	ctx context.Context,
+	conn *sql.Conn,
+	sessionID int64,
+	event domain.CodexHookEvent,
+	scope string,
+	firstKind string,
+	secondKind string,
+) (requestMatch, error) {
+	rows, err := conn.QueryContext(ctx, `
+		SELECT id FROM attention_requests
+		WHERE runtime_session_id = ? AND resolved_at_ms IS NULL
+			AND subagent_scope = ? AND kind IN (?, ?)
+			AND (? = '' OR turn_id = '' OR turn_id = ?)
+			AND (? = '' OR tool_name = '' OR tool_name = ?)
+			AND (? = '' OR tool_use_key = '')
+			AND (? = '' OR tool_input_key = '')
+		ORDER BY id
+		LIMIT 2
+	`,
 		sessionID, scope, firstKind, secondKind,
-		event.TurnID, event.TurnID,
-		event.ToolName, event.ToolName,
+		event.TurnID, event.TurnID, event.ToolName, event.ToolName,
+		event.ToolUseKey, event.ToolInputKey,
+	)
+	if err != nil {
+		return requestMatch{}, fmt.Errorf("查找唯一 Codex 等待请求: %w", err)
 	}
-	if event.ToolUseKey != "" {
-		// completion 提供了不匹配的 key 时，只能降级匹配没有 key 的旧请求。
-		query += " AND tool_use_key = ''"
+	return scanRequestMatch(rows)
+}
+
+func scanRequestMatch(rows *sql.Rows) (requestMatch, error) {
+	defer rows.Close()
+	match := requestMatch{}
+	for rows.Next() {
+		match.count++
+		if err := rows.Scan(&match.id); err != nil {
+			return requestMatch{}, fmt.Errorf("解析 Codex 等待请求候选: %w", err)
+		}
 	}
-	if _, err := conn.ExecContext(ctx, query, arguments...); err != nil {
-		return fmt.Errorf("按 child 范围解决 Codex 等待请求: %w", err)
+	if err := rows.Err(); err != nil {
+		return requestMatch{}, fmt.Errorf("遍历 Codex 等待请求候选: %w", err)
+	}
+	return match, nil
+}
+
+func resolveRequestByID(
+	ctx context.Context,
+	conn *sql.Conn,
+	id int64,
+	at time.Time,
+	reason string,
+) error {
+	result, err := conn.ExecContext(ctx, `
+		UPDATE attention_requests
+		SET resolved_at_ms = ?, resolution_reason = ?
+		WHERE id = ? AND resolved_at_ms IS NULL
+	`, at.UTC().UnixMilli(), reason, id)
+	if err != nil {
+		return fmt.Errorf("解决精确 Codex 等待请求: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected > 1 {
+		return fmt.Errorf("检查 Codex 等待请求解决结果: affected=%d, err=%v", affected, err)
 	}
 	return nil
 }
 
 func resolveSubagentRequests(ctx context.Context, conn *sql.Conn, sessionID int64, event domain.CodexHookEvent) error {
+	if event.SubagentScope == "" {
+		return nil
+	}
 	if _, err := conn.ExecContext(ctx, `
 		UPDATE attention_requests
 		SET resolved_at_ms = ?, resolution_reason = 'subagent_stopped'

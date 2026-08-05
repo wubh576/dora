@@ -93,9 +93,11 @@ func TestSubagentEventKeyIncludesValidatedScope(t *testing.T) {
 	scopeA := "sha256:" + strings.Repeat("a", 64)
 	scopeB := "sha256:" + strings.Repeat("b", 64)
 	toolKey := "sha256:" + strings.Repeat("c", 64)
+	inputKey := "sha256:" + strings.Repeat("d", 64)
 	base := Event{
 		SessionID: "parent", HookEvent: "PermissionRequest", TurnID: "turn",
 		Surface: domain.CodexSurfaceApp, ToolName: "Bash", ToolUseKey: toolKey,
+		ToolInputKey: inputKey, SubagentEvent: true,
 	}
 	root := base
 	root.EventKey = RootEventKey("parent", "turn", "PermissionRequest", "Bash", "raw-tool-id")
@@ -117,12 +119,14 @@ func TestSubagentEventKeyIncludesValidatedScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.EventKey == second.EventKey || first.SubagentScope != scopeA || second.SubagentScope != scopeB {
+	if first.EventKey == second.EventKey || first.SubagentScope != scopeA || second.SubagentScope != scopeB ||
+		!first.SubagentEvent || first.ToolInputKey != inputKey {
 		t.Fatalf("child scope 未参与稳定 key: first=%+v second=%+v", first, second)
 	}
 	for _, invalid := range []Event{
 		{SessionID: "parent", HookEvent: "Stop", Surface: domain.CodexSurfaceApp, SubagentScope: "raw-agent-id"},
 		{SessionID: "parent", HookEvent: "PostToolUse", Surface: domain.CodexSurfaceApp, ToolUseKey: "raw-tool-id"},
+		{SessionID: "parent", HookEvent: "PostToolUse", Surface: domain.CodexSurfaceApp, ToolInputKey: "raw-tool-input"},
 		{SessionID: "parent", HookEvent: "PermissionRequest", Surface: domain.CodexSurfaceApp, ToolUseKey: toolKey, EventKey: "raw-event-key"},
 		{SessionID: "parent", HookEvent: "Stop", Surface: domain.CodexSurfaceApp, EventKey: wantRootKey},
 	} {

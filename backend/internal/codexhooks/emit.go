@@ -150,7 +150,8 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 		HookEvent:          raw.HookEventName,
 		SessionStartSource: strings.TrimSpace(raw.Source),
 		TurnID:             strings.TrimSpace(raw.TurnID),
-		SubagentScope:      subagentScope(agentID, agentType),
+		SubagentEvent:      isSubagent,
+		SubagentScope:      subagentScope(agentID),
 		CWDBasename:        filepath.Base(strings.TrimSpace(raw.CWD)),
 		Model:              strings.TrimSpace(raw.Model),
 		Surface:            surface.Name,
@@ -162,28 +163,28 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 	if event.HookEvent == "UserPromptSubmit" {
 		event.PromptPreview = userPrompt(raw.Prompt, surface)
 	}
-	if event.HookEvent == "PermissionRequest" {
+	if event.HookEvent == "PermissionRequest" || event.HookEvent == "PostToolUse" {
 		if len(raw.ToolInput) == 0 {
-			return attention.Event{}, errors.New("Codex 授权事件缺少工具输入")
+			if event.HookEvent == "PermissionRequest" {
+				return attention.Event{}, errors.New("Codex 授权事件缺少工具输入")
+			}
+		} else {
+			inputHash, inputKey, err := toolInputKeys(raw.ToolInput)
+			if err != nil {
+				return attention.Event{}, err
+			}
+			event.ToolInputKey = inputKey
+			if event.HookEvent == "PermissionRequest" {
+				// 既有 event key 继续使用无命名空间 hash，避免升级后重复提醒。
+				event.InputHash = inputHash
+			}
 		}
-		var inputValue any
-		inputDecoder := json.NewDecoder(bytes.NewReader(raw.ToolInput))
-		inputDecoder.UseNumber()
-		if err := inputDecoder.Decode(&inputValue); err != nil {
-			return attention.Event{}, errors.New("Codex 授权事件工具输入无效")
-		}
-		canonicalInput, err := json.Marshal(inputValue)
-		if err != nil {
-			return attention.Event{}, errors.New("规范化 Codex 授权事件失败")
-		}
-		hash := sha256.Sum256(canonicalInput)
-		event.InputHash = hex.EncodeToString(hash[:])
 	}
 	domainEvent, err := event.Domain(time.Now().UTC())
 	if err != nil {
 		return attention.Event{}, errors.New("Codex Hook 事件字段无效")
 	}
-	if !isSubagent && (event.HookEvent == "PermissionRequest" ||
+	if event.SubagentScope == "" && (event.HookEvent == "PermissionRequest" ||
 		(event.HookEvent == "PreToolUse" && event.ToolName == "request_user_input")) {
 		stablePart := strings.TrimSpace(raw.ToolUseID)
 		if stablePart == "" {
@@ -199,21 +200,20 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 	event.SessionID = domainEvent.ExternalSessionID
 	event.SessionStartSource = domainEvent.SessionStartSource
 	event.TurnID = domainEvent.TurnID
+	event.SubagentEvent = domainEvent.SubagentEvent
 	event.SubagentScope = domainEvent.SubagentScope
 	event.CWDBasename = domainEvent.CWDBasename
 	event.Model = domainEvent.Model
 	event.TTY = domainEvent.TTY
 	event.ToolName = domainEvent.ToolName
 	event.ToolUseKey = domainEvent.ToolUseKey
+	event.ToolInputKey = domainEvent.ToolInputKey
 	event.PromptPreview = domainEvent.PromptPreview
 	return event, nil
 }
 
-func subagentScope(agentID, agentType string) string {
-	if agentID != "" {
-		return opaqueKey("agent-id", agentID)
-	}
-	return opaqueKey("agent-type", agentType)
+func subagentScope(agentID string) string {
+	return opaqueKey("agent-id", agentID)
 }
 
 func opaqueKey(kind, value string) string {
@@ -221,8 +221,27 @@ func opaqueKey(kind, value string) string {
 	if value == "" {
 		return ""
 	}
-	hash := sha256.Sum256([]byte(kind + "\x00" + value))
+	return opaqueBytesKey(kind, []byte(value))
+}
+
+func opaqueBytesKey(kind string, value []byte) string {
+	hash := sha256.Sum256(append([]byte(kind+"\x00"), value...))
 	return "sha256:" + hex.EncodeToString(hash[:])
+}
+
+func toolInputKeys(raw json.RawMessage) (string, string, error) {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return "", "", errors.New("Codex 工具输入无效")
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return "", "", errors.New("规范化 Codex 工具输入失败")
+	}
+	legacyHash := sha256.Sum256(canonical)
+	return hex.EncodeToString(legacyHash[:]), opaqueBytesKey("tool-input", canonical), nil
 }
 
 func userPrompt(value string, surface Surface) string {

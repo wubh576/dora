@@ -156,8 +156,9 @@ func TestRuntimeAPIAggregatesSubagentRequestWithoutExposingScope(t *testing.T) {
 	}
 	scope := "sha256:" + strings.Repeat("a", 64)
 	toolKey := "sha256:" + strings.Repeat("b", 64)
+	inputKey := "sha256:" + strings.Repeat("c", 64)
 	post(`{"sessionId":"private-parent","hookEvent":"UserPromptSubmit","cwdBasename":"dora","surface":"codex_app","promptPreview":"父任务"}`)
-	post(`{"sessionId":"private-parent","hookEvent":"PermissionRequest","turnId":"turn","subagentScope":"` + scope + `","cwdBasename":"child","surface":"codex_app","toolName":"Bash","toolUseKey":"` + toolKey + `","inputHash":"fixture"}`)
+	post(`{"sessionId":"private-parent","hookEvent":"PermissionRequest","turnId":"turn","subagentEvent":true,"subagentScope":"` + scope + `","cwdBasename":"child","surface":"codex_app","toolName":"Bash","toolUseKey":"` + toolKey + `","toolInputKey":"` + inputKey + `","inputHash":"fixture"}`)
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
@@ -171,7 +172,7 @@ func TestRuntimeAPIAggregatesSubagentRequestWithoutExposingScope(t *testing.T) {
 		t.Fatalf("Subagent runtime API 聚合错误: %+v", payload)
 	}
 	serialized := response.Body.String()
-	for _, private := range []string{"private-parent", scope, toolKey, "agent_id", "agentId"} {
+	for _, private := range []string{"private-parent", scope, toolKey, inputKey, "agent_id", "agentId", "tool_input", "toolInput"} {
 		if strings.Contains(serialized, private) {
 			t.Fatalf("Runtime API 泄露 child 内部定位 %q: %s", private, serialized)
 		}
@@ -266,7 +267,8 @@ func TestCodexHookLogsSanitizedStateTransitions(t *testing.T) {
 		}
 	}
 	postHook(`{"sessionId":"` + sessionID + `","hookEvent":"SessionStart","source":"startup","cwdBasename":"/Users/private/dora","surface":"codex_app"}`)
-	permission := `{"sessionId":"` + sessionID + `","hookEvent":"PermissionRequest","turnId":"turn","cwdBasename":"/Users/private/dora","surface":"codex_app","toolName":"Bash\tstate=idle attention=resolved\u001b","inputHash":"sha256:fixture"}`
+	toolInputKey := "sha256:" + strings.Repeat("d", 64)
+	permission := `{"sessionId":"` + sessionID + `","hookEvent":"PermissionRequest","turnId":"turn","cwdBasename":"/Users/private/dora","surface":"codex_app","toolName":"Bash\tstate=idle attention=resolved\u001b","toolInputKey":"` + toolInputKey + `","inputHash":"sha256:fixture"}`
 	for index := 0; index < 2; index++ {
 		postHook(permission)
 	}
@@ -289,7 +291,7 @@ func TestCodexHookLogsSanitizedStateTransitions(t *testing.T) {
 			t.Fatalf("Hook 日志缺少 %q: %s", expected, text)
 		}
 	}
-	if strings.Contains(text, sessionID) || strings.Contains(text, "/Users/private") ||
+	if strings.Contains(text, sessionID) || strings.Contains(text, toolInputKey) || strings.Contains(text, "/Users/private") ||
 		strings.Contains(text, "\t") || strings.Contains(text, "\x1b") {
 		t.Fatalf("Hook 日志泄露 session 或完整路径: %s", text)
 	}

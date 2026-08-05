@@ -30,6 +30,7 @@
 | 22. 原生 macOS 灵动岛控制中心 | 已完成 | 本次提交 |
 | 23. 顶部控制条交互与状态修补 | 已完成 | 本次提交 |
 | 34. Codex Subagent 授权提醒 | 已完成 | 本次提交 |
+| 35. 真实 Hook Schema 授权关联 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -612,3 +613,19 @@
 - production helper loopback 探针确认两个 child 聚合为一条父 session 且 request count 为 2；child A `PostToolUse` 后只剩 child B，child B `SubagentStop` 后父 session 恢复 running。helper stdout 为空，探针 session 已用 root `SessionEnd` 清理。
 - 尝试使用 Codex CLI `0.146.0` 的 ephemeral subagent 做原生授权探针，但该次运行先遇到网络重试，随后因 `collab spawn failed: no thread with id` 未实际创建 child；没有把原生授权框、跳转或 App subagent 路径误报为已通过，探针也未留下 runtime 记录。
 - Code Review：独立 Reviewer 发现 root 旧 event key 兼容和 keyed request/keyless completion 降级两个 P2；自审发现旧迁移记录缺少 tool name 时的类型隔离问题。修复后以固定旧 hash、scope fallback 和 migration 旧记录回归测试复审，无剩余 P0/P1/P2/P3。
+
+## 里程碑 35：真实 Hook Schema 授权关联
+
+已完成：
+
+- 按官方最小 Hook schema 支持缺少 `agent_id`、`agent_type` 和 `tool_use_id` 的 `PermissionRequest`，不再依赖虚构 child 字段；扩展事件只有真实 `agent_id` 才生成稳定 child scope。
+- `PermissionRequest` 与 `PostToolUse` 对完整 `tool_input` 使用 `UseNumber` 规范化 JSON，并在 helper 内生成不可逆 `tool_input_key`；原始工具输入、原始 agent ID 和原始 tool use ID 不进入 loopback、SQLite、Runtime API、菜单栏 View 或普通日志。
+- 工具完成按 tool use、tool input、唯一安全 fallback 的顺序关联，候选检查与单条 ID 更新处于同一 SQLite immediate transaction；同 parent/turn/tool 的多个模糊候选全部保留。
+- migration 10 为 attention request 增加 `tool_input_key` 并更新活跃请求索引；从真实 v9 schema 原位升级，保留 usage、quota、runtime 和既有 attention 数据。
+
+验证记录：
+
+- 官方 schema 双请求回归在修复前复现 request count 从 2 错误降为 0；修复后 A、B 分别解除，父 session 最后恢复原 base state，且标题、prompt、模型、surface、TTY、cwd 与父跳转信息不被授权事件覆盖。
+- 自动化测试覆盖 tool use 不匹配时按 tool input 精确解除、input key 不一致不误清、唯一与歧义 fallback、空 scope 与 child scope 隔离、重复去重、旧 root event key、Runtime API/菜单栏/日志隐私、v9→v10 数据保留和既有 App/CLI 父跳转。
+- 使用隔离 SQLite、当前生产 helper 与 Codex CLI `0.146.0` 发起真实 ephemeral 探针；CLI 产生了真实 `SessionStart → UserPromptSubmit → SessionEnd`，但模型请求持续网络超时，在创建两个 subagent 前终止，因此没有把双授权计数和父跳转误报为原生验收通过。探针服务、临时数据库与目录均已删除，日常 LaunchAgent 已恢复。
+- `make verify`、后端全量 `go test -race ./...`、`go vet ./...`、`go mod tidy -diff` 与 `git diff --check` 通过。独立 Review 发现空 scope `SubagentStop` 被前置校验拒绝的 P2；修复为按事件名进入安全 no-op 并增加回归测试后复审通过。

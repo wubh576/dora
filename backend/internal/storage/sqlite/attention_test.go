@@ -823,6 +823,142 @@ func TestSubagentPostToolUseWithoutKeyFallsBackWithinSameScope(t *testing.T) {
 	}
 }
 
+func TestToolCompletionRequiresExactOrUniqueCorrelation(t *testing.T) {
+	key := func(value string) string {
+		return "sha256:" + strings.Repeat(value, 64)
+	}
+
+	t.Run("工具 ID 不匹配时按相同输入精确解除", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		now := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
+		request := attentionEvent("PermissionRequest", now)
+		request.TurnID, request.ToolName, request.EventKey = "turn", "Bash", "codex:input-match"
+		request.ToolUseKey, request.ToolInputKey = key("a"), key("b")
+		if _, err := store.ApplyCodexHookEvent(ctx, request); err != nil {
+			t.Fatal(err)
+		}
+		completion := attentionEvent("PostToolUse", now.Add(time.Second))
+		completion.TurnID, completion.ToolName = "turn", "Bash"
+		completion.ToolUseKey, completion.ToolInputKey = key("c"), key("b")
+		if _, err := store.ApplyCodexHookEvent(ctx, completion); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := store.AttentionRequestStatus(ctx, request.EventKey); got != AttentionRequestResolved {
+			t.Fatalf("相同 tool_input_key 未解除请求: %q", got)
+		}
+	})
+
+	t.Run("输入键不一致时不降级误清", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		now := time.Date(2026, 8, 5, 9, 10, 0, 0, time.UTC)
+		request := attentionEvent("PermissionRequest", now)
+		request.TurnID, request.ToolName, request.EventKey = "turn", "Bash", "codex:input-mismatch"
+		request.ToolInputKey = key("d")
+		if _, err := store.ApplyCodexHookEvent(ctx, request); err != nil {
+			t.Fatal(err)
+		}
+		completion := attentionEvent("PostToolUse", now.Add(time.Second))
+		completion.TurnID, completion.ToolName, completion.ToolInputKey = "turn", "Bash", key("e")
+		if _, err := store.ApplyCodexHookEvent(ctx, completion); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := store.AttentionRequestStatus(ctx, request.EventKey); got != AttentionRequestActive {
+			t.Fatalf("不同 tool_input_key 误清请求: %q", got)
+		}
+	})
+
+	t.Run("无精确键且候选不唯一时全部保留", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		now := time.Date(2026, 8, 5, 9, 20, 0, 0, time.UTC)
+		for index := 0; index < 2; index++ {
+			request := attentionEvent("PermissionRequest", now.Add(time.Duration(index)*time.Second))
+			request.TurnID, request.ToolName = "turn", "Bash"
+			request.EventKey = fmt.Sprintf("codex:ambiguous-%d", index)
+			if _, err := store.ApplyCodexHookEvent(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+		}
+		completion := attentionEvent("PostToolUse", now.Add(2*time.Second))
+		completion.TurnID, completion.ToolName = "turn", "Bash"
+		if _, err := store.ApplyCodexHookEvent(ctx, completion); err != nil {
+			t.Fatal(err)
+		}
+		waiting, err := store.WaitingSessions(ctx)
+		if err != nil || len(waiting) != 1 || waiting[0].RequestCount != 2 {
+			t.Fatalf("模糊 fallback 清除了请求: %+v, %v", waiting, err)
+		}
+	})
+
+	t.Run("无精确键且候选唯一时允许回落", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		now := time.Date(2026, 8, 5, 9, 30, 0, 0, time.UTC)
+		request := attentionEvent("PermissionRequest", now)
+		request.TurnID, request.ToolName, request.EventKey = "turn", "Bash", "codex:unique-fallback"
+		if _, err := store.ApplyCodexHookEvent(ctx, request); err != nil {
+			t.Fatal(err)
+		}
+		completion := attentionEvent("PostToolUse", now.Add(time.Second))
+		completion.TurnID, completion.ToolName = "turn", "Bash"
+		if _, err := store.ApplyCodexHookEvent(ctx, completion); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := store.AttentionRequestStatus(ctx, request.EventKey); got != AttentionRequestResolved {
+			t.Fatalf("唯一 fallback 未解除请求: %q", got)
+		}
+	})
+}
+
+func TestSubagentStopDoesNotResolveUnscopedRequest(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 8, 5, 10, 0, 0, 0, time.UTC)
+	request := attentionEvent("PermissionRequest", now)
+	request.TurnID, request.ToolName, request.EventKey = "turn", "Bash", "codex:unscoped"
+	if _, err := store.ApplyCodexHookEvent(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	stop := attentionEvent("SubagentStop", now.Add(time.Second))
+	stop.SubagentEvent = true
+	stop.SubagentScope = "sha256:" + strings.Repeat("f", 64)
+	if _, err := store.ApplyCodexHookEvent(ctx, stop); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.AttentionRequestStatus(ctx, request.EventKey); got != AttentionRequestActive {
+		t.Fatalf("SubagentStop 清除了无 scope 请求: %q", got)
+	}
+	emptyScopeStop := attentionEvent("SubagentStop", now.Add(2*time.Second))
+	if _, err := store.ApplyCodexHookEvent(ctx, emptyScopeStop); err != nil {
+		t.Fatalf("空 scope SubagentStop 应安全忽略: %v", err)
+	}
+	if got, _ := store.AttentionRequestStatus(ctx, request.EventKey); got != AttentionRequestActive {
+		t.Fatalf("空 scope SubagentStop 改变了无 scope 请求: %q", got)
+	}
+}
+
 func attentionEvent(name string, at time.Time) domain.CodexHookEvent {
 	return domain.CodexHookEvent{
 		ExternalSessionID: "019-test-session",

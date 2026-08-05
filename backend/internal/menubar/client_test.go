@@ -2,9 +2,12 @@ package menubar
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestClientLoadsSnapshotQuotaAndUnifiedRuntime(t *testing.T) {
@@ -16,7 +19,7 @@ func TestClientLoadsSnapshotQuotaAndUnifiedRuntime(t *testing.T) {
 		case "/api/v1/quotas":
 			_, _ = response.Write([]byte(`{"enabled":true,"status":"ready","items":[]}`))
 		case "/api/v1/runtime":
-			_, _ = response.Write([]byte(`{"waitingCount":1,"runningCount":2,"sessions":[{"id":7,"state":"waiting","sessionName":"dora","requestId":9}]}`))
+			_, _ = response.Write([]byte(`{"waitingCount":1,"runningCount":2,"sessions":[{"id":7,"state":"waiting","sessionName":"dora","requestId":9,"agentId":"private-agent","toolUseId":"private-tool","toolInput":{"command":"private-command"}}]}`))
 		default:
 			http.NotFound(response, request)
 		}
@@ -30,6 +33,20 @@ func TestClientLoadsSnapshotQuotaAndUnifiedRuntime(t *testing.T) {
 	runtimeState, err := client.LoadRuntime(context.Background())
 	if err != nil || runtimeState.WaitingCount != 1 || runtimeState.RunningCount != 2 || runtimeState.Sessions[0].RequestID != 9 {
 		t.Fatalf("LoadRuntime() = %+v, %v", runtimeState, err)
+	}
+	view := BuildView(
+		&State{Runtime: runtimeState}, MachineState{Mode: ModeAttention},
+		ScreenMetrics{Frame: Rect{Width: 1440, Height: 900}, Visible: Rect{Width: 1440, Height: 876}},
+		time.Now(), false, "",
+	)
+	payload, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"private-agent", "private-tool", "private-command", "toolInput"} {
+		if strings.Contains(string(payload), secret) {
+			t.Fatalf("菜单栏 View 保留了 Runtime API 内部字段 %q: %s", secret, payload)
+		}
 	}
 }
 

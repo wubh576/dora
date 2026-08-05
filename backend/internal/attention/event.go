@@ -17,6 +17,7 @@ type Event struct {
 	HookEvent          string `json:"hookEvent"`
 	SessionStartSource string `json:"source,omitempty"`
 	TurnID             string `json:"turnId,omitempty"`
+	SubagentEvent      bool   `json:"subagentEvent,omitempty"`
 	SubagentScope      string `json:"subagentScope,omitempty"`
 	CWDBasename        string `json:"cwdBasename,omitempty"`
 	Model              string `json:"model,omitempty"`
@@ -25,6 +26,7 @@ type Event struct {
 	TTY                string `json:"tty,omitempty"`
 	ToolName           string `json:"toolName,omitempty"`
 	ToolUseKey         string `json:"toolUseKey,omitempty"`
+	ToolInputKey       string `json:"toolInputKey,omitempty"`
 	InputHash          string `json:"inputHash,omitempty"`
 	EventKey           string `json:"eventKey,omitempty"`
 	PromptPreview      string `json:"promptPreview,omitempty"`
@@ -43,6 +45,11 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 	event.ToolUseKey = cleanOpaqueKey(rawToolUseKey)
 	if rawToolUseKey != "" && event.ToolUseKey == "" {
 		return domain.CodexHookEvent{}, errors.New("事件包含无效 tool use key")
+	}
+	rawToolInputKey := strings.TrimSpace(event.ToolInputKey)
+	event.ToolInputKey = cleanOpaqueKey(rawToolInputKey)
+	if rawToolInputKey != "" && event.ToolInputKey == "" {
+		return domain.CodexHookEvent{}, errors.New("事件包含无效 tool input key")
 	}
 	rawEventKey := strings.TrimSpace(event.EventKey)
 	event.EventKey = cleanEventKey(rawEventKey)
@@ -102,6 +109,7 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 		EventName:          event.HookEvent,
 		SessionStartSource: event.SessionStartSource,
 		TurnID:             event.TurnID,
+		SubagentEvent:      event.SubagentEvent,
 		SubagentScope:      event.SubagentScope,
 		CWDBasename:        cwdBasename(event.CWDBasename),
 		Model:              cleanLabel(event.Model, 160),
@@ -110,6 +118,7 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 		TTY:                cleanLabel(event.TTY, 80),
 		ToolName:           event.ToolName,
 		ToolUseKey:         event.ToolUseKey,
+		ToolInputKey:       event.ToolInputKey,
 		EventKey:           eventKey,
 		PromptPreview:      promptPreview,
 		ReceivedAt:         receivedAt.UTC(),

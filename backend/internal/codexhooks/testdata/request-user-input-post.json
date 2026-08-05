@@ -5,5 +5,8 @@
   "hook_event_name": "PostToolUse",
   "model": "gpt-fixture",
   "tool_name": "request_user_input",
-  "tool_use_id": "fixture-tool"
+  "tool_use_id": "fixture-tool",
+  "tool_input": {
+    "questions": []
+  }
 }

@@ -1408,13 +1408,13 @@ DORA_CLAUDE_OAUTH_TOKEN
 - 只使用 Codex 官方 `~/.codex/hooks.json` 生命周期事件，不轮询 transcript 猜测前台状态。
 - 普通 `SessionStart`（`startup`、`resume`、`clear`、缺少或未知 `source`）注册为 idle，不进入活跃列表，并按既有规则结束上一轮状态；`SessionStart(source=compact)` 对已有 session 只更新定位元数据与 `last_seen_at`，保留 running/waiting/idle、prompt 和未解决 request，首次看到时仅创建 idle 记录。`UserPromptSubmit` 进入 running；`PermissionRequest` 与 `request_user_input` 的 `PreToolUse` 进入 waiting；`PostToolUse` 仅在当前 turn 已处于 running/waiting 时回到 running；`Stop` 进入 idle；`SessionEnd` 移除 runtime session。
 - waiting 数量按 session 计算，不按 request 叠加；同一 session 可以显示 active request 数。
-- attention event key 必须稳定去重。PermissionRequest 在缺少 tool use ID 时使用规范化 JSON 的输入 hash，只存 hash，不存输入正文。
+- attention event key 必须稳定去重。`PermissionRequest` 在缺少 tool use ID 时使用规范化 JSON 的输入 hash 生成既有兼容 event key；同时与 `PostToolUse` 共享带命名空间的不可逆 `tool_input_key`，原始 `tool_input` 不通过 loopback API，也不写入 SQLite 或日志。
 - notified 与 resolved 分开记录。一次新 request 只发一次声音并自动展开灵动岛；点击会话只跳转，不解决 request；重启不重放历史声音。
-- root PermissionRequest 没有单独假设 resolved Hook：root `PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。subagent `PostToolUse` 优先按不可逆 tool key 精确解除；缺少精确 ID 时只在同一 child scope 的 turn/tool 内降级匹配，child `Stop`/`SubagentStop` 只解除该 scope 的剩余请求。
+- root PermissionRequest 没有单独假设 resolved Hook：root `PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。`PostToolUse` 依次按不可逆 `tool_use_key`、`tool_input_key` 精确关联；精确键均不可用时，只能解除同 parent、同 scope、兼容 turn/tool/kind 的唯一候选，命中多个 active request 时一个也不解除。候选检查和按 ID 更新在同一 SQLite immediate transaction 内完成。
 - 不能用几秒钟 timeout 盲目解除 waiting。Dora 启动时把上一进程遗留的 running 恢复为 idle，同时保留真正尚未解决的 waiting；缺失 `SessionEnd` 的 waiting 以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。
 - Codex App `0.146.0-alpha.9.2` 实机探针确认全局 Hook 会产生 `SessionStart → UserPromptSubmit → Stop → SessionEnd`，且无 TTY 的 App 进程祖先会稳定识别为 `codex_app`；原始 thread ID 可直接用于 deep link。
 - Codex App 项目首页会用固定 `# Overview` prompt 启动 Ambient Suggestions 后台任务，且当前可能只发送 `UserPromptSubmit`、不发送 `Stop`（`openai/codex#18541`）。该 Ambient Hook payload 暂无稳定的用户/后台来源字段，因此 helper 仅在 `codex_app + UserPromptSubmit + 已确认前缀` 同时匹配时把事件改写为无 prompt 的 `SessionEnd` tombstone，立即移除内部 runtime；CLI、普通 App prompt 和其他事件不受影响。
-- 可见 runtime 的基础运行语义只由用户主动提交的 root prompt 启动。Codex subagent Hook 的 `session_id` 指向父 session；helper 把 `agent_id`（缺少时为 `agent_type`）转换成不可逆 child scope。subagent `PermissionRequest` 进入 attention-only 路径并聚合到父 session；对应 `PostToolUse`、child `Stop` 和 `SubagentStop` 只解除同一 scope 的请求，不覆盖父标题、prompt、模型、surface、TTY 或 cwd，也不能把父 session 置为 idle 或删除。其他 child 生命周期成功 no-op。原始 agent ID、tool use ID 不写入 Runtime API 或 UI。用户 turn 内的普通工具调用和推理不创建额外 session，后台任务的实际模型消耗仍进入 token 与费用统计。
+- 可见 runtime 的基础运行语义只由用户主动提交的 root prompt 启动。标准工具 Hook 的 `session_id` 指向父 session，但 `PermissionRequest` 不保证提供 `agent_id`、`agent_type` 或 `tool_use_id`，因此不能把 child 身份当作授权提醒的前提。只有事件真实携带稳定 `agent_id` 时，helper 才生成不可逆 child scope；`agent_type` 不能作为 scope。无法确认 child 时请求仍聚合到父 session，并显示“Codex 等待授权”；能够确认 scope 时显示“Subagent 等待授权”。两条路径都不覆盖父标题、prompt、模型、surface、TTY 或 cwd。child `Stop`/`SubagentStop` 只解除相同非空 scope，不能清理 scope 为空的请求；其他 child 生命周期成功 no-op。原始 agent ID、tool use ID 和完整 tool input 不写入 Runtime API、菜单栏或日志。用户 turn 内的普通工具调用和推理不创建额外 session，后台任务的实际模型消耗仍进入 token 与费用统计。
 - Codex CLI `0.146.0` 实机探针确认：Allow 的事件顺序为 `PermissionRequest → PostToolUse → Stop`；TUI 按 Esc 取消后没有即时 resolved Hook，下一次 `UserPromptSubmit` 才解除 waiting；启用当前 CLI 的结构化提问能力后，顺序为 `PreToolUse(request_user_input) → PostToolUse(request_user_input) → Stop`。这三条真实边界作为状态机依据，不能用 UI 文案或自然语言猜测补齐事件。
 
 ### 25.2 Hook 生命周期与安全
@@ -1473,6 +1473,7 @@ LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，�
 - 完整用户邮箱。
 - 完整 cwd。
 - Claude tool input。
+- Codex 完整 tool input；实时关联只允许保存不可逆 `tool_input_key`。
 
 ### 26.3 数据导出
 
