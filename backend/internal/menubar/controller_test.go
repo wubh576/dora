@@ -98,6 +98,43 @@ type successfulBlockingRefresher struct {
 	release chan struct{}
 }
 
+type queuedRefresher struct {
+	mu        sync.Mutex
+	calls     int
+	active    int
+	maxActive int
+	started   chan int
+	releases  []chan struct{}
+}
+
+func (refresher *queuedRefresher) Refresh(context.Context) (error, error) {
+	refresher.mu.Lock()
+	call := refresher.calls
+	refresher.calls++
+	refresher.active++
+	refresher.maxActive = max(refresher.maxActive, refresher.active)
+	release := refresher.releases[call]
+	refresher.mu.Unlock()
+	refresher.started <- call + 1
+	<-release
+	refresher.mu.Lock()
+	refresher.active--
+	refresher.mu.Unlock()
+	return nil, nil
+}
+
+func (refresher *queuedRefresher) callCount() int {
+	refresher.mu.Lock()
+	defer refresher.mu.Unlock()
+	return refresher.calls
+}
+
+func (refresher *queuedRefresher) maximumActive() int {
+	refresher.mu.Lock()
+	defer refresher.mu.Unlock()
+	return refresher.maxActive
+}
+
 func (refresher *successfulBlockingRefresher) Refresh(context.Context) (error, error) {
 	close(refresher.started)
 	<-refresher.release
@@ -195,7 +232,7 @@ func TestControllerRuntimeFailureKeepsLastStateAndRecovers(t *testing.T) {
 	}
 }
 
-func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
+func TestControllerRefreshKeepsPartialSuccessAndCollapses(t *testing.T) {
 	refresher := &blockingRefresher{started: make(chan struct{}), release: make(chan struct{})}
 	loader := &fakeLoader{state: State{Snapshot: Snapshot{Usage: SnapshotUsage{TodayTokens: 2000}}}}
 	presented := make(chan View, 8)
@@ -208,13 +245,8 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 	}
 	<-refresher.started
 	controller.UIInteraction(false)
-	controller.UIInteraction(true)
-	if controller.RefreshAsync(context.Background()) {
-		t.Fatal("并发 refresh 被错误接受")
-	}
-	controller.UIInteraction(false)
 	if state := controller.machine.State(); state.Mode != ModeHover {
-		t.Fatalf("被拒绝的重复刷新点击未保持展开: %+v", state)
+		t.Fatalf("刷新进行中未按真实指针状态保持展开: %+v", state)
 	}
 	pointerInside = false
 	controller.Hover(false)
@@ -239,6 +271,56 @@ func TestControllerRefreshIsSingleFlightAndKeepsPartialSuccess(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("部分刷新成功状态未发布")
+		}
+	}
+}
+
+func TestControllerRefreshQueuesOneFollowUpWithoutConcurrency(t *testing.T) {
+	firstRelease := make(chan struct{})
+	secondRelease := make(chan struct{})
+	refresher := &queuedRefresher{
+		started:  make(chan int, 2),
+		releases: []chan struct{}{firstRelease, secondRelease},
+	}
+	presented := make(chan View, 16)
+	controller := NewController(&fakeLoader{}, refresher, "", func(view View) { presented <- view })
+	if !controller.RefreshAsync(context.Background()) {
+		t.Fatal("首次 refresh 未启动")
+	}
+	if call := <-refresher.started; call != 1 {
+		t.Fatalf("首次 refresh 调用序号 = %d", call)
+	}
+	if !controller.RefreshAsync(context.Background()) || !controller.RefreshAsync(context.Background()) {
+		t.Fatal("刷新中的重复点击未被接受")
+	}
+	close(firstRelease)
+	select {
+	case call := <-refresher.started:
+		if call != 2 {
+			t.Fatalf("待执行 refresh 调用序号 = %d", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("当前刷新完成后未执行合并的下一轮刷新")
+	}
+	if calls := refresher.callCount(); calls != 2 {
+		t.Fatalf("重复点击未合并为一轮刷新: calls=%d", calls)
+	}
+	close(secondRelease)
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case view := <-presented:
+			if !view.Refreshing && view.OperationStatus == "刷新完成" {
+				if calls := refresher.callCount(); calls != 2 {
+					t.Fatalf("刷新结束后出现额外调用: calls=%d", calls)
+				}
+				if maximum := refresher.maximumActive(); maximum != 1 {
+					t.Fatalf("刷新发生并发调用: max_active=%d", maximum)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("合并刷新完成状态未发布")
 		}
 	}
 }

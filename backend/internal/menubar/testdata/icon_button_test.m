@@ -28,19 +28,12 @@
 
 @interface NSButton (DoraIconButtonTest)
 - (void)doraTestMouseDown:(NSEvent *)event;
-- (void)doraTestSetEnabled:(BOOL)enabled;
 @end
-
-static NSUInteger doraSetEnabledCallCount;
 
 @implementation NSButton (DoraIconButtonTest)
 - (void)doraTestMouseDown:(NSEvent *)event {
     (void)event;
     [NSApp sendAction:self.action to:self.target from:self];
-}
-- (void)doraTestSetEnabled:(BOOL)enabled {
-    doraSetEnabledCallCount++;
-    [self doraTestSetEnabled:enabled];
 }
 @end
 
@@ -81,6 +74,9 @@ int main(void) {
         DoraToolbarActionTarget *target = [[DoraToolbarActionTarget alloc] init];
         DoraIslandContentView *content = [[DoraIslandContentView alloc]
             initWithFrame:NSMakeRect(0, 0, 760, 244) actionTarget:target];
+        NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 244)
+            styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+        window.contentView = content;
         [content setNeedsLayout:YES];
         [content layoutSubtreeIfNeeded];
 
@@ -133,23 +129,19 @@ int main(void) {
                        "footer labels are not fixed without overlap")) return 1;
 
         DoraIconButton *refresh = buttons[0];
-        Method setEnabledMethod = class_getInstanceMethod(NSButton.class, @selector(setEnabled:));
-        Method testSetEnabledMethod = class_getInstanceMethod(NSButton.class, @selector(doraTestSetEnabled:));
-        method_exchangeImplementations(setEnabledMethod, testSetEnabledMethod);
-        doraSetEnabledCallCount = 0;
-        [refresh setLoading:YES];
+        expandedView.hidden = NO;
         [refresh setLoading:YES];
         NSProgressIndicator *progress = nil;
         for (NSView *view in refresh.subviews) {
             if ([view isKindOfClass:NSProgressIndicator.class]) progress = (NSProgressIndicator *)view;
         }
-        if (doraAssert(doraSetEnabledCallCount == 1 && !refresh.enabled && refresh.image == nil &&
-                       progress != nil && !progress.hidden,
-                       "refresh loading state did not disable the icon and show progress")) return 1;
+        if (doraAssert(refresh.enabled && refresh.image == nil && progress != nil && !progress.hidden,
+                       "refresh loading state disabled the button or hid progress")) return 1;
+        NSView *refreshHit = [refresh hitTest:NSMakePoint(NSMidX(refresh.frame), NSMidY(refresh.frame))];
+        if (doraAssert(refreshHit == refresh, "refresh progress indicator intercepted the button click")) return 1;
         [refresh setLoading:NO];
         [refresh setLoading:NO];
-        method_exchangeImplementations(setEnabledMethod, testSetEnabledMethod);
-        if (doraAssert(doraSetEnabledCallCount == 2 && refresh.enabled && refresh.image != nil && progress.hidden,
+        if (doraAssert(refresh.enabled && refresh.image != nil && progress.hidden,
                        "refresh loading state did not restore the icon")) return 1;
 
         NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint

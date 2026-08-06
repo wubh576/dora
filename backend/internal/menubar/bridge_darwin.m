@@ -113,6 +113,11 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.doraPressed = NO;
     [self updateAppearance];
 }
+- (NSView *)hitTest:(NSPoint)point {
+    NSView *hit = [super hitTest:point];
+    if (hit == self.doraProgressIndicator || [hit isDescendantOf:self.doraProgressIndicator]) return self;
+    return hit;
+}
 - (void)setEnabled:(BOOL)enabled {
     [super setEnabled:enabled];
     [self updateAppearance];
@@ -127,7 +132,6 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     } else {
         [self.doraProgressIndicator stopAnimation:nil];
     }
-    self.enabled = !loading;
 }
 - (void)updateAppearance {
     NSColor *background = NSColor.clearColor;

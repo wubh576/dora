@@ -660,3 +660,18 @@
 - Go 测试覆盖刷新进行态、四种刷新结果、临时状态到期恢复、waiting/running 计数、compact 布局和退出事件继续调用 `config.Quit`。`make verify`、`go test -race ./internal/menubar ./internal/app ./cmd/dora`、`go vet ./...`、`go mod tidy -diff` 与 `git diff --check` 全部通过。
 - 当前 Mac 使用隔离 SQLite、Agent home、端口和临时 App bundle 完成真实 AppKit 验收：compact 内容保持不变，展开态四图标、固定底栏、滚动 Session、长错误文案和独立设置窗口均正常；设置窗口关闭后可复用且不退出 Dora，退出图标能释放进程和端口。仪表盘图标通过真实原生按钮点击进入 Go Controller，测试代理记录动作后继续调用系统 `open`；目标 loopback URL 由 Controller 回归测试固定。Computer Use 不可靠产生纯 `mouseMoved`，因此没有把合成事件冒充物理 hover 验收；未修改的 pointer monitor 由原生行为测试与状态机测试覆盖。
 - 独立 Code Review 先后发现真实工具栏集成、`mouseDown:` 入口和按压视觉三个窄 P3 测试缺口；全部补成生产视图行为测试后最终复审通过，无剩余 P0/P1/P2/P3。所有隔离服务、18087 端口、临时数据库、App bundle 和 LaunchServices 注册均已清理。
+
+## 里程碑 38：刷新按钮始终可用
+
+已完成：
+
+- 刷新按钮在扫描和配额请求期间始终保持 enabled；原生进度指示只表达进行态，不再禁用按钮，也不会拦截按钮命中。
+- 后台继续串行刷新。进行中再次点击只记录一个待执行标记，多次点击合并为当前轮结束后的一轮刷新，不并发扫描或写入 SQLite。
+- 当前刷新完成并加载最新 snapshot/runtime 后才开始合并的下一轮；最终一轮完成后恢复普通图标并显示最终刷新结果。
+
+验证记录：
+
+- 原生 AppKit 测试覆盖 loading 期间按钮仍启用、spinner 不拦截 hit-test、loading 结束恢复图标，以及既有 target/action、hover 和 pressed 行为。
+- Controller 测试确定性阻塞首轮刷新，确认多次前台点击全部被接受、后台没有并发调用且只追加一轮；菜单栏 race 测试通过。
+- 当前 Mac 使用隔离 SQLite、空 Agent home、18083 端口和临时 App bundle 通过真实界面连续点击；两次点击分别产生两轮成功的 Codex 与 Claude Code 增量扫描。测试进程、端口、SQLite、Agent home、App bundle 和 LaunchServices 注册均已清理。
+- `make verify`、菜单栏 race 测试、`go vet ./...` 与 `git diff --check` 通过。独立 Review 发现无并发断言依赖瞬时调度的 P3 测试缺口；改为记录并断言 `maxActive == 1`、聚焦测试连续运行 20 次后复审通过，无剩余 findings。
