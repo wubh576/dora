@@ -28,12 +28,19 @@
 
 @interface NSButton (DoraIconButtonTest)
 - (void)doraTestMouseDown:(NSEvent *)event;
+- (void)doraTestSetEnabled:(BOOL)enabled;
 @end
+
+static NSUInteger doraSetEnabledCallCount;
 
 @implementation NSButton (DoraIconButtonTest)
 - (void)doraTestMouseDown:(NSEvent *)event {
     (void)event;
     [NSApp sendAction:self.action to:self.target from:self];
+}
+- (void)doraTestSetEnabled:(BOOL)enabled {
+    doraSetEnabledCallCount++;
+    [self doraTestSetEnabled:enabled];
 }
 @end
 
@@ -126,15 +133,23 @@ int main(void) {
                        "footer labels are not fixed without overlap")) return 1;
 
         DoraIconButton *refresh = buttons[0];
+        Method setEnabledMethod = class_getInstanceMethod(NSButton.class, @selector(setEnabled:));
+        Method testSetEnabledMethod = class_getInstanceMethod(NSButton.class, @selector(doraTestSetEnabled:));
+        method_exchangeImplementations(setEnabledMethod, testSetEnabledMethod);
+        doraSetEnabledCallCount = 0;
+        [refresh setLoading:YES];
         [refresh setLoading:YES];
         NSProgressIndicator *progress = nil;
         for (NSView *view in refresh.subviews) {
             if ([view isKindOfClass:NSProgressIndicator.class]) progress = (NSProgressIndicator *)view;
         }
-        if (doraAssert(!refresh.enabled && refresh.image == nil && progress != nil && !progress.hidden,
+        if (doraAssert(doraSetEnabledCallCount == 1 && !refresh.enabled && refresh.image == nil &&
+                       progress != nil && !progress.hidden,
                        "refresh loading state did not disable the icon and show progress")) return 1;
         [refresh setLoading:NO];
-        if (doraAssert(refresh.enabled && refresh.image != nil && progress.hidden,
+        [refresh setLoading:NO];
+        method_exchangeImplementations(setEnabledMethod, testSetEnabledMethod);
+        if (doraAssert(doraSetEnabledCallCount == 2 && refresh.enabled && refresh.image != nil && progress.hidden,
                        "refresh loading state did not restore the icon")) return 1;
 
         NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint

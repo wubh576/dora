@@ -47,6 +47,7 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 @property(nonatomic, strong) NSProgressIndicator *doraProgressIndicator;
 @property(nonatomic) BOOL doraHovered;
 @property(nonatomic) BOOL doraPressed;
+@property(nonatomic) BOOL doraLoading;
 - (instancetype)initWithSymbolName:(NSString *)symbolName accessibilityName:(NSString *)accessibilityName
     toolTip:(NSString *)toolTip target:(id)target action:(SEL)action;
 - (void)setLoading:(BOOL)loading;
@@ -117,6 +118,8 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     [self updateAppearance];
 }
 - (void)setLoading:(BOOL)loading {
+    if (self.doraLoading == loading) return;
+    self.doraLoading = loading;
     self.image = loading ? nil : self.doraSymbolImage;
     self.doraProgressIndicator.hidden = !loading;
     if (loading) {
