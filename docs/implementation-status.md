@@ -32,6 +32,7 @@
 | 34. Codex Subagent 授权提醒 | 已完成 | 本次提交 |
 | 35. 真实 Hook Schema 授权关联 | 已完成 | 本次提交 |
 | 36. Bash 授权说明关联兼容 | 已完成 | 本次提交 |
+| 37. 展开面板图标工具栏与设置窗口骨架 | 已完成 | 本次提交 |
 
 ## 里程碑 1：基础运行链路
 
@@ -644,3 +645,18 @@
 - 端到端回归在修复前确认 Bash PostToolUse 到达后 request count 仍为 2；修复后不同 command 分别从 `2 → 1 → 0`，最后恢复父 session 的 running base state。
 - 测试覆盖带/不带 description 的 Bash 关联、固定完整输入指纹、非 Bash description 消歧、相同 command 双候选不误清、Subagent 父 session 聚合和原始 command/description/agent/tool-use 隐私。
 - `make verify`、涉及包的 `go test -race`、`go vet ./...`、`go mod tidy -diff` 与 `git diff --check` 均通过。独立 Review 未发现 P0–P3 问题；若未来 Bash 新增会改变执行身份的字段，需要同步更新关联规则，当前相同 command 的歧义仍会安全保留等待而不会误清。
+
+## 里程碑 37：展开面板图标工具栏与设置窗口骨架
+
+已完成：
+
+- 只轮换展开面板三个角落：原右上计数移到底栏左侧，原左下状态移到底栏右侧，原右下文字操作区改为右上 SF Symbols 图标工具栏并增加设置入口。Token 四列、两行 Codex 配额、Session 起点、高度、行距、滚动和面板尺寸计算保持原 frame。
+- 刷新、仪表盘、设置和退出使用统一的 28 pt 图标按钮，具备 Tooltip、无障碍名称、悬停与按下反馈；刷新期间显示原生进度并禁用重复点击。刷新状态、约 10 秒临时结果、仪表盘收起和 Go 优雅退出链路不变。
+- 设置入口使用普通 `NSWindowController` 管理 640×420 的单实例窗口，关闭后可复用，重复打开只激活已有窗口，应用退出时统一释放。窗口当前只显示“Dora 设置 / 设置项将在后续加入”，没有设置项、配置 API、持久化或 migration。
+
+验证记录：
+
+- 原生 AppKit 测试直接实例化生产 `DoraIslandContentView`，覆盖四个真实按钮的顺序、28 pt frame、target/action、Tooltip、无障碍名称、刷新 spinner、禁用状态及 hover/pressed 视觉；同时锁定 Token、配额、Session 和底栏 frame。设置窗口测试覆盖首次打开、重复打开不复制、关闭、复用和应用退出清理。
+- Go 测试覆盖刷新进行态、四种刷新结果、临时状态到期恢复、waiting/running 计数、compact 布局和退出事件继续调用 `config.Quit`。`make verify`、`go test -race ./internal/menubar ./internal/app ./cmd/dora`、`go vet ./...`、`go mod tidy -diff` 与 `git diff --check` 全部通过。
+- 当前 Mac 使用隔离 SQLite、Agent home、端口和临时 App bundle 完成真实 AppKit 验收：compact 内容保持不变，展开态四图标、固定底栏、滚动 Session、长错误文案和独立设置窗口均正常；设置窗口关闭后可复用且不退出 Dora，退出图标能释放进程和端口。仪表盘图标通过真实原生按钮点击进入 Go Controller，测试代理记录动作后继续调用系统 `open`；目标 loopback URL 由 Controller 回归测试固定。Computer Use 不可靠产生纯 `mouseMoved`，因此没有把合成事件冒充物理 hover 验收；未修改的 pointer monitor 由原生行为测试与状态机测试覆盖。
+- 独立 Code Review 先后发现真实工具栏集成、`mouseDown:` 入口和按压视觉三个窄 P3 测试缺口；全部补成生产视图行为测试后最终复审通过，无剩余 P0/P1/P2/P3。所有隔离服务、18087 端口、临时数据库、App bundle 和 LaunchServices 注册均已清理。

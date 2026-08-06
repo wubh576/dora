@@ -210,6 +210,20 @@ func TestBuildViewDistinguishesSuccessAndErrorStatus(t *testing.T) {
 	}
 }
 
+func TestBuildViewKeepsRefreshingAndCompactSemantics(t *testing.T) {
+	state := &State{Runtime: RuntimeState{WaitingCount: 2, RunningCount: 3}}
+	compact := BuildView(state, MachineState{Mode: ModeCompact}, testScreen(), time.Now(), true, "")
+	if compact.Expanded || compact.CompactSummary != "Dora" || compact.CompactStatus != "5" ||
+		compact.Status != "正在刷新数据…" || !compact.Refreshing {
+		t.Fatalf("刷新状态改变了 compact 或状态语义: %+v", compact)
+	}
+	expanded := BuildView(state, MachineState{Mode: ModeHover}, testScreen(), time.Now(), true, "")
+	if !expanded.Expanded || expanded.Layout.Frame.Width != 760 || expanded.Layout.Frame.Height != 244 ||
+		expanded.WaitingCount != 2 || expanded.RunningCount != 3 {
+		t.Fatalf("刷新状态改变了展开布局或计数: %+v", expanded)
+	}
+}
+
 func testScreen() ScreenMetrics {
 	return ScreenMetrics{
 		Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947},

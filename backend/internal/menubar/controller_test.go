@@ -313,6 +313,50 @@ func TestControllerSuccessfulRefreshPreservesNewAttention(t *testing.T) {
 	}
 }
 
+func TestControllerOperationStatusExpiresBackToSnapshotStatus(t *testing.T) {
+	now := time.Date(2026, 8, 5, 13, 45, 0, 0, time.Local)
+	lastScan := now.Format(time.RFC3339Nano)
+	presented := make(chan View, 4)
+	controller := NewController(&fakeLoader{}, fakeRefresher{}, "", func(view View) { presented <- view })
+	controller.now = func() time.Time { return now }
+	controller.mu.Lock()
+	controller.last = &State{Snapshot: Snapshot{Usage: SnapshotUsage{LastScanAt: &lastScan}}}
+	controller.mu.Unlock()
+
+	controller.PresentStatus("刷新完成")
+	temporary := <-presented
+	if temporary.Status != "刷新完成" || temporary.OperationStatus != "刷新完成" {
+		t.Fatalf("临时刷新状态错误: %+v", temporary)
+	}
+	now = now.Add(operationStatusTTL)
+	controller.publish()
+	restored := <-presented
+	if restored.Status != "已更新 · 13:45" || restored.OperationStatus != "" || restored.OperationError {
+		t.Fatalf("临时状态到期后未恢复快照状态: %+v", restored)
+	}
+}
+
+func TestRefreshStatusPreservesExistingResultCopy(t *testing.T) {
+	failure := errors.New("offline")
+	tests := []struct {
+		name               string
+		usageErr, quotaErr error
+		want               string
+	}{
+		{name: "success", want: "刷新完成"},
+		{name: "quota failure", quotaErr: failure, want: "token 已更新，配额刷新失败"},
+		{name: "token failure", usageErr: failure, want: "token 刷新失败"},
+		{name: "complete failure", usageErr: failure, quotaErr: failure, want: "token 与配额刷新失败"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := refreshStatus(test.usageErr, test.quotaErr); got != test.want {
+				t.Fatalf("refreshStatus() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestControllerOpenDashboardUsesConfiguredLoopbackURLAndDismissesClick(t *testing.T) {
 	runner := &recordingRunner{}
 	controller := NewController(&fakeLoader{}, fakeRefresher{}, "http://127.0.0.1:18083", func(View) {})

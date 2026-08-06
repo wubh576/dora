@@ -1096,19 +1096,19 @@ Codex / Claude files ──→ 单个 dora menubar 进程
 - Go 菜单栏事件循环必须先等待 AppKit 发布第一份真实 `ScreenMetrics`，通过 `SetScreen` 发布正确尺寸的连接态后才能首次加载 snapshot/runtime；不能让 Controller 默认屏幕参数覆盖 AppKit 已按真实 `NSScreen` 创建的初始 panel。首次门控完成后继续按 screen 事件更新主屏布局，数据加载不能因后续切屏重复执行。
 - 内容视图保留 `NSTrackingArea` 作为进入/离开主路径，local 与 global `NSEvent` mouse monitor 覆盖 Dora 自身和其他应用中的鼠标移动/拖动；首次显示、非动画 frame 应用和 frame 动画完成后单次采样真实 `NSEvent.mouseLocation`。鼠标静止时没有固定频率的位置轮询，inside 状态不变时不通知 Go。配合 100 ms hover intent，进入紧凑条后约 100–150 ms 展开；展开后只要鼠标仍在整个 panel 内就保持展开，离开约 450 ms 后才尝试收起，并在延迟到期时再次复查鼠标位置。
 - hover、attention 和面板内 interaction 是可同时存在的展开原因；新 attention 高亮对应会话约 6 秒，倒计时结束时只要鼠标仍在 panel 内就继续展开。
-- 展开态展示今日 / 近 7 日 / 近 30 日 / 全部 token、Codex 5h/7d quota、状态、waiting/running 会话、刷新、仪表盘和退出。
-- waiting 始终排在 running 之前；中部会话列表独立滚动，固定头部和底部操作不滚动，无水平滚动。
+- 展开态中间信息区保持今日 / 近 7 日 / 近 30 日 / 全部 token、Codex 5h/7d quota 和 waiting/running 会话的固定顺序与间距。右上角使用 SF Symbols 图标工具栏，依次提供刷新、仪表盘、设置和退出；底栏左侧显示 waiting/running 计数，右侧显示快照状态或临时操作结果。
+- waiting 始终排在 running 之前；中部会话列表独立滚动，固定头部和底栏不滚动，无水平滚动。底栏两侧 frame 互不重叠，长状态尾部截断并通过 Tooltip 提供全文。
 - 点击会话后在跳转结果返回前保持展开；失败或不可跳转时在底部显示脱敏原因，点击仍不解决 waiting。
 - 不创建 `NSStatusItem`、状态栏图标占位或 Dock 图标；panel 不抢应用焦点，只有精确跳转成功时目标 App/终端被激活。
 
-当前灵动岛使用统一 snapshot 展示 Codex + Claude Code 用量，并单独展示 Codex 5h/7d quota。它不实现复杂趋势图、项目表格或设置页面。
+当前灵动岛使用统一 snapshot 展示 Codex + Claude Code 用量，并单独展示 Codex 5h/7d quota。设置入口打开单实例、可重复显示的普通 AppKit 窗口；当前窗口只有空状态，没有设置模型、配置持久化或真实设置项，也不实现复杂趋势图和项目表格。
 
 ### 20.2 刷新
 
 - 启动与每分钟读取 snapshot；每秒只读取一次统一 `/runtime`，不再分别轮询 running 与 attention。扫描与配额后台周期仍由共享 runtime 统一管理。
 - 每秒 runtime 更新只复用并更新稳定 session ID 对应的已有行，保留 tracking area 与滚动位置；相同目标 frame 不启动动画，也不重复 `orderFrontRegardless`。
 - 手动刷新在后台 goroutine 中先扫描 token，再按用户授权刷新配额，不能并发触发，也不能阻塞 AppKit 事件循环。
-- 点击刷新后只要鼠标仍在控制条内就保持展开，在后台工作期间显示刷新进度并直接展示更新结果；刷新本身不是强制展开理由，鼠标离开整个区域后即按统一的 450 ms 延迟收起，不等待扫描或配额请求结束。
+- 点击刷新后只要鼠标仍在控制条内就保持展开，图标替换为原生进度指示并禁止重复点击，底栏右侧继续直接展示刷新进度和结果；刷新本身不是强制展开理由，鼠标离开整个区域后即按统一的 450 ms 延迟收起，不等待扫描或配额请求结束。
 - AppKit 控件可能在 `mouseDown` 的 tracking loop 内消费 `mouseUp`；面板交互必须从分发 `mouseDown` 前持续到该分发返回后，不能只依赖后续独立 `mouseUp` 结束，否则刷新等不主动 dismiss 的动作会永久残留 interaction 展开理由。独立 `mouseUp` 仍作为兜底结束事件。
 - 配额刷新失败不能回滚新的 token 数据；刷新结束后重新读取 snapshot。
 - 灵动岛复用 loopback API DTO，不自行解析文件、查询 SQLite 或实现另一套统计。

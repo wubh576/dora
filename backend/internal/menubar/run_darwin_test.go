@@ -186,6 +186,33 @@ func TestRunIslandEventsPreservesQueuedEventsUntilFirstScreen(t *testing.T) {
 	}
 }
 
+func TestRunIslandEventsQuitUsesConfiguredGracefulPath(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	controller := NewController(&startupLoader{}, fakeRefresher{}, "", func(View) {})
+	events := &bridgeEvents{interaction: make(chan bridgeEvent, 1), screen: make(chan ScreenMetrics, 1)}
+	events.screen <- ScreenMetrics{Frame: Rect{Width: 1512, Height: 982}, Visible: Rect{Width: 1512, Height: 947}}
+	events.interaction <- bridgeEvent{kind: 5}
+	quitCalled := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		runIslandEvents(ctx, controller, Config{Quit: func() { quitCalled <- struct{}{} }}, events)
+		close(done)
+	}()
+
+	select {
+	case <-quitCalled:
+	case <-time.After(time.Second):
+		t.Fatal("退出图标事件未调用 config.Quit")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("退出图标事件未结束菜单事件循环")
+	}
+	controller.Stop()
+}
+
 func receiveIslandView(t *testing.T, views <-chan View, match func(View) bool) View {
 	t.Helper()
 	deadline := time.After(time.Second)
