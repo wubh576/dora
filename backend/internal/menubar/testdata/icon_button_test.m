@@ -1,5 +1,4 @@
 #import <Cocoa/Cocoa.h>
-#import <objc/runtime.h>
 
 @interface DoraIconButton : NSButton
 - (void)setLoading:(BOOL)loading;
@@ -9,37 +8,24 @@
 - (instancetype)initWithFrame:(NSRect)frame actionTarget:(id)actionTarget;
 @end
 
-@interface DoraToolbarActionTarget : NSObject
-@property(nonatomic) BOOL refreshActionCalled;
-@property(nonatomic) BOOL refreshPressedDuringAction;
-@property(nonatomic) CGFloat refreshPressedBackgroundAlpha;
+@interface DoraIslandPanel : NSPanel
 @end
 
-@implementation DoraToolbarActionTarget
-- (void)doraRefresh:(id)sender {
-    self.refreshActionCalled = YES;
-    self.refreshPressedDuringAction = [[[sender valueForKey:@"doraPressed"] description] boolValue];
-    self.refreshPressedBackgroundAlpha = CGColorGetAlpha(((NSButton *)sender).layer.backgroundColor);
-}
-- (void)doraOpen:(id)sender { (void)sender; }
-- (void)doraSettings:(id)sender { (void)sender; }
-- (void)doraQuit:(id)sender { (void)sender; }
-@end
-
-@interface NSButton (DoraIconButtonTest)
-- (void)doraTestMouseDown:(NSEvent *)event;
-@end
-
-@implementation NSButton (DoraIconButtonTest)
-- (void)doraTestMouseDown:(NSEvent *)event {
-    (void)event;
-    [NSApp sendAction:self.action to:self.target from:self];
-}
-@end
+static NSMutableArray<NSNumber *> *doraEventKinds;
+static NSButton *doraObservedRefreshButton;
+static NSInteger doraRefreshActionCount;
+static BOOL doraPressedDuringRefreshAction;
+static CGFloat doraPressedBackgroundAlpha;
+static NSInteger doraNextEventNumber;
 
 void doraIslandOnEvent(int kind, long long value) {
-    (void)kind;
     (void)value;
+    [doraEventKinds addObject:@(kind)];
+    if (kind != 3) return;
+    doraRefreshActionCount++;
+    doraPressedDuringRefreshAction =
+        [[[doraObservedRefreshButton valueForKey:@"doraPressed"] description] boolValue];
+    doraPressedBackgroundAlpha = CGColorGetAlpha(doraObservedRefreshButton.layer.backgroundColor);
 }
 
 void doraIslandOnScreen(double x, double y, double width, double height,
@@ -68,19 +54,34 @@ static BOOL doraRectEqual(NSRect actual, NSRect expected) {
     return NSEqualRects(actual, expected);
 }
 
+static NSEvent *doraMouseEvent(DoraIslandPanel *panel, NSEventType type, NSPoint location) {
+    doraNextEventNumber++;
+    return [NSEvent mouseEventWithType:type location:location modifierFlags:0
+        timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:panel.windowNumber
+        context:nil eventNumber:doraNextEventNumber clickCount:1 pressure:type == NSEventTypeLeftMouseDown ? 1 : 0];
+}
+
+static void doraClick(DoraIslandPanel *panel, NSPoint location) {
+    NSEvent *mouseUp = doraMouseEvent(panel, NSEventTypeLeftMouseUp, location);
+    [NSApp postEvent:mouseUp atStart:YES];
+    [panel sendEvent:doraMouseEvent(panel, NSEventTypeLeftMouseDown, location)];
+}
+
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
-        DoraToolbarActionTarget *target = [[DoraToolbarActionTarget alloc] init];
+        DoraIslandPanel *panel = [[DoraIslandPanel alloc]
+            initWithContentRect:NSMakeRect(0, 0, 760, 244)
+            styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+            backing:NSBackingStoreBuffered defer:NO];
         DoraIslandContentView *content = [[DoraIslandContentView alloc]
-            initWithFrame:NSMakeRect(0, 0, 760, 244) actionTarget:target];
-        NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 760, 244)
-            styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
-        window.contentView = content;
+            initWithFrame:NSMakeRect(0, 0, 760, 244) actionTarget:panel];
+        panel.contentView = content;
         [content setNeedsLayout:YES];
         [content layoutSubtreeIfNeeded];
 
         NSView *expandedView = [content valueForKey:@"expandedView"];
+        expandedView.hidden = NO;
         NSArray<DoraIconButton *> *buttons = @[
             [content valueForKey:@"refreshButton"],
             [content valueForKey:@"openButton"],
@@ -103,7 +104,7 @@ int main(void) {
             if (doraAssert([button.toolTip isEqualToString:name], "icon button tooltip is wrong")) return 1;
             if (doraAssert([[button accessibilityLabel] isEqualToString:name],
                            "icon button accessibility label is wrong")) return 1;
-            if (doraAssert(button.target == target, "icon button target is wrong")) return 1;
+            if (doraAssert(button.target == panel, "icon button target is not the real panel")) return 1;
             if (doraAssert(button.action == NSSelectorFromString(actions[index]),
                            "icon button action is wrong")) return 1;
             if (doraAssert(doraRectEqual(button.frame, frames[index].rectValue),
@@ -129,7 +130,30 @@ int main(void) {
                        "footer labels are not fixed without overlap")) return 1;
 
         DoraIconButton *refresh = buttons[0];
-        expandedView.hidden = NO;
+        doraObservedRefreshButton = refresh;
+        doraEventKinds = [NSMutableArray array];
+        [panel orderFrontRegardless];
+        [refresh updateTrackingAreas];
+        NSPoint refreshCenter = NSMakePoint(NSMidX(refresh.frame), NSMidY(refresh.frame));
+
+        NSEvent *hoverEvent = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
+            modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
+        [refresh mouseEntered:hoverEvent];
+        CGFloat hoverAlpha = CGColorGetAlpha(refresh.layer.backgroundColor);
+        if (doraAssert(hoverAlpha > 0, "icon button hover background was not shown")) return 1;
+        [refresh mouseExited:hoverEvent];
+        if (doraAssert(CGColorGetAlpha(refresh.layer.backgroundColor) == 0,
+                       "icon button hover background was not cleared")) return 1;
+
+        doraClick(panel, refreshCenter);
+        if (doraAssert(doraRefreshActionCount == 1 &&
+                       [doraEventKinds isEqualToArray:@[@7, @3, @8]],
+                       "real panel click did not produce one refresh bridge action")) return 1;
+        if (doraAssert(doraPressedDuringRefreshAction && doraPressedBackgroundAlpha > hoverAlpha,
+                       "real panel click did not preserve pressed feedback during action")) return 1;
+
+        [refresh setLoading:YES];
+        NSTrackingArea *loadingTrackingArea = [refresh valueForKey:@"doraTrackingArea"];
         [refresh setLoading:YES];
         NSProgressIndicator *progress = nil;
         for (NSView *view in refresh.subviews) {
@@ -137,34 +161,37 @@ int main(void) {
         }
         if (doraAssert(refresh.enabled && refresh.image == nil && progress != nil && !progress.hidden,
                        "refresh loading state disabled the button or hid progress")) return 1;
-        NSView *refreshHit = [refresh hitTest:NSMakePoint(NSMidX(refresh.frame), NSMidY(refresh.frame))];
-        if (doraAssert(refreshHit == refresh, "refresh progress indicator intercepted the button click")) return 1;
+        if (doraAssert([refresh valueForKey:@"doraTrackingArea"] == loadingTrackingArea,
+                       "idempotent loading update replaced the tracking area")) return 1;
+        if (doraAssert([refresh hitTest:refreshCenter] == refresh,
+                       "refresh progress indicator intercepted panel hit-testing")) return 1;
+        [doraEventKinds removeAllObjects];
+        for (NSInteger click = 0; click < 5; click++) doraClick(panel, refreshCenter);
+        if (doraAssert(doraRefreshActionCount == 1 && doraEventKinds.count == 10,
+                       "repeated loading clicks produced another bridge action")) return 1;
+        for (NSUInteger index = 0; index < doraEventKinds.count; index += 2) {
+            if (doraAssert([doraEventKinds[index] isEqualToNumber:@7] &&
+                           [doraEventKinds[index + 1] isEqualToNumber:@8],
+                           "loading click bypassed the real panel event boundary")) return 1;
+        }
+
         [refresh setLoading:NO];
+        NSTrackingArea *normalTrackingArea = [refresh valueForKey:@"doraTrackingArea"];
         [refresh setLoading:NO];
         if (doraAssert(refresh.enabled && refresh.image != nil && progress.hidden,
                        "refresh loading state did not restore the icon")) return 1;
+        if (doraAssert([refresh valueForKey:@"doraTrackingArea"] == normalTrackingArea,
+                       "loading recovery replaced the tracking area")) return 1;
+        [doraEventKinds removeAllObjects];
+        doraClick(panel, refreshCenter);
+        if (doraAssert(doraRefreshActionCount == 2 &&
+                       [doraEventKinds isEqualToArray:@[@7, @3, @8]],
+                       "refresh did not accept a new click after loading completed")) return 1;
 
-        NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint
-            modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
-        [refresh mouseEntered:event];
-        CGFloat hoverAlpha = CGColorGetAlpha(refresh.layer.backgroundColor);
-        if (doraAssert(hoverAlpha > 0,
-                       "icon button hover background was not shown")) return 1;
-        [refresh mouseExited:event];
-        if (doraAssert(CGColorGetAlpha(refresh.layer.backgroundColor) == 0,
-                       "icon button hover background was not cleared")) return 1;
-
-        Method mouseDownMethod = class_getInstanceMethod(NSButton.class, @selector(mouseDown:));
-        Method testMouseDownMethod = class_getInstanceMethod(NSButton.class, @selector(doraTestMouseDown:));
-        method_exchangeImplementations(mouseDownMethod, testMouseDownMethod);
-        [refresh mouseDown:event];
-        method_exchangeImplementations(mouseDownMethod, testMouseDownMethod);
-        if (doraAssert(target.refreshActionCalled && target.refreshPressedDuringAction &&
-                       target.refreshPressedBackgroundAlpha > hoverAlpha,
-                       "mouseDown did not expose pressed feedback while AppKit dispatched the action")) return 1;
-        if (doraAssert(![[refresh valueForKey:@"doraPressed"] boolValue] &&
-                       CGColorGetAlpha(refresh.layer.backgroundColor) == 0,
-                       "pressed feedback was not reset after mouseDown returned")) return 1;
+        [panel orderOut:nil];
+        [panel close];
+        doraObservedRefreshButton = nil;
+        doraEventKinds = nil;
     }
     return 0;
 }

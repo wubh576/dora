@@ -512,7 +512,10 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
         ^{ [self doraDispatchEventToAppKit:event]; },
         ^{ doraIslandOnEvent(8, 0); });
 }
-- (void)doraRefresh:(id)sender { doraIslandOnEvent(3, 0); }
+- (void)doraRefresh:(DoraIconButton *)sender {
+    if (sender.doraLoading) return;
+    doraIslandOnEvent(3, 0);
+}
 - (void)doraOpen:(id)sender { doraIslandOnEvent(4, 0); }
 - (void)doraSettings:(id)sender { DoraShowSettingsWindow(); }
 - (void)doraQuit:(id)sender { doraIslandOnEvent(5, 0); }

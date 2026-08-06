@@ -46,7 +46,6 @@ type Controller struct {
 	loadVersion     uint64
 	runtimeVersion  uint64
 	refreshing      bool
-	refreshPending  bool
 	jumping         bool
 	operationStatus string
 	operationUntil  time.Time
@@ -176,24 +175,10 @@ func (controller *Controller) LoadRuntimeAsync(ctx context.Context) bool {
 
 func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 	controller.mu.Lock()
-	if controller.stopped {
+	if controller.refreshing || controller.stopped {
 		controller.mu.Unlock()
 		return false
 	}
-	if controller.refreshing {
-		controller.refreshPending = true
-		controller.mu.Unlock()
-		return true
-	}
-	loadVersion, runtimeVersion := controller.beginRefreshLocked()
-	controller.mu.Unlock()
-	// 刷新只更新数据，面板是否展开继续由鼠标和当前交互决定。
-	controller.publish()
-	go controller.refreshLoop(ctx, loadVersion, runtimeVersion)
-	return true
-}
-
-func (controller *Controller) beginRefreshLocked() (uint64, uint64) {
 	controller.refreshing = true
 	controller.loading = false
 	controller.loadVersion++
@@ -202,11 +187,10 @@ func (controller *Controller) beginRefreshLocked() (uint64, uint64) {
 	runtimeVersion := controller.runtimeVersion
 	controller.operationStatus = ""
 	controller.operationUntil = time.Time{}
-	return loadVersion, runtimeVersion
-}
-
-func (controller *Controller) refreshLoop(ctx context.Context, loadVersion, runtimeVersion uint64) {
-	for {
+	controller.mu.Unlock()
+	// 刷新只更新数据，面板是否展开继续由鼠标和当前交互决定。
+	controller.publish()
+	go func() {
 		usageErr, quotaErr := controller.refresher.Refresh(ctx)
 		state, loadErr := controller.loader.Load(ctx)
 		runtimeState, runtimeErr := controller.loader.LoadRuntime(ctx)
@@ -215,6 +199,7 @@ func (controller *Controller) refreshLoop(ctx context.Context, loadVersion, runt
 			controller.mu.Unlock()
 			return
 		}
+		controller.refreshing = false
 		if loadErr == nil {
 			if runtimeVersion == controller.runtimeVersion {
 				if runtimeErr == nil {
@@ -238,18 +223,10 @@ func (controller *Controller) refreshLoop(ctx context.Context, loadVersion, runt
 			status = "实时状态连接失败"
 		}
 		controller.setStatusLocked(status)
-		if controller.refreshPending {
-			controller.refreshPending = false
-			loadVersion, runtimeVersion = controller.beginRefreshLocked()
-			controller.mu.Unlock()
-			controller.publish()
-			continue
-		}
-		controller.refreshing = false
 		controller.mu.Unlock()
 		controller.publish()
-		return
-	}
+	}()
+	return true
 }
 
 func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID int64) bool {

@@ -675,3 +675,17 @@
 - Controller 测试确定性阻塞首轮刷新，确认多次前台点击全部被接受、后台没有并发调用且只追加一轮；菜单栏 race 测试通过。
 - 当前 Mac 使用隔离 SQLite、空 Agent home、18083 端口和临时 App bundle 通过真实界面连续点击；两次点击分别产生两轮成功的 Codex 与 Claude Code 增量扫描。测试进程、端口、SQLite、Agent home、App bundle 和 LaunchServices 注册均已清理。
 - `make verify`、菜单栏 race 测试、`go vet ./...` 与 `git diff --check` 通过。独立 Review 发现无并发断言依赖瞬时调度的 P3 测试缺口；改为记录并断言 `maxActive == 1`、聚焦测试连续运行 20 次后复审通过，无剩余 findings。
+
+## 里程碑 39：恢复单次刷新语义与真实 Panel 点击测试
+
+已完成：
+
+- 删除 `refreshPending` 和串行补刷新逻辑。空闲点击启动一轮完整刷新；刷新中任意次数的重复点击直接返回 `false`，不排队、不追加扫描或配额请求；当前轮完成后的新点击才能启动下一轮。
+- 刷新按钮继续保持 enabled 和 spinner 反馈。`DoraIslandPanel` 在按钮 loading 时消费点击但不发送第二个 kind 3 bridge 事件，Controller 的 single-flight 检查保留为最终并发边界。
+- loading 状态更新继续幂等；相同状态重复渲染不替换按钮 tracking area。Token、配额、Session、工具栏和底栏 frame 均未改变。
+
+验证记录：
+
+- Controller 使用可控阻塞 Refresher 验证首轮扫描/配额各一次、刷新中连续五次调用均返回 `false`、完成后没有自动补刷新，以及完成后的新点击可以启动第二轮；测试不依赖 sleep 推测时序。
+- 原生测试使用真实 `DoraIslandPanel`，向 Panel 分发构造的 mouse-down/mouse-up，经 AppKit hit-testing、真实刷新按钮和 Panel action 到达 kind 3 bridge 回调；验证一次完整点击只回调一次、loading 连续五次点击不回调、恢复普通图标后可以再次点击，并在结束时关闭 Panel。
+- `make verify`、菜单栏/App/命令入口 race 测试、`go vet ./...` 与 `git diff --check` 通过。独立 Review 复核 single-flight、竞态边界、原生事件链、loading 幂等和布局断言，无 P0/P1/P2/P3 findings。

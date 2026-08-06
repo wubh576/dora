@@ -98,19 +98,22 @@ type successfulBlockingRefresher struct {
 	release chan struct{}
 }
 
-type queuedRefresher struct {
-	mu        sync.Mutex
-	calls     int
-	active    int
-	maxActive int
-	started   chan int
-	releases  []chan struct{}
+type controlledRefresher struct {
+	mu         sync.Mutex
+	calls      int
+	scanCalls  int
+	quotaCalls int
+	active     int
+	maxActive  int
+	started    chan int
+	releases   []chan struct{}
 }
 
-func (refresher *queuedRefresher) Refresh(context.Context) (error, error) {
+func (refresher *controlledRefresher) Refresh(context.Context) (error, error) {
 	refresher.mu.Lock()
 	call := refresher.calls
 	refresher.calls++
+	refresher.scanCalls++
 	refresher.active++
 	refresher.maxActive = max(refresher.maxActive, refresher.active)
 	release := refresher.releases[call]
@@ -118,21 +121,16 @@ func (refresher *queuedRefresher) Refresh(context.Context) (error, error) {
 	refresher.started <- call + 1
 	<-release
 	refresher.mu.Lock()
+	refresher.quotaCalls++
 	refresher.active--
 	refresher.mu.Unlock()
 	return nil, nil
 }
 
-func (refresher *queuedRefresher) callCount() int {
+func (refresher *controlledRefresher) counts() (calls, scans, quotas, maximumActive int) {
 	refresher.mu.Lock()
 	defer refresher.mu.Unlock()
-	return refresher.calls
-}
-
-func (refresher *queuedRefresher) maximumActive() int {
-	refresher.mu.Lock()
-	defer refresher.mu.Unlock()
-	return refresher.maxActive
+	return refresher.calls, refresher.scanCalls, refresher.quotaCalls, refresher.maxActive
 }
 
 func (refresher *successfulBlockingRefresher) Refresh(context.Context) (error, error) {
@@ -275,53 +273,64 @@ func TestControllerRefreshKeepsPartialSuccessAndCollapses(t *testing.T) {
 	}
 }
 
-func TestControllerRefreshQueuesOneFollowUpWithoutConcurrency(t *testing.T) {
+func TestControllerRefreshIsSingleFlightAndCanStartAgainAfterCompletion(t *testing.T) {
 	firstRelease := make(chan struct{})
 	secondRelease := make(chan struct{})
-	refresher := &queuedRefresher{
+	refresher := &controlledRefresher{
 		started:  make(chan int, 2),
 		releases: []chan struct{}{firstRelease, secondRelease},
 	}
 	presented := make(chan View, 16)
 	controller := NewController(&fakeLoader{}, refresher, "", func(view View) { presented <- view })
+	waitForCompletion := func() {
+		t.Helper()
+		deadline := time.After(time.Second)
+		for {
+			select {
+			case view := <-presented:
+				if !view.Refreshing && view.OperationStatus == "刷新完成" {
+					return
+				}
+			case <-deadline:
+				t.Fatal("刷新完成状态未发布")
+			}
+		}
+	}
+
 	if !controller.RefreshAsync(context.Background()) {
 		t.Fatal("首次 refresh 未启动")
 	}
 	if call := <-refresher.started; call != 1 {
 		t.Fatalf("首次 refresh 调用序号 = %d", call)
 	}
-	if !controller.RefreshAsync(context.Background()) || !controller.RefreshAsync(context.Background()) {
-		t.Fatal("刷新中的重复点击未被接受")
+	for click := 0; click < 5; click++ {
+		if controller.RefreshAsync(context.Background()) {
+			t.Fatalf("刷新中的第 %d 次重复点击被错误接受", click+1)
+		}
+	}
+	if calls, scans, quotas, maximum := refresher.counts(); calls != 1 || scans != 1 || quotas != 0 || maximum != 1 {
+		t.Fatalf("首轮阻塞期间调用次数错误: calls=%d scans=%d quotas=%d max_active=%d", calls, scans, quotas, maximum)
 	}
 	close(firstRelease)
-	select {
-	case call := <-refresher.started:
-		if call != 2 {
-			t.Fatalf("待执行 refresh 调用序号 = %d", call)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("当前刷新完成后未执行合并的下一轮刷新")
+	waitForCompletion()
+	if calls, scans, quotas, maximum := refresher.counts(); calls != 1 || scans != 1 || quotas != 1 || maximum != 1 {
+		t.Fatalf("重复点击产生了额外刷新: calls=%d scans=%d quotas=%d max_active=%d", calls, scans, quotas, maximum)
 	}
-	if calls := refresher.callCount(); calls != 2 {
-		t.Fatalf("重复点击未合并为一轮刷新: calls=%d", calls)
+
+	if !controller.RefreshAsync(context.Background()) {
+		t.Fatal("首轮完成后的新点击未启动第二轮 refresh")
+	}
+	if call := <-refresher.started; call != 2 {
+		t.Fatalf("第二轮 refresh 调用序号 = %d", call)
 	}
 	close(secondRelease)
-	deadline := time.After(time.Second)
-	for {
-		select {
-		case view := <-presented:
-			if !view.Refreshing && view.OperationStatus == "刷新完成" {
-				if calls := refresher.callCount(); calls != 2 {
-					t.Fatalf("刷新结束后出现额外调用: calls=%d", calls)
-				}
-				if maximum := refresher.maximumActive(); maximum != 1 {
-					t.Fatalf("刷新发生并发调用: max_active=%d", maximum)
-				}
-				return
-			}
-		case <-deadline:
-			t.Fatal("合并刷新完成状态未发布")
-		}
+	waitForCompletion()
+	if calls, scans, quotas, maximum := refresher.counts(); calls != 2 || scans != 2 || quotas != 2 || maximum != 1 {
+		t.Fatalf("第二轮刷新调用次数错误: calls=%d scans=%d quotas=%d max_active=%d", calls, scans, quotas, maximum)
+	}
+	controller.Stop()
+	if controller.RefreshAsync(context.Background()) {
+		t.Fatal("Controller 停止后仍接受 refresh")
 	}
 }
 
