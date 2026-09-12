@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/wubh576/dora/backend/internal/scan"
 	"github.com/wubh576/dora/backend/internal/settings"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
+	"github.com/wubh576/dora/backend/internal/workbuddyhooks"
 )
 
 const (
@@ -55,6 +57,7 @@ type Config struct {
 	CodexHomes    []string
 	ClaudeHomes   []string
 	ClaudeEnabled bool
+	WorkBuddyHome string
 	StaticFS      fs.FS
 	ScanInterval  time.Duration
 	Logger        Logger
@@ -65,24 +68,26 @@ type Config struct {
 
 // Runtime 统一持有 HTTP、SQLite、扫描器和配额服务，serve 与 menubar 共用它。
 type Runtime struct {
-	address        string
-	initializedAt  time.Time
-	server         *http.Server
-	listener       net.Listener
-	store          *dorasqlite.Store
-	scanner        *scan.Scanner
-	quota          *quota.Service
-	jump           *jump.Service
-	threadTitles   *codex.ThreadTitleReader
-	logger         Logger
-	ctx            context.Context
-	cancel         context.CancelFunc
-	errors         chan error
-	wg             sync.WaitGroup
-	closeOnce      sync.Once
-	attentionOnce  sync.Once
-	titleErrorOnce sync.Once
-	closeErr       error
+	address                 string
+	initializedAt           time.Time
+	server                  *http.Server
+	listener                net.Listener
+	store                   *dorasqlite.Store
+	scanner                 *scan.Scanner
+	quota                   *quota.Service
+	jump                    *jump.Service
+	threadTitles            *codex.ThreadTitleReader
+	workBuddyTitles         *workbuddyhooks.TitleReader
+	logger                  Logger
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	errors                  chan error
+	wg                      sync.WaitGroup
+	closeOnce               sync.Once
+	attentionOnce           sync.Once
+	titleErrorOnce          sync.Once
+	workBuddyTitleErrorOnce sync.Once
+	closeErr                error
 }
 
 func Start(parent context.Context, config Config) (*Runtime, error) {
@@ -114,9 +119,21 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		config.Logger.Printf("Codex 任务标题读取不可用；运行列表将回退为项目名")
 		threadTitles = nil
 	}
+	if config.WorkBuddyHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			cancel()
+			_ = threadTitles.Close()
+			_ = store.Close()
+			return nil, err
+		}
+		config.WorkBuddyHome = filepath.Join(home, ".workbuddy")
+	}
+	workBuddyTitles := workbuddyhooks.NewTitleReader(config.WorkBuddyHome)
 	cleanup := func() {
 		cancel()
 		_ = threadTitles.Close()
+		_ = workBuddyTitles.Close()
 		_ = store.Close()
 	}
 
@@ -186,19 +203,20 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	runtime := &Runtime{
-		address:       actualAddress,
-		initializedAt: initializedAt,
-		server:        server,
-		listener:      listener,
-		store:         store,
-		scanner:       scanner,
-		quota:         quotaService,
-		jump:          jump.New(jumpRunner),
-		threadTitles:  threadTitles,
-		logger:        config.Logger,
-		ctx:           ctx,
-		cancel:        cancel,
-		errors:        make(chan error, 1),
+		address:         actualAddress,
+		initializedAt:   initializedAt,
+		server:          server,
+		listener:        listener,
+		store:           store,
+		scanner:         scanner,
+		quota:           quotaService,
+		jump:            jump.New(jumpRunner),
+		threadTitles:    threadTitles,
+		workBuddyTitles: workBuddyTitles,
+		logger:          config.Logger,
+		ctx:             ctx,
+		cancel:          cancel,
+		errors:          make(chan error, 1),
 	}
 
 	if config.LogRotator != nil {
@@ -209,10 +227,8 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 	go runtime.scanLoop(ctx, config.ScanInterval)
 	go runtime.quotaLoop(ctx, config.ScanInterval)
 	go runtime.staleReconciliationLoop(ctx)
-	if threadTitles != nil {
-		runtime.wg.Add(1)
-		go runtime.threadTitleLoop(ctx)
-	}
+	runtime.wg.Add(1)
+	go runtime.threadTitleLoop(ctx)
 	if config.LogRotator != nil {
 		runtime.wg.Add(1)
 		go runtime.logRotationLoop(ctx, config.LogRotator)
@@ -292,7 +308,7 @@ func (r *Runtime) Close() error {
 		defer cancel()
 		shutdownErr := r.server.Shutdown(shutdownCtx)
 		r.wg.Wait()
-		r.closeErr = errors.Join(shutdownErr, r.threadTitles.Close(), r.store.Close())
+		r.closeErr = errors.Join(shutdownErr, r.threadTitles.Close(), r.workBuddyTitles.Close(), r.store.Close())
 	})
 	return r.closeErr
 }
@@ -394,9 +410,16 @@ func (r *Runtime) threadTitleLoop(ctx context.Context) {
 	ticker := time.NewTicker(threadTitleInterval)
 	defer ticker.Stop()
 	for {
-		if err := syncRuntimeSessionTitles(ctx, r.store, r.threadTitles); err != nil && !backgroundStopped(ctx, err) {
-			r.titleErrorOnce.Do(func() {
-				r.logger.Printf("Codex 任务标题同步失败；运行列表将使用缓存标题或项目名")
+		if r.threadTitles != nil {
+			if err := syncRuntimeSessionTitles(ctx, r.store, r.threadTitles, domain.CodexSource); err != nil && !backgroundStopped(ctx, err) {
+				r.titleErrorOnce.Do(func() {
+					r.logger.Printf("Codex 任务标题同步失败；运行列表将使用缓存标题或项目名")
+				})
+			}
+		}
+		if err := syncRuntimeSessionTitles(ctx, r.store, r.workBuddyTitles, domain.WorkBuddySource); err != nil && !backgroundStopped(ctx, err) {
+			r.workBuddyTitleErrorOnce.Do(func() {
+				r.logger.Printf("WorkBuddy 任务标题同步失败；运行列表将使用缓存标题或项目名")
 			})
 		}
 		select {
@@ -407,14 +430,14 @@ func (r *Runtime) threadTitleLoop(ctx context.Context) {
 	}
 }
 
-func syncRuntimeSessionTitles(ctx context.Context, store *dorasqlite.Store, source threadTitleSource) error {
+func syncRuntimeSessionTitles(ctx context.Context, store *dorasqlite.Store, source threadTitleSource, provider string) error {
 	active, err := store.RuntimeSessions(ctx)
 	if err != nil {
 		return err
 	}
 	sessionIDs := make([]string, 0, len(active))
 	for _, item := range active {
-		if item.Session.Provider != domain.CodexSource {
+		if item.Session.Provider != provider {
 			continue
 		}
 		sessionIDs = append(sessionIDs, item.Session.ExternalSessionID)
@@ -425,14 +448,14 @@ func syncRuntimeSessionTitles(ctx context.Context, store *dorasqlite.Store, sour
 	}
 	updates := make(map[string]string)
 	for _, item := range active {
-		if item.Session.Provider != domain.CodexSource {
+		if item.Session.Provider != provider {
 			continue
 		}
 		if title := titles[item.Session.ExternalSessionID]; title != "" && title != item.Session.SessionName {
 			updates[item.Session.ExternalSessionID] = title
 		}
 	}
-	return store.UpdateRuntimeSessionNames(ctx, updates)
+	return store.UpdateRuntimeSessionNames(ctx, provider, updates)
 }
 
 type attentionStore interface {

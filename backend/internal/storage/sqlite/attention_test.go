@@ -291,7 +291,7 @@ func TestRuntimeSessionNameCacheFollowsSessionLifecycle(t *testing.T) {
 	if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateRuntimeSessionNames(ctx, map[string]string{
+	if err := store.UpdateRuntimeSessionNames(ctx, domain.CodexSource, map[string]string{
 		"named-session": "用户重命名的任务",
 		"missing":       "不应创建 session",
 	}); err != nil {

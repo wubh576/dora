@@ -216,7 +216,7 @@ func TestSyncRuntimeSessionTitlesCachesCurrentCodexName(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := fixedThreadTitleSource{titles: map[string]string{"runtime-title": "真实任务标题"}}
-	if err := syncRuntimeSessionTitles(ctx, store, source); err != nil {
+	if err := syncRuntimeSessionTitles(ctx, store, source, domain.CodexSource); err != nil {
 		t.Fatal(err)
 	}
 	active, err := store.RuntimeSessions(ctx)
@@ -224,7 +224,7 @@ func TestSyncRuntimeSessionTitlesCachesCurrentCodexName(t *testing.T) {
 		t.Fatalf("任务标题同步错误: %+v, %v", active, err)
 	}
 
-	if err := syncRuntimeSessionTitles(ctx, store, fixedThreadTitleSource{err: errors.New("state unavailable")}); err == nil {
+	if err := syncRuntimeSessionTitles(ctx, store, fixedThreadTitleSource{err: errors.New("state unavailable")}, domain.CodexSource); err == nil {
 		t.Fatal("任务标题读取失败未返回错误")
 	}
 	active, err = store.RuntimeSessions(ctx)
@@ -654,4 +654,46 @@ func assertPortReleased(t *testing.T, address string) {
 		t.Fatalf("测试端口 %s 未释放: %v", address, err)
 	}
 	_ = listener.Close()
+}
+
+func TestWorkBuddyTitlesAndPromptRemainProviderScoped(t *testing.T) {
+	ctx := context.Background()
+	store, err := dorasqlite.Open(ctx, filepath.Join(t.TempDir(), "dora.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	event := domain.HookEvent{ExternalSessionID: "shared-title", EventName: "UserPromptSubmit", Surface: domain.CodexSurfaceApp, PromptPreview: "Codex 请求", ReceivedAt: time.Now()}
+	if _, err = store.ApplyCodexHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	event.Surface = domain.WorkBuddySurfaceApp
+	event.PromptPreview = "WorkBuddy 当前请求"
+	if _, err = store.ApplyWorkBuddyHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if err = syncRuntimeSessionTitles(ctx, store, fixedThreadTitleSource{titles: map[string]string{"shared-title": "WorkBuddy 真实标题"}}, domain.WorkBuddySource); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 2 {
+		t.Fatalf("%+v %v", active, err)
+	}
+	for _, item := range active {
+		if item.Session.Provider == domain.CodexSource && (item.Session.SessionName != "" || item.Session.PromptPreview != "Codex 请求") {
+			t.Fatal("WorkBuddy 覆盖了 Codex")
+		}
+		if item.Session.Provider == domain.WorkBuddySource && (item.Session.SessionName != "WorkBuddy 真实标题" || item.Session.PromptPreview != "WorkBuddy 当前请求") {
+			t.Fatal("WorkBuddy 展示信息丢失")
+		}
+	}
+	event.EventName = "Stop"
+	event.PromptPreview = ""
+	if _, err = store.ApplyWorkBuddyHookEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	active, err = store.RuntimeSessions(ctx)
+	if err != nil || len(active) != 1 || active[0].Session.Provider != domain.CodexSource {
+		t.Fatal("完成后状态未按来源清理")
+	}
 }

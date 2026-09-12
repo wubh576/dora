@@ -330,6 +330,6 @@ make verify
 
 安装 Hook 后完全退出并重新打开 WorkBuddy。Dora 需要在默认本地端口 `127.0.0.1:8080` 运行；退出或未启动 Dora 不会阻塞 WorkBuddy。普通安装/卸载只增删 Dora 标记的 handler，保留用户其他 Hooks 和设置。
 
-等待依据是 WorkBuddy 在实际弹出授权/提问界面后发出的 `Notification(permission_prompt)`，只识别引擎固定模板里的工具名，忽略普通空闲通知。`PostToolUse` / `PostToolUseFailure`、回合停止、新输入和 `SessionEnd` 解除对应等待。Hook 不提供任务标题，因此面板显示 WorkBuddy 与工作目录的最后一级名称；仍能精确跳到具体任务。同一子代理作用域、同一工具的无调用 ID 并发等待会合并显示，不能把数量理解为精确的工具调用数。
+等待依据是 WorkBuddy 在实际弹出授权/提问界面后发出的 `Notification(permission_prompt)`，只识别引擎固定模板里的工具名，忽略普通空闲通知。`PostToolUse` / `PostToolUseFailure`、回合停止、新输入和 `SessionEnd` 解除对应等待。任务名只读查询 `~/.workbuddy/workbuddy.db` 中当前活跃任务，优先自定义标题、再用自动标题，缺少标题时才回退为工作目录末级名称；最多保留清洗后的 120 字。运行中的第二行显示本轮 `UserPromptSubmit` 的用户请求摘要（最多 160 字），等待时显示等待原因，回合停止时清除摘要。同一子代理作用域、同一工具的无调用 ID 并发等待会合并显示，不能把数量理解为精确的工具调用数。
 
 验收：让 WorkBuddy 使用 `AskUserQuestion` 提问后切到其他页面，确认 Dora 自动展开、高亮并提示；点击该行应回到原提问界面，回答后等待消失。需要授权的工具操作采用相同链路。

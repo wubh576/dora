@@ -198,3 +198,6 @@ func cleanLabel(value string, limit int) string {
 	}
 	return value
 }
+
+// CleanSessionName 统一压缩空白、移除控制字符并限制运行态任务名长度。
+func CleanSessionName(value string) string { return cleanPromptPreview(value, 120) }

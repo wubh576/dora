@@ -73,6 +73,7 @@ type rawHook struct {
 	CallID           string `json:"call_id"`
 	ToolUseID        string `json:"tool_use_id"`
 	NotificationType string `json:"notification_type"`
+	Prompt           string `json:"prompt"`
 	Message          string `json:"message"`
 }
 
@@ -129,6 +130,9 @@ func parseHookEvent(input io.Reader) (attention.Event, error) {
 	if event.HookEvent == "PermissionRequest" && event.ToolName == "request_user_input" {
 		event.HookEvent = "PreToolUse"
 	}
+	if event.HookEvent == "UserPromptSubmit" {
+		event.PromptPreview = raw.Prompt
+	}
 	callID := raw.ToolUseID
 	if callID == "" {
 		callID = raw.CallID
@@ -138,6 +142,7 @@ func parseHookEvent(input io.Reader) (attention.Event, error) {
 	if err != nil {
 		return attention.Event{}, errors.New("WorkBuddy Hook 缺少有效会话或工具调用标识")
 	}
+	event.PromptPreview = normalized.PromptPreview
 	event.SessionID = normalized.ExternalSessionID
 	event.CWDBasename = normalized.CWDBasename
 	event.ToolName = normalized.ToolName
@@ -166,7 +171,7 @@ func opaqueKey(kind, value string) string {
 
 // Domain 只接受脱敏后的桌面事件，原始消息、工具参数和完整路径不进入数据库。
 func Domain(event attention.Event, at time.Time) (domain.HookEvent, error) {
-	if event.Surface != domain.WorkBuddySurfaceApp || event.TTY != "" || event.TerminalKind != "" || event.EventKey != "" || event.InputHash != "" || event.ToolInputKey != "" || event.PromptPreview != "" || event.Model != "" {
+	if event.Surface != domain.WorkBuddySurfaceApp || event.TTY != "" || event.TerminalKind != "" || event.EventKey != "" || event.InputHash != "" || event.ToolInputKey != "" || event.Model != "" || event.PromptPreview != "" && event.HookEvent != "UserPromptSubmit" {
 		return domain.HookEvent{}, errors.New("WorkBuddy 事件包含不支持的字段")
 	}
 	notification := event.HookEvent == "PermissionNotification"

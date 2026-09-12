@@ -131,3 +131,28 @@ func TestPermissionNotificationProjectsOnlyFixedToolName(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkBuddyPromptPreviewIsRootOnlyAndSanitizedBeforeSending(t *testing.T) {
+	prompt := "第一行\n\u200b第二行 " + strings.Repeat("界", 200)
+	data, _ := json.Marshal(map[string]string{"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": prompt})
+	event, err := parseHookEvent(strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len([]rune(event.PromptPreview)) != 160 || !strings.HasPrefix(event.PromptPreview, "第一行 第二行 ") || strings.ContainsAny(event.PromptPreview, "\n\u200b") {
+		t.Fatalf("未清洗截断: %q", event.PromptPreview)
+	}
+	body, _ := json.Marshal(event)
+	if strings.Contains(string(body), strings.Repeat("界", 200)) {
+		t.Fatal("完整 prompt 进入出站 payload")
+	}
+	data, _ = json.Marshal(map[string]string{"session_id": "s", "agent_id": "child", "hook_event_name": "UserPromptSubmit", "prompt": prompt})
+	if _, err := parseHookEvent(strings.NewReader(string(data))); !errors.Is(err, errIgnoredEvent) {
+		t.Fatal("子代理 prompt 未忽略")
+	}
+	data, _ = json.Marshal(map[string]string{"session_id": "s", "hook_event_name": "Stop", "prompt": prompt})
+	event, err = parseHookEvent(strings.NewReader(string(data)))
+	if err != nil || event.PromptPreview != "" {
+		t.Fatal("Stop 保留了 prompt")
+	}
+}

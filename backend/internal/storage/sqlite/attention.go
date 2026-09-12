@@ -443,7 +443,7 @@ func (s *Store) RuntimeSession(ctx context.Context, id int64) (domain.RuntimeSes
 	return session, nil
 }
 
-func (s *Store) UpdateRuntimeSessionNames(ctx context.Context, names map[string]string) error {
+func (s *Store) UpdateRuntimeSessionNames(ctx context.Context, provider string, names map[string]string) error {
 	if len(names) == 0 {
 		return nil
 	}
@@ -455,7 +455,7 @@ func (s *Store) UpdateRuntimeSessionNames(ctx context.Context, names map[string]
 			if _, err := conn.ExecContext(ctx, `
 				UPDATE runtime_sessions SET session_name = ?
 				WHERE provider = ? AND external_session_id = ? AND session_name != ?
-			`, name, domain.CodexSource, externalSessionID, name); err != nil {
+			`, name, provider, externalSessionID, name); err != nil {
 				return fmt.Errorf("更新 Codex runtime session 名称: %w", err)
 			}
 		}

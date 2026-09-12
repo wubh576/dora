@@ -13,6 +13,7 @@ import (
 	"time"
 
 	attentiondomain "github.com/wubh576/dora/backend/internal/attention"
+	"github.com/wubh576/dora/backend/internal/domain"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 )
 
@@ -100,7 +101,7 @@ func TestRuntimeAPICombinesRunningAndWaitingWithoutPrivateIdentifiers(t *testing
 	}
 	post(`{"sessionId":"private-running","hookEvent":"UserPromptSubmit","cwdBasename":"/Users/private/work/dora","surface":"codex_app","promptPreview":"实现 灵动岛"}`)
 	post(`{"sessionId":"private-waiting","hookEvent":"PermissionRequest","cwdBasename":"/Users/private/work/other","surface":"codex_cli","terminalKind":"terminal","tty":"/dev/ttys999","toolName":"Bash","inputHash":"sha256:runtime"}`)
-	if err := store.UpdateRuntimeSessionNames(context.Background(), map[string]string{
+	if err := store.UpdateRuntimeSessionNames(context.Background(), domain.CodexSource, map[string]string{
 		"private-running": "修复菜单栏任务",
 	}); err != nil {
 		t.Fatal(err)
