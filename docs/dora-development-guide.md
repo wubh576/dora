@@ -1435,6 +1435,8 @@ dora hooks emit codex
 
 ### 25.3 灵动岛和跳转
 
+- Codex App prompt 兼容旧 `## My request for Codex:` 和附件包装的新 `## My request:` / `# My request:`，仅保留用户请求，不展示附件文件名或临时路径；CLI 普通正文不按 App 包装处理。
+
 - 紧凑态固定表达 Dora 与活跃 session 总数；新 waiting 通过红色总数、高亮、自动展开和一次性声音获得最高视觉优先级，waiting/running 的准确拆分保留在展开态。
 - 展开态按 session 展示 Codex surface、会话名回退、清洗后的 prompt 摘要、等待时长和 active request 数；实时轮询独立于 usage scan。
 - Codex App 使用参数化 `codex://threads/<external_session_id>` deep link 并前台激活。

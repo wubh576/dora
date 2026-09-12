@@ -267,9 +267,11 @@ func userPrompt(value string, surface Surface) string {
 	}
 	offset := 0
 	requestStart := -1
+	hasAttachmentWrapper := strings.HasPrefix(strings.TrimSpace(value), "# Files mentioned by the user:")
 	for _, line := range strings.SplitAfter(value, "\n") {
 		offset += len(line)
-		if requestStart < 0 && strings.TrimSpace(line) == codexAppUserRequestMarker {
+		marker := strings.TrimSpace(line)
+		if requestStart < 0 && (marker == codexAppUserRequestMarker || hasAttachmentWrapper && (marker == "## My request:" || marker == "# My request:")) {
 			requestStart = offset
 		}
 	}
