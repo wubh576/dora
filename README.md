@@ -318,7 +318,7 @@ make verify
 
 ## WorkBuddy 实时提醒
 
-支持 WorkBuddy macOS 5.5.6 的本地 Hooks：需要授权或回答问题时，Dora 灵动岛自动展开、高亮并播放一次提示音；点击任务通过 `workbuddy://chat/<session_id>` 返回对应 WorkBuddy App 任务。WorkBuddy 不采集 token、费用或配额，也不提供历史任务管理。
+支持 WorkBuddy macOS 5.5.6 的本地 Hooks：需要授权或回答问题时，Dora 灵动岛自动展开、高亮并播放一次提示音；点击任务通过 `workbuddy://chat/<session_id>` 返回对应 WorkBuddy App 任务。跳转优先使用正在运行的 WorkBuddy 的实际应用路径，避免后台启动时系统无法解析协议；若尚未打开且系统找不到安装位置，面板会提示先打开 WorkBuddy。WorkBuddy 不采集 token、费用或配额，也不提供历史任务管理。
 
 构建并安装后，若本机已有 `~/.workbuddy`，`dora install` 会自动合并 Dora 的 Hooks；不会覆盖其他配置。也可以独立管理：
 

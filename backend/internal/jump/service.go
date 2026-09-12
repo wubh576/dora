@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/wubh576/dora/backend/internal/domain"
@@ -170,14 +171,29 @@ const jumpTerminalScript = `on run argv
   return "DORA_TARGET_GONE"
 end run`
 
-// WorkBuddy 5.5.6 的系统通知通过相同的 chat deep link 返回指定任务。
+// LaunchAgent 的 LaunchServices 查询可能找不到 App；优先使用运行中客户端的实际 bundle 路径。
 func (service *Service) jumpWorkBuddy(ctx context.Context, sessionID string) error {
-	deepLink := (&url.URL{Scheme: "workbuddy", Host: "chat", Path: "/" + sessionID, RawPath: "/" + url.PathEscape(sessionID)}).String()
-	if output, err := service.runner.Run(ctx, "/usr/bin/open", deepLink); err != nil {
-		return commandError(ctx, "打开 WorkBuddy 任务", output, err)
+	output, err := service.runner.Run(ctx, "/usr/bin/osascript", "-l", "JavaScript", "-e", resolveWorkBuddyAppScript)
+	if err != nil {
+		return commandError(ctx, "定位 WorkBuddy 应用", output, err)
 	}
-	if output, err := service.runner.Run(ctx, "/usr/bin/osascript", "-e", `tell application id "com.tencent.workbuddy.mac" to activate`); err != nil {
-		return commandError(ctx, "将 WorkBuddy 切到前台", output, err)
+	appPath := strings.TrimSpace(string(output))
+	if appPath == "" {
+		return errors.New("未找到 WorkBuddy，请先打开 WorkBuddy 后重试")
+	}
+	if !filepath.IsAbs(appPath) || filepath.Ext(appPath) != ".app" {
+		return errors.New("WorkBuddy 应用路径无效")
+	}
+	deepLink := (&url.URL{Scheme: "workbuddy", Host: "chat", Path: "/" + sessionID, RawPath: "/" + url.PathEscape(sessionID)}).String()
+	// open 默认把目标应用带到前台；显式路径避免依赖自定义协议的全局注册。
+	if output, err := service.runner.Run(ctx, "/usr/bin/open", "-a", appPath, deepLink); err != nil {
+		return commandError(ctx, "打开 WorkBuddy 任务", output, err)
 	}
 	return nil
 }
+
+// 只查询本机 App 元数据，不向 WorkBuddy 发送脚本或请求自动化权限。
+const resolveWorkBuddyAppScript = `ObjC.import("AppKit");
+var apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier("com.tencent.workbuddy.mac");
+var appURL = apps.count > 0 ? apps.objectAtIndex(0).bundleURL : $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier("com.tencent.workbuddy.mac");
+appURL && !appURL.isNil() ? ObjC.unwrap(appURL.path) : "";`

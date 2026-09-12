@@ -1457,7 +1457,7 @@ dora hooks emit codex
 - Notification 没有工具调用 ID。SQLite immediate transaction 按 provider、runtime session、子代理 scope、工具的当前等待去重，每个新等待周期生成新随机 key。完成 Hook 优先精确匹配调用 ID，再匹配唯一的同作用域、同工具无 ID 等待；若收到带 ID 的归一化等待事件，原位补齐标识并保留提醒时间。无 ID 的同作用域同工具并发等待只能合并，不能保证精确请求数。
 - `SessionStart` 在 WorkBuddy 内部异步执行，可能晚于输入或等待事件；只刷新定位，不清除既有 running/waiting。子代理只改变自己的请求；SessionEnd 只移除同 provider 的 runtime 定位。
 - 不保存原始 prompt、模型回复、问题内容、工具参数、完整项目路径或 transcript。只保留存活任务的 session ID、cwd basename、surface 和当前等待所需工具标识；不新增任务浏览/恢复/控制功能。没有可靠任务标题时使用 cwd basename。
-- WorkBuddy 与 Codex 共用灵动岛提醒机制及一次性通知领取。跳转固定为 `workbuddy://chat/<编码后的 session_id>`，再激活 `com.tencent.workbuddy.mac`；不接收外部自定义 URL 或命令。
+- WorkBuddy 与 Codex 共用灵动岛提醒机制及一次性通知领取。跳转固定为 `workbuddy://chat/<编码后的 session_id>`。LaunchAgent 下系统可能既无法解析 scheme，也无法通过 bundle ID 找到 App；用固定 JXA 查询运行中 `com.tencent.workbuddy.mac` 的实际 bundle 路径（未运行时查询已安装 App），再通过 `open -a <绝对 .app 路径> <链接>` 打开并前置。不依赖 AppleScript 控制 WorkBuddy，不接收外部自定义 URL 或命令。
 - 实机验收使用独立临时数据库和端口，测试后移除探测 Hook、恢复临时权限规则并关闭测试服务。自动化测试覆盖 provider 隔离、重复通知、回答后再次等待、子代理作用域、迟到 SessionStart、配置保留和 URL 编码。
 
 ## 26. 日志与隐私

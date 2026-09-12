@@ -163,21 +163,27 @@ func TestCapabilityExplainsOnlySanitizedLocatorRequirements(t *testing.T) {
 	}
 }
 
-func TestJumpWorkBuddyUsesExactChatLink(t *testing.T) {
-	runner := &recordingRunner{}
+func TestJumpWorkBuddyUsesRunningAppPathAndExactChatLink(t *testing.T) {
+	runner := &recordingRunner{output: []byte("/private/tmp/WorkBuddy.app\n")}
 	session := domain.RuntimeSession{Provider: domain.WorkBuddySource, Surface: domain.WorkBuddySurfaceApp, ExternalSessionID: "task/with space?x=1#fragment"}
 	if err := New(runner).Jump(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
 	want := []commandCall{
-		{name: "/usr/bin/open", args: []string{"workbuddy://chat/task%2Fwith%20space%3Fx=1%23fragment"}},
-		{name: "/usr/bin/osascript", args: []string{"-e", `tell application id "com.tencent.workbuddy.mac" to activate`}},
+		{name: "/usr/bin/osascript", args: []string{"-l", "JavaScript", "-e", resolveWorkBuddyAppScript}},
+		{name: "/usr/bin/open", args: []string{"-a", "/private/tmp/WorkBuddy.app", "workbuddy://chat/task%2Fwith%20space%3Fx=1%23fragment"}},
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Fatalf("WorkBuddy 跳转命令错误: %+v", runner.calls)
 	}
-	runner = &recordingRunner{err: errors.New("app missing")}
+	for _, output := range []string{"", "WorkBuddy.app", "/tmp/not-an-app"} {
+		runner = &recordingRunner{output: []byte(output)}
+		if err := New(runner).Jump(context.Background(), session); err == nil || len(runner.calls) != 1 {
+			t.Fatal("未找到合法应用仍尝试跳转")
+		}
+	}
+	runner = &recordingRunner{err: errors.New("resolver failed")}
 	if err := New(runner).Jump(context.Background(), session); err == nil || len(runner.calls) != 1 {
-		t.Fatal("打开失败仍继续或报告成功")
+		t.Fatal("定位失败仍继续或报告成功")
 	}
 }
