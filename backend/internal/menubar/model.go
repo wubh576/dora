@@ -162,7 +162,11 @@ func sessionRows(runtime RuntimeState, highlight int64, now time.Time) []Session
 		if name == "" {
 			name = "未命名会话"
 		}
-		title := "Codex · " + name
+		provider := "Codex"
+		if session.Surface == "workbuddy_app" {
+			provider = "WorkBuddy"
+		}
+		title := provider + " · " + name
 		subtitle := session.PromptPreview
 		if session.State == "waiting" && session.Summary != "" {
 			if subtitle == "" {
@@ -171,7 +175,7 @@ func sessionRows(runtime RuntimeState, highlight int64, now time.Time) []Session
 				subtitle = session.Summary + " · " + subtitle
 			}
 		} else if subtitle == "" {
-			subtitle = "Codex 正在运行"
+			subtitle = provider + " 正在运行"
 		}
 		meta := source
 		if session.State == "waiting" {
@@ -211,6 +215,8 @@ func activityLabel(value string, now time.Time) string {
 
 func sourceLabel(session RuntimeSession) string {
 	switch session.Surface {
+	case "workbuddy_app":
+		return "WorkBuddy"
 	case "codex_app":
 		return "Codex App"
 	case "codex_cli":

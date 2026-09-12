@@ -32,7 +32,7 @@ func TestRuntimeMarksOnlyPreStartupAttentionAsNotified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() 失败: %v", err)
 	}
-	event := domain.CodexHookEvent{
+	event := domain.HookEvent{
 		ExternalSessionID: "runtime-restart",
 		EventName:         "PermissionRequest",
 		TurnID:            "turn",
@@ -73,7 +73,7 @@ func TestRuntimeBindFailureDoesNotMarkAttentionNotified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() 失败: %v", err)
 	}
-	event := domain.CodexHookEvent{
+	event := domain.HookEvent{
 		ExternalSessionID: "runtime-bind-failure",
 		EventName:         "PermissionRequest",
 		TurnID:            "turn",
@@ -139,7 +139,7 @@ func TestRuntimeReconcilesSevenDayStaleAttention(t *testing.T) {
 		{sessionID: "stale-runtime", at: now.Add(-8 * 24 * time.Hour), key: "codex:stale-runtime"},
 		{sessionID: "recent-runtime", at: now.Add(-time.Hour), key: "codex:recent-runtime"},
 	} {
-		event := domain.CodexHookEvent{
+		event := domain.HookEvent{
 			ExternalSessionID: fixture.sessionID, EventName: "PermissionRequest", TurnID: "turn",
 			CWDBasename: "dora", Surface: domain.CodexSurfaceApp, ToolName: "Bash",
 			EventKey: fixture.key, ReceivedAt: fixture.at,
@@ -148,7 +148,7 @@ func TestRuntimeReconcilesSevenDayStaleAttention(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	running := domain.CodexHookEvent{
+	running := domain.HookEvent{
 		ExternalSessionID: "running-before-restart", EventName: "UserPromptSubmit",
 		CWDBasename: "probe", Surface: domain.CodexSurfaceApp,
 		PromptPreview: "不应跨重启显示", ReceivedAt: now.Add(-time.Minute),
@@ -208,7 +208,7 @@ func TestSyncRuntimeSessionTitlesCachesCurrentCodexName(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	event := domain.CodexHookEvent{
+	event := domain.HookEvent{
 		ExternalSessionID: "runtime-title", EventName: "UserPromptSubmit", CWDBasename: "dora",
 		Surface: domain.CodexSurfaceApp, PromptPreview: "用户请求", ReceivedAt: time.Now().UTC(),
 	}
@@ -325,7 +325,7 @@ func TestJumpAttentionSessionOnlyResolvesGoneTarget(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer store.Close()
-			event := domain.CodexHookEvent{
+			event := domain.HookEvent{
 				ExternalSessionID: "jump-session", EventName: "PermissionRequest", TurnID: "turn",
 				CWDBasename: "dora", Surface: domain.CodexSurfaceCLI, TerminalKind: domain.TerminalTerminal,
 				TTY: "/dev/ttys009", ToolName: "Bash", EventKey: "codex:jump", ReceivedAt: time.Now().UTC(),

@@ -139,7 +139,7 @@ func TestVerifiedCancelSequenceResolvesOnNextPrompt(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Date(2026, 8, 2, 15, 0, 0, 0, time.UTC)
-	parseFixture := func(file string, at time.Time) domain.CodexHookEvent {
+	parseFixture := func(file string, at time.Time) domain.HookEvent {
 		t.Helper()
 		input, err := os.Open("testdata/" + file)
 		if err != nil {

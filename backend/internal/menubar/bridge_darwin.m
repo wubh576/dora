@@ -247,7 +247,7 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.titleLabel.textColor = self.doraJumpable ? NSColor.whiteColor : doraColor(0.58, 0.60, 0.65, 1.0);
     self.clickButton.tag = (NSInteger)sessionID;
     self.clickButton.action = self.doraJumpable ? @selector(doraSession:) : @selector(doraUnavailableSession:);
-    self.clickButton.toolTip = self.doraJumpable ? @"跳转到对应 Codex 会话" : (session[@"jumpReason"] ?: @"当前会话无法精确跳转");
+    self.clickButton.toolTip = self.doraJumpable ? @"跳转到对应任务" : (session[@"jumpReason"] ?: @"当前会话无法精确跳转");
     [self updateBackground];
     [self setNeedsLayout:YES];
 }

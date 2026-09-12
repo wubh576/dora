@@ -254,7 +254,7 @@ func TestRegularSessionStartSourcesResetPreviousTurn(t *testing.T) {
 			running.PromptPreview = "上一轮任务"
 			waiting := attentionEvent("PermissionRequest", now.Add(time.Second))
 			waiting.ToolName, waiting.EventKey = "Bash", "codex:reset-"+name
-			for _, event := range []domain.CodexHookEvent{running, waiting} {
+			for _, event := range []domain.HookEvent{running, waiting} {
 				if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
 					t.Fatal(err)
 				}
@@ -374,7 +374,7 @@ func TestRestoreRunningSessionsPreservesWaiting(t *testing.T) {
 	running.ExternalSessionID, running.PromptPreview = "running-before-restart", "不会跨重启保留"
 	waiting := attentionEvent("PermissionRequest", now.Add(time.Second))
 	waiting.ExternalSessionID, waiting.ToolName, waiting.EventKey = "waiting-before-restart", "Bash", "codex:restart-waiting"
-	for _, event := range []domain.CodexHookEvent{running, waiting} {
+	for _, event := range []domain.HookEvent{running, waiting} {
 		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
 			t.Fatal(err)
 		}
@@ -401,7 +401,7 @@ func TestRuntimeSessionsSortWaitingThenRecentRunning(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Date(2026, 8, 2, 8, 45, 0, 0, time.UTC)
-	events := []domain.CodexHookEvent{
+	events := []domain.HookEvent{
 		attentionEvent("PermissionRequest", now.Add(2*time.Second)),
 		attentionEvent("PermissionRequest", now.Add(time.Second)),
 		attentionEvent("UserPromptSubmit", now),
@@ -547,7 +547,7 @@ func TestResolveStaleRuntimeSessionsKeepsRecentWaiting(t *testing.T) {
 	old.ExternalSessionID, old.EventKey = "old-session", "codex:old-stale"
 	recent := attentionEvent("PermissionRequest", now.Add(-time.Hour))
 	recent.ExternalSessionID, recent.EventKey = "recent-session", "codex:recent"
-	for _, event := range []domain.CodexHookEvent{old, recent} {
+	for _, event := range []domain.HookEvent{old, recent} {
 		event.TurnID, event.ToolName = "turn", "Bash"
 		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
 			t.Fatal(err)
@@ -584,7 +584,7 @@ func TestPostToolUseOnlyResolvesMatchingRequestKindAndTurn(t *testing.T) {
 	permissionTurn2.TurnID, permissionTurn2.ToolName, permissionTurn2.EventKey = "turn-2", "Bash", "codex:permission-turn-2"
 	questionTurn1 := attentionEvent("PreToolUse", now.Add(2*time.Second))
 	questionTurn1.TurnID, questionTurn1.ToolName, questionTurn1.EventKey = "turn-1", "request_user_input", "codex:question-turn-1"
-	for _, event := range []domain.CodexHookEvent{permissionTurn1, permissionTurn2, questionTurn1} {
+	for _, event := range []domain.HookEvent{permissionTurn1, permissionTurn2, questionTurn1} {
 		if _, err := store.ApplyCodexHookEvent(ctx, event); err != nil {
 			t.Fatal(err)
 		}
@@ -662,8 +662,8 @@ func TestSubagentAttentionStaysScopedAndPreservesParentRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	childRequest := func(scope, toolKey, eventKey string, at time.Time) domain.CodexHookEvent {
-		return domain.CodexHookEvent{
+	childRequest := func(scope, toolKey, eventKey string, at time.Time) domain.HookEvent {
+		return domain.HookEvent{
 			ExternalSessionID: "parent-session",
 			EventName:         "PermissionRequest",
 			TurnID:            "shared-turn",
@@ -685,7 +685,7 @@ func TestSubagentAttentionStaysScopedAndPreservesParentRuntime(t *testing.T) {
 	toolB := "sha256:" + strings.Repeat("d", 64)
 	childA := childRequest(scopeA, toolA, "codex:child-a", now.Add(2*time.Second))
 	childB := childRequest(scopeB, toolB, "codex:child-b", now.Add(3*time.Second))
-	for _, event := range []domain.CodexHookEvent{childA, childB} {
+	for _, event := range []domain.HookEvent{childA, childB} {
 		if created, err := store.ApplyCodexHookEvent(ctx, event); err != nil || !created {
 			t.Fatalf("创建 child request 失败: created=%t err=%v", created, err)
 		}
@@ -987,8 +987,8 @@ func TestSubagentStopDoesNotResolveUnscopedRequest(t *testing.T) {
 	}
 }
 
-func attentionEvent(name string, at time.Time) domain.CodexHookEvent {
-	return domain.CodexHookEvent{
+func attentionEvent(name string, at time.Time) domain.HookEvent {
+	return domain.HookEvent{
 		ExternalSessionID: "019-test-session",
 		EventName:         name,
 		CWDBasename:       "dora",

@@ -237,7 +237,7 @@ func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID in
 	if jumper == nil || controller.jumping || controller.stopped {
 		controller.mu.Unlock()
 		if jumper == nil {
-			controller.PresentStatus("Codex 跳转服务未配置")
+			controller.PresentStatus("任务跳转服务未配置")
 		}
 		return false
 	}
@@ -252,7 +252,7 @@ func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID in
 		controller.mu.Lock()
 		controller.jumping = false
 		if err != nil {
-			controller.setStatusLocked(fmt.Sprintf("跳转 Codex 会话失败：%v", err))
+			controller.setStatusLocked(fmt.Sprintf("跳转任务失败：%v", err))
 		}
 		controller.mu.Unlock()
 		if err == nil {
@@ -268,7 +268,7 @@ func (controller *Controller) JumpSessionAsync(ctx context.Context, sessionID in
 
 func (controller *Controller) ExplainSession(sessionID int64) {
 	controller.mu.Lock()
-	reason := "当前 Codex 会话无法精确跳转"
+	reason := "当前任务无法精确跳转"
 	if controller.last != nil {
 		for _, session := range controller.last.Runtime.Sessions {
 			if session.ID == sessionID && session.JumpReason != "" {

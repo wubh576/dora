@@ -249,7 +249,7 @@ func (r *Runtime) JumpAttentionSession(ctx context.Context, sessionID int64) err
 	if err != nil {
 		r.logf("Codex 回跳失败: session=unknown reason=session_unavailable")
 		if errors.Is(err, sql.ErrNoRows) {
-			return errors.New("这个 Codex 会话已经结束")
+			return errors.New("这个任务已经结束")
 		}
 		return err
 	}
@@ -414,6 +414,9 @@ func syncRuntimeSessionTitles(ctx context.Context, store *dorasqlite.Store, sour
 	}
 	sessionIDs := make([]string, 0, len(active))
 	for _, item := range active {
+		if item.Session.Provider != domain.CodexSource {
+			continue
+		}
 		sessionIDs = append(sessionIDs, item.Session.ExternalSessionID)
 	}
 	titles, err := source.Titles(ctx, sessionIDs)
@@ -422,6 +425,9 @@ func syncRuntimeSessionTitles(ctx context.Context, store *dorasqlite.Store, sour
 	}
 	updates := make(map[string]string)
 	for _, item := range active {
+		if item.Session.Provider != domain.CodexSource {
+			continue
+		}
 		if title := titles[item.Session.ExternalSessionID]; title != "" && title != item.Session.SessionName {
 			updates[item.Session.ExternalSessionID] = title
 		}

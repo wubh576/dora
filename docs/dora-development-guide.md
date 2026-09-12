@@ -1446,6 +1446,20 @@ dora hooks emit codex
 - 当前 LaunchAgent 运行的是无稳定 bundle identifier 的独立二进制，不是 `.app`。系统原生通知横幅无法作为可靠交付路径，因此当前保证灵动岛自动展开、高亮和 AppKit 系统声音，不伪造横幅完成状态。
 - Claude Code 实时提醒不在当前范围。
 
+### 25.4 WorkBuddy 桌面提醒
+
+按用户新增范围接入 WorkBuddy，只做实时等待和精确返回 App，不加入 usage provider、token 或配额统计。
+
+- 基线为官方 macOS WorkBuddy 5.5.6。公开插件文档支持 Hooks（https://www.workbuddy.cn/docs/workbuddy/Plugins）；事件细节和跳转协议经该版本签名客户端及实机确认。云端 Open API 的任务与本机桌面任务不是同一条采集链路，不使用云端 API Key。
+- `workbuddyhooks` 管理 `~/.workbuddy/settings.json`，命令为 `dora hooks emit workbuddy`，发往 `/api/v1/hooks/workbuddy`。安装、状态、卸载支持 `dora hooks <action> workbuddy`，生产安装在发现 WorkBuddy 配置目录时自动接入。
+- 订阅 `SessionStart`、`UserPromptSubmit`、`Notification`（matcher `^permission_prompt$`）、`PostToolUse`、`PostToolUseFailure`、`SubagentStop`、`Stop`、`FinalStop`、`StopFailure`、`SessionEnd`。不订阅 `PreToolUse` / `PermissionRequest` 作为等待入口：实机 AskUserQuestion 的 PreToolUse 在回答之后才发生，PermissionRequest 也不代表最后一定展示用户授权界面。
+- 只接受 Notification 的固定引擎模板 `needs your permission to use <toolName>`，投影工具名后立即丢弃原文。AskUserQuestion 归一为等待回答，其余工具为等待授权。忽略 `idle_prompt`，不从自然语言或问号推测等待。
+- Notification 没有工具调用 ID。SQLite immediate transaction 按 provider、runtime session、子代理 scope、工具的当前等待去重，每个新等待周期生成新随机 key。完成 Hook 优先精确匹配调用 ID，再匹配唯一的同作用域、同工具无 ID 等待；若收到带 ID 的归一化等待事件，原位补齐标识并保留提醒时间。无 ID 的同作用域同工具并发等待只能合并，不能保证精确请求数。
+- `SessionStart` 在 WorkBuddy 内部异步执行，可能晚于输入或等待事件；只刷新定位，不清除既有 running/waiting。子代理只改变自己的请求；SessionEnd 只移除同 provider 的 runtime 定位。
+- 不保存原始 prompt、模型回复、问题内容、工具参数、完整项目路径或 transcript。只保留存活任务的 session ID、cwd basename、surface 和当前等待所需工具标识；不新增任务浏览/恢复/控制功能。没有可靠任务标题时使用 cwd basename。
+- WorkBuddy 与 Codex 共用灵动岛提醒机制及一次性通知领取。跳转固定为 `workbuddy://chat/<编码后的 session_id>`，再激活 `com.tencent.workbuddy.mac`；不接收外部自定义 URL 或命令。
+- 实机验收使用独立临时数据库和端口，测试后移除探测 Hook、恢复临时权限规则并关闭测试服务。自动化测试覆盖 provider 隔离、重复通知、回答后再次等待、子代理作用域、迟到 SessionStart、配置保留和 URL 编码。
+
 ## 26. 日志与隐私
 
 ### 26.1 可以记录

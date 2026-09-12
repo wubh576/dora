@@ -26,6 +26,7 @@ import (
 	"github.com/wubh576/dora/backend/internal/settings"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
 	"github.com/wubh576/dora/backend/internal/webassets"
+	"github.com/wubh576/dora/backend/internal/workbuddyhooks"
 )
 
 const (
@@ -83,8 +84,11 @@ func run(args []string) error {
 }
 
 func hooksCommand(args []string) error {
+	if len(args) == 2 && args[1] == "workbuddy" {
+		return workBuddyHooksCommand(args[0])
+	}
 	if len(args) != 2 || args[1] != "codex" {
-		return errors.New("用法: dora hooks <install|status|uninstall|emit> codex")
+		return errors.New("用法: dora hooks <install|status|uninstall|emit> <codex|workbuddy>")
 	}
 	if args[0] == "emit" {
 		ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
@@ -112,7 +116,7 @@ func hooksCommand(args []string) error {
 	case "uninstall":
 		status, err = manager.Uninstall()
 	default:
-		return errors.New("用法: dora hooks <install|status|uninstall|emit> codex")
+		return errors.New("用法: dora hooks <install|status|uninstall|emit> <codex|workbuddy>")
 	}
 	if err != nil {
 		return err
@@ -210,7 +214,9 @@ func installCommand(args []string) error {
 	if _, err := fmt.Fprintf(os.Stdout, "Dora 已安装并正在运行\n灵动岛：位于当前 Mac 屏幕顶部中央\n仪表盘：%s\n", launchagent.DashboardURL); err != nil {
 		return err
 	}
-	return writeRealtimeReminderStatus(os.Stdout, hookStatus, hookErr)
+	codexStatusErr := writeRealtimeReminderStatus(os.Stdout, hookStatus, hookErr)
+	workBuddyErr := manageInstalledWorkBuddyHooks(os.Stdout, manager.Paths().Home, manager.Paths().Binary, "install")
+	return errors.Join(codexStatusErr, workBuddyErr)
 }
 
 func launchAgentStatusCommand(args []string) error {
@@ -239,6 +245,9 @@ func launchAgentStatusCommand(args []string) error {
 	}
 	hookStatus, hookErr := launchAgentCodexHooksStatus(manager.Paths().Home, manager.Paths().Binary)
 	if err := writeRealtimeReminderStatus(os.Stdout, hookStatus, hookErr); err != nil {
+		return &commandExitError{code: 2, err: err}
+	}
+	if err := manageInstalledWorkBuddyHooks(os.Stdout, manager.Paths().Home, manager.Paths().Binary, "status"); err != nil {
 		return &commandExitError{code: 2, err: err}
 	}
 	if status.ExitCode() != 0 {
@@ -317,7 +326,7 @@ func uninstallCommand(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return uninstallComponents(
+	componentsErr := uninstallComponents(
 		ctx,
 		os.Stdout,
 		manager.Uninstall,
@@ -326,6 +335,8 @@ func uninstallCommand(args []string) error {
 			return err
 		},
 	)
+	workBuddyErr := manageInstalledWorkBuddyHooks(os.Stdout, manager.Paths().Home, manager.Paths().Binary, "uninstall")
+	return errors.Join(componentsErr, workBuddyErr)
 }
 
 func uninstallComponents(
@@ -667,4 +678,86 @@ func databasePath() (string, error) {
 		return "", fmt.Errorf("读取用户应用目录: %w", err)
 	}
 	return filepath.Join(configDir, "Dora", "dora.db"), nil
+}
+
+func workBuddyHooksCommand(action string) error {
+	if action == "emit" {
+		ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+		defer cancel()
+		err := workbuddyhooks.NewEmitter().Emit(ctx, os.Stdin)
+		if errors.Is(err, workbuddyhooks.ErrServiceUnavailable) {
+			return nil
+		}
+		return err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	manager, err := workbuddyhooks.NewManager(filepath.Join(home, ".workbuddy"), binary)
+	if err != nil {
+		return err
+	}
+	var status workbuddyhooks.Status
+	switch action {
+	case "install":
+		status, err = manager.Install()
+	case "status":
+		status, err = manager.Status()
+	case "uninstall":
+		status, err = manager.Uninstall()
+	default:
+		return errors.New("用法: dora hooks <install|status|uninstall|emit> <codex|workbuddy>")
+	}
+	if err != nil {
+		return err
+	}
+	state := "未安装"
+	if status.Installed {
+		state = "已安装"
+	}
+	_, err = fmt.Fprintf(os.Stdout, "WorkBuddy hooks：%s\n配置：%s\nDora：%s\n", state, status.Path, status.Executable)
+	if err == nil && action == "install" {
+		_, err = fmt.Fprintln(os.Stdout, "请完全退出并重新打开 WorkBuddy，使 Hook 配置生效（支持桌面版 5.5.6）。")
+	}
+	return err
+}
+
+// 没使用过 WorkBuddy 时不创建其配置；已有用户配置按字段保留。
+func manageInstalledWorkBuddyHooks(output io.Writer, home, binary, action string) error {
+	configDir := filepath.Join(home, ".workbuddy")
+	if _, err := os.Stat(configDir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	manager, err := workbuddyhooks.NewManager(configDir, binary)
+	if err != nil {
+		return err
+	}
+	var status workbuddyhooks.Status
+	switch action {
+	case "install":
+		status, err = manager.Install()
+	case "uninstall":
+		status, err = manager.Uninstall()
+	default:
+		status, err = manager.Status()
+	}
+	if err != nil {
+		return fmt.Errorf("WorkBuddy hooks %s 失败: %w", action, err)
+	}
+	message := "未配置（运行 dora hooks install workbuddy）"
+	if status.Installed {
+		message = "已配置（配置变更后需重启 WorkBuddy）"
+	}
+	if action == "uninstall" {
+		message = "已移除 Dora handlers"
+	}
+	_, err = fmt.Fprintf(output, "WorkBuddy 实时提醒：%s\n", message)
+	return err
 }

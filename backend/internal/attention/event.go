@@ -32,48 +32,48 @@ type Event struct {
 	PromptPreview      string `json:"promptPreview,omitempty"`
 }
 
-func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
+func (event Event) Domain(receivedAt time.Time) (domain.HookEvent, error) {
 	event.SessionID = strings.TrimSpace(event.SessionID)
 	event.TurnID = strings.TrimSpace(event.TurnID)
 	rawSubagentScope := strings.TrimSpace(event.SubagentScope)
 	event.SubagentScope = cleanOpaqueKey(rawSubagentScope)
 	if rawSubagentScope != "" && event.SubagentScope == "" {
-		return domain.CodexHookEvent{}, errors.New("事件包含无效 subagent scope")
+		return domain.HookEvent{}, errors.New("事件包含无效 subagent scope")
 	}
 	event.ToolName = cleanLabel(event.ToolName, 80)
 	rawToolUseKey := strings.TrimSpace(event.ToolUseKey)
 	event.ToolUseKey = cleanOpaqueKey(rawToolUseKey)
 	if rawToolUseKey != "" && event.ToolUseKey == "" {
-		return domain.CodexHookEvent{}, errors.New("事件包含无效 tool use key")
+		return domain.HookEvent{}, errors.New("事件包含无效 tool use key")
 	}
 	rawToolInputKey := strings.TrimSpace(event.ToolInputKey)
 	event.ToolInputKey = cleanOpaqueKey(rawToolInputKey)
 	if rawToolInputKey != "" && event.ToolInputKey == "" {
-		return domain.CodexHookEvent{}, errors.New("事件包含无效 tool input key")
+		return domain.HookEvent{}, errors.New("事件包含无效 tool input key")
 	}
 	rawEventKey := strings.TrimSpace(event.EventKey)
 	event.EventKey = cleanEventKey(rawEventKey)
 	if rawEventKey != "" && event.EventKey == "" {
-		return domain.CodexHookEvent{}, errors.New("事件包含无效 event key")
+		return domain.HookEvent{}, errors.New("事件包含无效 event key")
 	}
 	if event.SubagentScope != "" && event.EventKey != "" {
-		return domain.CodexHookEvent{}, errors.New("Subagent 事件不能预设 event key")
+		return domain.HookEvent{}, errors.New("Subagent 事件不能预设 event key")
 	}
 	event.SessionStartSource = cleanLabel(event.SessionStartSource, 40)
 	if event.HookEvent != "SessionStart" {
 		event.SessionStartSource = ""
 	}
 	if event.SessionID == "" || event.HookEvent == "" {
-		return domain.CodexHookEvent{}, errors.New("事件缺少 sessionId 或 hookEvent")
+		return domain.HookEvent{}, errors.New("事件缺少 sessionId 或 hookEvent")
 	}
 	if event.Surface == "" {
 		event.Surface = domain.CodexSurfaceUnknown
 	}
 	if event.TerminalKind != domain.TerminalITerm2 && event.TerminalKind != domain.TerminalTerminal && event.TerminalKind != domain.TerminalUnknown {
-		return domain.CodexHookEvent{}, errors.New("事件包含未知 terminalKind")
+		return domain.HookEvent{}, errors.New("事件包含未知 terminalKind")
 	}
 	if event.HookEvent == "PreToolUse" && event.ToolName != "request_user_input" {
-		return domain.CodexHookEvent{}, errors.New("仅接收 request_user_input 的 PreToolUse")
+		return domain.HookEvent{}, errors.New("仅接收 request_user_input 的 PreToolUse")
 	}
 	eventKey := ""
 	if event.HookEvent == "PermissionRequest" || (event.HookEvent == "PreToolUse" && event.ToolName == "request_user_input") {
@@ -84,7 +84,7 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 				stablePart = event.InputHash
 			}
 			if stablePart == "" {
-				return domain.CodexHookEvent{}, errors.New("等待事件缺少稳定标识")
+				return domain.HookEvent{}, errors.New("等待事件缺少稳定标识")
 			}
 			if event.SubagentScope == "" {
 				eventKey = stableEventKey(
@@ -98,13 +98,13 @@ func (event Event) Domain(receivedAt time.Time) (domain.CodexHookEvent, error) {
 			}
 		}
 	} else if event.EventKey != "" {
-		return domain.CodexHookEvent{}, errors.New("非等待事件不能包含 event key")
+		return domain.HookEvent{}, errors.New("非等待事件不能包含 event key")
 	}
 	promptPreview := ""
 	if event.HookEvent == "UserPromptSubmit" {
 		promptPreview = cleanPromptPreview(event.PromptPreview, 160)
 	}
-	return domain.CodexHookEvent{
+	return domain.HookEvent{
 		ExternalSessionID:  event.SessionID,
 		EventName:          event.HookEvent,
 		SessionStartSource: event.SessionStartSource,

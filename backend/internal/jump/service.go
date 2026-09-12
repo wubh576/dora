@@ -10,7 +10,7 @@ import (
 	"github.com/wubh576/dora/backend/internal/domain"
 )
 
-var ErrTargetGone = errors.New("Codex 目标已结束")
+var ErrTargetGone = errors.New("任务目标已结束")
 
 type Runner interface {
 	Run(context.Context, string, ...string) ([]byte, error)
@@ -27,6 +27,11 @@ func New(runner Runner) *Service {
 // Capability 只返回可向 UI 暴露的定位结论，不包含 thread ID 或原始 TTY。
 func Capability(session domain.RuntimeSession) (bool, string) {
 	switch session.Surface {
+	case domain.WorkBuddySurfaceApp:
+		if strings.TrimSpace(session.ExternalSessionID) == "" {
+			return false, "WorkBuddy 任务缺少会话 ID"
+		}
+		return true, ""
 	case domain.CodexSurfaceApp:
 		if strings.TrimSpace(session.ExternalSessionID) == "" {
 			return false, "Codex App 会话缺少 thread ID"
@@ -53,6 +58,8 @@ func (service *Service) Jump(ctx context.Context, session domain.RuntimeSession)
 		return errors.New(reason)
 	}
 	switch session.Surface {
+	case domain.WorkBuddySurfaceApp:
+		return service.jumpWorkBuddy(ctx, session.ExternalSessionID)
 	case domain.CodexSurfaceApp:
 		return service.jumpApp(ctx, session.ExternalSessionID)
 	case domain.CodexSurfaceCLI:
@@ -162,3 +169,15 @@ const jumpTerminalScript = `on run argv
   end tell
   return "DORA_TARGET_GONE"
 end run`
+
+// WorkBuddy 5.5.6 的系统通知通过相同的 chat deep link 返回指定任务。
+func (service *Service) jumpWorkBuddy(ctx context.Context, sessionID string) error {
+	deepLink := (&url.URL{Scheme: "workbuddy", Host: "chat", Path: "/" + sessionID, RawPath: "/" + url.PathEscape(sessionID)}).String()
+	if output, err := service.runner.Run(ctx, "/usr/bin/open", deepLink); err != nil {
+		return commandError(ctx, "打开 WorkBuddy 任务", output, err)
+	}
+	if output, err := service.runner.Run(ctx, "/usr/bin/osascript", "-e", `tell application id "com.tencent.workbuddy.mac" to activate`); err != nil {
+		return commandError(ctx, "将 WorkBuddy 切到前台", output, err)
+	}
+	return nil
+}

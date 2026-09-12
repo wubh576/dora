@@ -1,6 +1,6 @@
 # Dora
 
-Dora 是一个运行在 macOS 本地的 AI 编程用量管理工具。当前使用 React 前端、Go 后端和 SQLite，并可只读采集本机真实 Codex 与 Claude Code token 用量。
+Dora 是一个运行在 macOS 本地的 AI 编程用量管理工具。当前使用 React 前端、Go 后端和 SQLite，并可只读采集本机真实 Codex 与 Claude Code token 用量。Codex 与 WorkBuddy 支持实时等待提醒和一键返回任务。
 
 ## 构建环境
 
@@ -315,3 +315,21 @@ make verify
 提交前运行该命令，它会执行后端测试、清理并构建前端生产资源，以及验证带嵌入资源的 Go 生产程序可以构建。
 
 推送到 `main` 或创建 Pull Request 后，GitHub Actions 会在 macOS 上使用 Go 1.26.5 和 Node.js 22 重新安装依赖、检查 Go module 是否干净，并执行相同验证与 `go vet`。
+
+## WorkBuddy 实时提醒
+
+支持 WorkBuddy macOS 5.5.6 的本地 Hooks：需要授权或回答问题时，Dora 灵动岛自动展开、高亮并播放一次提示音；点击任务通过 `workbuddy://chat/<session_id>` 返回对应 WorkBuddy App 任务。WorkBuddy 不采集 token、费用或配额，也不提供历史任务管理。
+
+构建并安装后，若本机已有 `~/.workbuddy`，`dora install` 会自动合并 Dora 的 Hooks；不会覆盖其他配置。也可以独立管理：
+
+```bash
+./bin/dora hooks install workbuddy
+./bin/dora hooks status workbuddy
+./bin/dora hooks uninstall workbuddy
+```
+
+安装 Hook 后完全退出并重新打开 WorkBuddy。Dora 需要在默认本地端口 `127.0.0.1:8080` 运行；退出或未启动 Dora 不会阻塞 WorkBuddy。普通安装/卸载只增删 Dora 标记的 handler，保留用户其他 Hooks 和设置。
+
+等待依据是 WorkBuddy 在实际弹出授权/提问界面后发出的 `Notification(permission_prompt)`，只识别引擎固定模板里的工具名，忽略普通空闲通知。`PostToolUse` / `PostToolUseFailure`、回合停止、新输入和 `SessionEnd` 解除对应等待。Hook 不提供任务标题，因此面板显示 WorkBuddy 与工作目录的最后一级名称；仍能精确跳到具体任务。同一子代理作用域、同一工具的无调用 ID 并发等待会合并显示，不能把数量理解为精确的工具调用数。
+
+验收：让 WorkBuddy 使用 `AskUserQuestion` 提问后切到其他页面，确认 Dora 自动展开、高亮并提示；点击该行应回到原提问界面，回答后等待消失。需要授权的工具操作采用相同链路。

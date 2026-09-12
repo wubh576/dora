@@ -179,7 +179,7 @@ func TestRunIslandEventsPreservesQueuedEventsUntilFirstScreen(t *testing.T) {
 
 	view := receiveIslandView(t, presented, func(view View) bool {
 		return view.Mode == string(ModeAttention) && view.HighlightRequestID == 9 && view.HighlightSessionID == 7 &&
-			view.OperationStatus == "当前 Codex 会话无法精确跳转"
+			view.OperationStatus == "当前任务无法精确跳转"
 	})
 	if view.Layout.Frame.Width != 760 {
 		t.Fatalf("排队事件处理后的展开布局错误: %+v", view.Layout)

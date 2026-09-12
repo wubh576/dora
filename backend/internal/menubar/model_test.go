@@ -230,3 +230,19 @@ func testScreen() ScreenMetrics {
 		SafeTop: 32, MenuBarThickness: 22, NotchWidth: 160,
 	}
 }
+
+func TestWorkBuddySurfaceHasItsOwnLabel(t *testing.T) {
+	if got := sourceLabel(RuntimeSession{Surface: "workbuddy_app"}); got != "WorkBuddy" {
+		t.Fatalf("来源标签: %s", got)
+	}
+}
+
+func TestWorkBuddyRowsUseWorkBuddyTitleAndWaitingSummary(t *testing.T) {
+	rows := sessionRows(RuntimeState{Sessions: []RuntimeSession{
+		{ID: 1, State: "running", Surface: "workbuddy_app", SessionName: "probe"},
+		{ID: 2, State: "waiting", Surface: "workbuddy_app", SessionName: "question", Summary: "WorkBuddy 等待回答"},
+	}}, 2, time.Now())
+	if rows[0].Title != "WorkBuddy · probe" || rows[0].Subtitle != "WorkBuddy 正在运行" || rows[1].Subtitle != "WorkBuddy 等待回答" || !rows[1].Highlight {
+		t.Fatalf("WorkBuddy 行展示错误: %+v", rows)
+	}
+}

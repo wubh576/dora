@@ -24,6 +24,7 @@ import (
 	"github.com/wubh576/dora/backend/internal/scan"
 	"github.com/wubh576/dora/backend/internal/settings"
 	dorasqlite "github.com/wubh576/dora/backend/internal/storage/sqlite"
+	"github.com/wubh576/dora/backend/internal/workbuddyhooks"
 )
 
 type server struct {
@@ -263,6 +264,7 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 	mux.HandleFunc("/api/v1/attention", s.attention)
 	mux.HandleFunc("/api/v1/runtime", s.runtimeSessions)
 	mux.HandleFunc("/api/v1/hooks/codex", s.codexHook)
+	mux.HandleFunc("/api/v1/hooks/workbuddy", s.workBuddyHook)
 	if len(options) == 0 || options[0].StaticFS == nil {
 		return mux
 	}
@@ -381,6 +383,9 @@ func (s *server) codexHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	domainEvent, err := event.Domain(s.now())
+	if event.Surface == domain.WorkBuddySurfaceApp {
+		err = errors.New("Codex 接口不接受 WorkBuddy 事件")
+	}
 	if err != nil {
 		s.logCodexHookRejected("invalid_fields")
 		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "接收实时事件", "事件字段无效")
@@ -444,7 +449,7 @@ func (s *server) logCodexHookRejected(reason string) {
 	s.logger.Printf("Codex Hook 拒绝: provider=%s reason=%s", domain.CodexSource, reason)
 }
 
-func codexHookOutcome(event domain.CodexHookEvent, created bool, requestStatus string) string {
+func codexHookOutcome(event domain.HookEvent, created bool, requestStatus string) string {
 	switch event.EventName {
 	case "PermissionRequest", "PreToolUse":
 		if created {
@@ -1129,4 +1134,48 @@ func writeAPIError(w http.ResponseWriter, status int, provider, operation, advic
 
 func writeJSON(w http.ResponseWriter, value any) {
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func (s *server) workBuddyHook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeAPIError(w, http.StatusUnsupportedMediaType, domain.WorkBuddySource, "接收实时事件", "请求必须使用 JSON")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var event attention.Event
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&event); err != nil {
+		status := http.StatusBadRequest
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		writeAPIError(w, status, domain.WorkBuddySource, "接收实时事件", "事件格式无效或超过大小限制")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, domain.WorkBuddySource, "接收实时事件", "事件包含多余内容")
+		return
+	}
+	value, err := workbuddyhooks.Domain(event, s.now())
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, domain.WorkBuddySource, "接收实时事件", "事件字段无效")
+		return
+	}
+	created, err := s.store.ApplyWorkBuddyHookEvent(r.Context(), value)
+	if err != nil {
+		s.logger.Printf("WorkBuddy Hook 失败: session=%s reason=storage_error", attention.SessionLabel(value.ExternalSessionID))
+		writeAPIError(w, http.StatusServiceUnavailable, domain.WorkBuddySource, "保存实时事件", "请检查本地数据库")
+		return
+	}
+	s.logger.Printf("WorkBuddy Hook: session=%s event=%s attention_created=%t", attention.SessionLabel(value.ExternalSessionID), value.EventName, created)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
 }

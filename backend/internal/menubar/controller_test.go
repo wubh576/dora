@@ -509,7 +509,7 @@ func TestControllerJumpFailureKeepsExpandedUntilUserCanReadReason(t *testing.T) 
 	for {
 		select {
 		case view := <-presented:
-			if view.OperationStatus == "跳转 Codex 会话失败：target gone" && view.Expanded {
+			if view.OperationStatus == "跳转任务失败：target gone" && view.Expanded {
 				return
 			}
 		case <-statusDeadline:
@@ -524,7 +524,7 @@ func TestControllerSuccessfulRetryClearsPreviousJumpError(t *testing.T) {
 	controller := NewController(&fakeLoader{}, fakeRefresher{}, "", func(view View) { presented <- view })
 	controller.SetSessionJumper(jumper)
 	controller.JumpSessionAsync(context.Background(), 1)
-	waitForView(t, presented, func(view View) bool { return view.OperationStatus == "跳转 Codex 会话失败：denied" })
+	waitForView(t, presented, func(view View) bool { return view.OperationStatus == "跳转任务失败：denied" })
 	waitForJumpIdle(t, controller)
 	jumper.setError(nil)
 	controller.JumpSessionAsync(context.Background(), 1)

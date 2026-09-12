@@ -7,6 +7,9 @@ const (
 	RuntimeStateWaiting = "waiting"
 	RuntimeStateIdle    = "idle"
 
+	WorkBuddySource     = "provider.workbuddy"
+	WorkBuddySurfaceApp = "workbuddy_app"
+
 	CodexSurfaceApp     = "codex_app"
 	CodexSurfaceCLI     = "codex_cli"
 	CodexSurfaceUnknown = "unknown"
@@ -20,24 +23,26 @@ const (
 	AttentionUserQuestion     = "user_question"
 )
 
-type CodexHookEvent struct {
-	ExternalSessionID  string
-	EventName          string
-	SessionStartSource string
-	TurnID             string
-	SubagentEvent      bool
-	SubagentScope      string
-	CWDBasename        string
-	Model              string
-	Surface            string
-	TerminalKind       string
-	TTY                string
-	ToolName           string
-	ToolUseKey         string
-	ToolInputKey       string
-	EventKey           string
-	PromptPreview      string
-	ReceivedAt         time.Time
+type HookEvent struct {
+	Provider            string
+	WaitingNotification bool
+	ExternalSessionID   string
+	EventName           string
+	SessionStartSource  string
+	TurnID              string
+	SubagentEvent       bool
+	SubagentScope       string
+	CWDBasename         string
+	Model               string
+	Surface             string
+	TerminalKind        string
+	TTY                 string
+	ToolName            string
+	ToolUseKey          string
+	ToolInputKey        string
+	EventKey            string
+	PromptPreview       string
+	ReceivedAt          time.Time
 }
 
 type RuntimeSession struct {
