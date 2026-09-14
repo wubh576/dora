@@ -62,6 +62,10 @@ func (emitter *Emitter) Emit(ctx context.Context, input io.Reader) error {
 		return err
 	}
 	event = normalizeCodexAppBackgroundEvent(event)
+	return emitter.emitEvent(ctx, event)
+}
+
+func (emitter *Emitter) emitEvent(ctx context.Context, event attention.Event) error {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return errors.New("编码 Codex Hook 事件失败")
@@ -131,6 +135,9 @@ func parseHookEvent(input io.Reader, surface Surface) (attention.Event, error) {
 	}
 	raw.SessionID = strings.TrimSpace(raw.SessionID)
 	raw.HookEventName = strings.TrimSpace(raw.HookEventName)
+	if raw.HookEventName == "Interrupt" {
+		raw.HookEventName = "Stop"
+	}
 	if raw.SessionID == "" || raw.HookEventName == "" {
 		return attention.Event{}, errors.New("Codex Hook 事件缺少 session 或事件名")
 	}

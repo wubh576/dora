@@ -1,12 +1,15 @@
 package menubar
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/wubh576/dora/backend/internal/approval"
 )
 
 type Snapshot struct {
@@ -47,10 +50,11 @@ type QuotaItem struct {
 }
 
 type RuntimeState struct {
-	GeneratedAt  string           `json:"generatedAt"`
-	WaitingCount int              `json:"waitingCount"`
-	RunningCount int              `json:"runningCount"`
-	Sessions     []RuntimeSession `json:"sessions"`
+	Approvals    []approval.Pending `json:"-"`
+	GeneratedAt  string             `json:"generatedAt"`
+	WaitingCount int                `json:"waitingCount"`
+	RunningCount int                `json:"runningCount"`
+	Sessions     []RuntimeSession   `json:"sessions"`
 }
 
 type RuntimeSession struct {
@@ -86,12 +90,17 @@ type Loader interface {
 }
 
 type Client struct {
-	baseURL string
-	http    *http.Client
+	controlToken string
+	baseURL      string
+	http         *http.Client
 }
 
-func NewClient(baseURL string) *Client {
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: 3 * time.Second}}
+func NewClient(baseURL string, controlToken ...string) *Client {
+	c := &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: 3 * time.Second}}
+	if len(controlToken) > 0 {
+		c.controlToken = controlToken[0]
+	}
+	return c
 }
 
 func (c *Client) Load(ctx context.Context) (State, error) {
@@ -111,6 +120,11 @@ func (c *Client) LoadRuntime(ctx context.Context) (RuntimeState, error) {
 	if err := c.getJSON(ctx, "/api/v1/runtime", &state); err != nil {
 		return RuntimeState{}, err
 	}
+	if c.controlToken != "" {
+		if err := c.getJSON(ctx, "/api/v1/approvals", &state.Approvals); err != nil {
+			return RuntimeState{}, err
+		}
+	}
 	return state, nil
 }
 
@@ -119,6 +133,8 @@ func (c *Client) getJSON(ctx context.Context, path string, target any) error {
 	if err != nil {
 		return fmt.Errorf("创建本地状态请求: %w", err)
 	}
+	request.Header.Set("Origin", c.baseURL)
+	request.Header.Set("X-Dora-Control-Token", c.controlToken)
 	response, err := c.http.Do(request)
 	if err != nil {
 		return fmt.Errorf("连接 Dora 本地服务: %w", err)
@@ -129,6 +145,29 @@ func (c *Client) getJSON(ctx context.Context, path string, target any) error {
 	}
 	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
 		return fmt.Errorf("解析 Dora 本地状态: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) DecideApproval(ctx context.Context, id int64, decision string) error {
+	body, _ := json.Marshal(map[string]any{"id": id, "decision": decision})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/approvals", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", c.baseURL)
+	req.Header.Set("X-Dora-Control-Token", c.controlToken)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("审批回传失败")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 409 {
+		return fmt.Errorf("审批请求已经结束，请回原应用查看")
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("审批回传失败（HTTP %d）", resp.StatusCode)
 	}
 	return nil
 }

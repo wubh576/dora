@@ -689,3 +689,21 @@
 - Controller 使用可控阻塞 Refresher 验证首轮扫描/配额各一次、刷新中连续五次调用均返回 `false`、完成后没有自动补刷新，以及完成后的新点击可以启动第二轮；测试不依赖 sleep 推测时序。
 - 原生测试使用真实 `DoraIslandPanel`，向 Panel 分发构造的 mouse-down/mouse-up，经 AppKit hit-testing、真实刷新按钮和 Panel action 到达 kind 3 bridge 回调；验证一次完整点击只回调一次、loading 连续五次点击不回调、恢复普通图标后可以再次点击，并在结束时关闭 Panel。
 - `make verify`、菜单栏/App/命令入口 race 测试、`go vet ./...` 与 `git diff --check` 通过。独立 Review 复核 single-flight、竞态边界、原生事件链、loading 幂等和布局断言，无 P0/P1/P2/P3 findings。
+
+## 里程碑 40：Codex App 单次工具审批（2026-09-14）
+
+已实现并安装：
+
+- App 的同步 PermissionRequest 可在灵动岛“处理授权”窗口查看完整工具参数，逐条选择本次允许、本次拒绝或转到原应用；CLI、WorkBuddy 与问题回答保持原来的提醒和跳转。
+- 独立内存 Broker 按每次 Hook 连接分配随机一次性 ID，不复用 attention 去重 ID。工具参数及工作目录详情最多 24 KiB，不写 SQLite/日志；大参数回原应用。注册、读取、决定接口使用 control token 与 Origin 校验。
+- 120 秒等待、界面心跳、连接取消与 Interrupt 共同管理请求寿命。三个 UI 加载入口失败均清理审批详情；过期请求不展示、不接受决定；窗口不自动改选另一条请求。
+- 本次升级修改 PermissionRequest 超时为 125 秒，新增 Interrupt 1 秒 Hook。没有修改 Codex trust，也没有使用 bypass。
+
+已完成验证：
+
+- `make verify`（全量 Go 测试、AppKit 原生测试与生产构建）、审批/Hook/HTTP/菜单栏 race 测试、`go vet ./...` 和 `git diff --check` 通过。前端没有独立 test script，已通过 TypeScript 检查与 Vite 构建。
+- 真实 HTTP 链路覆盖 allow/deny/fallback stdout、同会话同输入并发、重复点击、连接取消、短截止时间、中断、无界面、服务不可用、CLI 不接管、过大详情回退、接口权限与普通 API/SQLite 不泄露详情。
+- AppKit 原生测试覆盖三按钮、没有回车默认批准、详情清除、请求失效禁用、明确切换后拒绝对应 ID。隔离 18080 实例实际显示审批窗口，检查截图布局，并收到测试请求的 allow 回传；这是模拟请求的原生端到端验证，不等同真实 Codex 执行。
+- 独立 Reviewer 发现的三个加载路径保留旧审批问题均已修复，复审通过。测试实例已正常关闭，18080 已释放；现有生产 LaunchAgent 保留运行。
+- 用户显式信任后，App 内置 `codex-cli 0.153.4` 的 hooks/list 确认 125 秒 PermissionRequest 与 1 秒 Interrupt 均为 trusted，hash 与 Dora 算法一致。
+- 使用 App 内置引擎的临时 app-server、ephemeral 任务和本地模型协议桩，实际触发只打印固定文字的提权命令，经生产 Dora 的真实 Hook 与审批 API 完成三条链路：allow 执行且无原生审批，deny 不执行且无原生审批，fallback 发出原生审批请求后由测试客户端拒绝、不执行；三轮均正常结束。原生窗口另行通过前述 AppKit 与隔离 UI 验收，此项不声称通过自动化操作了正在运行的 Codex App 界面。探针进程、本地模型服务与临时工作目录均已关闭或清理。

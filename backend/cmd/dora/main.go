@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/app"
+	"github.com/wubh576/dora/backend/internal/approval"
 	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/codexhooks"
 	"github.com/wubh576/dora/backend/internal/launchagent"
@@ -91,9 +92,9 @@ func hooksCommand(args []string) error {
 		return errors.New("用法: dora hooks <install|status|uninstall|emit> <codex|workbuddy>")
 	}
 	if args[0] == "emit" {
-		ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(approval.HookTimeoutSeconds-1)*time.Second)
 		defer cancel()
-		return emitCodexHook(ctx, os.Stdin, codexhooks.NewEmitter())
+		return codexhooks.NewEmitter().EmitInteractive(ctx, os.Stdin, os.Stdout)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -122,18 +123,6 @@ func hooksCommand(args []string) error {
 		return err
 	}
 	return writeCodexHooksStatus(os.Stdout, status)
-}
-
-type codexHookEmitter interface {
-	Emit(context.Context, io.Reader) error
-}
-
-func emitCodexHook(ctx context.Context, input io.Reader, emitter codexHookEmitter) error {
-	err := emitter.Emit(ctx, input)
-	if errors.Is(err, codexhooks.ErrServiceUnavailable) {
-		return nil
-	}
-	return err
 }
 
 func writeCodexHooksStatus(output io.Writer, status codexhooks.Status) error {
@@ -426,7 +415,7 @@ func runMenubarApplication(ctx context.Context, stop context.CancelFunc, applica
 		}
 	}()
 	menuErr := runMenu(ctx, doramenubar.Config{
-		Loader:          doramenubar.NewClient(application.DashboardURL()),
+		Loader:          doramenubar.NewClient(application.DashboardURL(), application.ControlToken()),
 		Refresher:       application,
 		DashboardURL:    application.DashboardURL(),
 		Jumper:          application,

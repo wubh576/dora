@@ -68,6 +68,7 @@ type Config struct {
 
 // Runtime 统一持有 HTTP、SQLite、扫描器和配额服务，serve 与 menubar 共用它。
 type Runtime struct {
+	controlToken            string
 	address                 string
 	initializedAt           time.Time
 	server                  *http.Server
@@ -189,7 +190,8 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 	}
 	actualAddress := listener.Addr().String()
 	server := &http.Server{
-		Addr: actualAddress,
+		BaseContext: func(net.Listener) context.Context { return ctx },
+		Addr:        actualAddress,
 		Handler: httpapi.NewHandler(store, httpapi.Options{
 			Scanner:        scanner,
 			ControlToken:   controlToken,
@@ -203,6 +205,7 @@ func Start(parent context.Context, config Config) (*Runtime, error) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	runtime := &Runtime{
+		controlToken:    controlToken,
 		address:         actualAddress,
 		initializedAt:   initializedAt,
 		server:          server,
@@ -300,6 +303,8 @@ func (r *Runtime) Refresh(ctx context.Context) (usageErr, quotaErr error) {
 	_, quotaErr = r.quota.Refresh(ctx, true)
 	return usageErr, quotaErr
 }
+
+func (r *Runtime) ControlToken() string { return r.controlToken }
 
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {

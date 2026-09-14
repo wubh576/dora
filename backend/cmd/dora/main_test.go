@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -156,18 +155,6 @@ func TestUninstallComponentsAttemptsBothAndReturnsPartialFailure(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-type unavailableHookEmitter struct{}
-
-func (unavailableHookEmitter) Emit(context.Context, io.Reader) error {
-	return codexhooks.ErrServiceUnavailable
-}
-
-func TestEmitCodexHookSilentlyAcceptsUnavailableService(t *testing.T) {
-	if err := emitCodexHook(context.Background(), strings.NewReader("private input"), unavailableHookEmitter{}); err != nil {
-		t.Fatalf("服务不可用没有静默成功: %v", err)
 	}
 }
 

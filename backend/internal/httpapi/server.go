@@ -10,9 +10,11 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wubh576/dora/backend/internal/analytics"
+	"github.com/wubh576/dora/backend/internal/approval"
 	"github.com/wubh576/dora/backend/internal/attention"
 	"github.com/wubh576/dora/backend/internal/buildinfo"
 	"github.com/wubh576/dora/backend/internal/domain"
@@ -28,16 +30,18 @@ import (
 )
 
 type server struct {
-	store          *dorasqlite.Store
-	scanner        *scan.Scanner
-	controlToken   string
-	allowedOrigins map[string]struct{}
-	location       *time.Location
-	now            func() time.Time
-	quotaService   *quota.Service
-	settings       *settings.Store
-	buildInfo      buildinfo.Info
-	logger         Logger
+	approvalMu      sync.Mutex
+	approvalsBroker *approval.Broker
+	store           *dorasqlite.Store
+	scanner         *scan.Scanner
+	controlToken    string
+	allowedOrigins  map[string]struct{}
+	location        *time.Location
+	now             func() time.Time
+	quotaService    *quota.Service
+	settings        *settings.Store
+	buildInfo       buildinfo.Info
+	logger          Logger
 }
 
 type Logger interface {
@@ -224,11 +228,12 @@ type runtimeSessionResponse struct {
 
 func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 	s := &server{
-		store:          store,
-		allowedOrigins: make(map[string]struct{}),
-		location:       time.Local,
-		now:            time.Now,
-		logger:         log.Default(),
+		approvalsBroker: approval.New(),
+		store:           store,
+		allowedOrigins:  make(map[string]struct{}),
+		location:        time.Local,
+		now:             time.Now,
+		logger:          log.Default(),
 	}
 	if len(options) > 0 {
 		s.scanner = options[0].Scanner
@@ -264,6 +269,8 @@ func NewHandler(store *dorasqlite.Store, options ...Options) http.Handler {
 	mux.HandleFunc("/api/v1/attention", s.attention)
 	mux.HandleFunc("/api/v1/runtime", s.runtimeSessions)
 	mux.HandleFunc("/api/v1/hooks/codex", s.codexHook)
+	mux.HandleFunc("/api/v1/hooks/codex/approval", s.codexApproval)
+	mux.HandleFunc("/api/v1/approvals", s.approvals)
 	mux.HandleFunc("/api/v1/hooks/workbuddy", s.workBuddyHook)
 	if len(options) == 0 || options[0].StaticFS == nil {
 		return mux
@@ -391,7 +398,15 @@ func (s *server) codexHook(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, domain.CodexSource, "接收实时事件", "事件字段无效")
 		return
 	}
+	s.approvalMu.Lock()
 	created, err := s.store.ApplyCodexHookEvent(r.Context(), domainEvent)
+	for _, pending := range s.approvalsBroker.Requests() {
+		status, statusErr := s.store.AttentionRequestStatus(r.Context(), pending.EventKey)
+		if statusErr != nil || status != dorasqlite.AttentionRequestActive {
+			s.approvalsBroker.Resolve(pending.ID, "fallback")
+		}
+	}
+	s.approvalMu.Unlock()
 	if err != nil {
 		s.logger.Printf(
 			"Codex Hook 失败: provider=%s session=%s event=%s reason=storage_error",

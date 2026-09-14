@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import "approval_window_darwin.h"
 #import "pointer_monitor_darwin.h"
 #import "settings_window_darwin.h"
 
@@ -167,6 +168,7 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
 @end
 
 @interface DoraSessionRowView : NSView
+@property(nonatomic, strong) NSButton *approvalButton;
 @property(nonatomic, strong) NSView *stateDot;
 @property(nonatomic, strong) NSTextField *titleLabel;
 @property(nonatomic, strong) NSTextField *subtitleLabel;
@@ -202,6 +204,9 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
         self.clickButton.transparent = YES;
         self.clickButton.target = doraPanel;
         [self addSubview:self.clickButton];
+		self.approvalButton = [NSButton buttonWithTitle:@"处理授权" target:self action:@selector(showApproval:)];
+		self.approvalButton.hidden = YES;
+		[self addSubview:self.approvalButton];
     }
     return self;
 }
@@ -213,6 +218,14 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.subtitleLabel.frame = NSMakeRect(23, 6, width - 34, 17);
     self.metaLabel.frame = NSMakeRect(width * 0.48, 26, width * 0.50 - 10, 16);
     self.clickButton.frame = self.bounds;
+	if (!self.approvalButton.hidden) {
+		self.approvalButton.frame = NSMakeRect(width - 100, 3, 94, 26);
+		self.subtitleLabel.frame = NSMakeRect(23, 6, width - 135, 17);
+	}
+}
+- (void)showApproval:(id)sender {
+	(void)sender;
+	doraShowApprovals((long long)self.clickButton.tag);
 }
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
@@ -246,6 +259,7 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.stateDot.layer.backgroundColor = (self.doraJumpable ? activeColor : doraColor(0.40, 0.42, 0.47, 1.0)).CGColor;
     self.titleLabel.textColor = self.doraJumpable ? NSColor.whiteColor : doraColor(0.58, 0.60, 0.65, 1.0);
     self.clickButton.tag = (NSInteger)sessionID;
+	self.approvalButton.hidden = [session[@"approvalCount"] integerValue] == 0;
     self.clickButton.action = self.doraJumpable ? @selector(doraSession:) : @selector(doraUnavailableSession:);
     self.clickButton.toolTip = self.doraJumpable ? @"跳转到对应任务" : (session[@"jumpReason"] ?: @"当前会话无法精确跳转");
     [self updateBackground];
@@ -433,6 +447,7 @@ static NSTextField *doraLabel(NSString *text, CGFloat size, NSFontWeight weight,
     self.sessionDocument.frame = NSMakeRect(0, 0, documentWidth, documentHeight);
 }
 - (void)applyView:(NSDictionary *)view {
+	doraUpdateApprovals(view[@"approvals"] == (id)NSNull.null ? @[] : (view[@"approvals"] ?: @[]));
     BOOL expanded = [view[@"expanded"] boolValue];
     self.compactView.hidden = expanded;
     self.expandedView.hidden = !expanded;
@@ -697,6 +712,7 @@ void doraIslandStop(void) {
         doraPointerMonitor = nil;
         doraPointerKnown = NO;
         DoraCloseSettingsWindow();
+		doraCloseApprovals();
         [doraPanel close];
         doraPanel = nil;
         [NSApp stop:nil];

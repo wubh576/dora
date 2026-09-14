@@ -451,7 +451,7 @@ CREATE TABLE provider_state (
 
 Usage 数据不建立 session 表。Codex 和 Claude Code 的 usage session ID、父子关系与项目完整路径只允许在 parser/去重过程的内存中短暂存在，不得进入 usage SQLite、日志或 Diagnostics API；Diagnostics 只暴露聚合后的 session 数。
 
-Codex 实时提醒是独立边界：`runtime_sessions` 只保存仍在运行的 Codex external session ID、cwd basename、清洗截断后的任务标题与用户 prompt preview、model、surface、受支持终端的 exact TTY、state 和 last seen；`attention_requests` 保存稳定事件 key、等待类型、精简摘要、提醒和解决时间。不得保存完整 prompt、回复、完整命令、工具输入、环境变量、transcript 路径或完整 cwd。`SessionEnd` 与确认跳转目标消失会删除包含标题缓存的 runtime session，历史 attention 只保留解决审计所需的最小字段。
+Codex 实时提醒是独立边界：`runtime_sessions` 只保存仍在运行的 Codex external session ID、cwd basename、清洗截断后的任务标题与用户 prompt preview、model、surface、受支持终端的 exact TTY、state 和 last seen；`attention_requests` 保存稳定事件 key、等待类型、精简摘要、提醒和解决时间。不得持久化完整 prompt、回复、完整命令、工具输入、环境变量、transcript 路径或完整 cwd；App 单次审批参数只按 25.2.1 的内存通道处理。`SessionEnd` 与确认跳转目标消失会删除包含标题缓存的 runtime session，历史 attention 只保留解决审计所需的最小字段。
 
 ## 8. 时间窗口必须统一
 
@@ -866,7 +866,7 @@ input / 1M × input price
 - 只监听 `127.0.0.1`，不监听 `0.0.0.0`。
 - 前后端同源，不开放 CORS。
 - 浏览器写接口验证 `Origin`；启动时生成随机 control token，并要求对应 header。
-- Codex hook 写接口不接受浏览器控制操作，只接受 loopback、`application/json`、64 KiB 以内的脱敏事件；helper 禁止 redirect。`UserPromptSubmit.prompt` 只转换为去控制字符、压缩空白、最多 160 个 Unicode 字符的一行摘要，其他完整 prompt、回复、命令、工具输入、环境变量、完整 cwd 和 external URL 一律不进入 API。
+- Codex hook 写接口不接受浏览器控制操作，只接受 loopback、`application/json`、64 KiB 以内的脱敏事件；helper 禁止 redirect。`UserPromptSubmit.prompt` 只转换为去控制字符、压缩空白、最多 160 个 Unicode 字符的一行摘要，其他完整 prompt、回复、命令、工具输入、环境变量、完整 cwd 和 external URL 不进入普通事件 API；25.2.1 的独立受保护审批接口仅允许暂存待批工具参数与 cwd。
 - Usage、Diagnostics、runtime 与 attention API 不返回 external session ID、TTY、完整项目路径、`source_files.path`、access token 或原始错误 body；runtime/attention 只返回点击跳转所需的临时内部 runtime ID。
 - JSON 错误包含 provider、操作和可行动建议。
 
@@ -1408,7 +1408,7 @@ DORA_CLAUDE_OAUTH_TOKEN
 - 只使用 Codex 官方 `~/.codex/hooks.json` 生命周期事件，不轮询 transcript 猜测前台状态。
 - 普通 `SessionStart`（`startup`、`resume`、`clear`、缺少或未知 `source`）注册为 idle，不进入活跃列表，并按既有规则结束上一轮状态；`SessionStart(source=compact)` 对已有 session 只更新定位元数据与 `last_seen_at`，保留 running/waiting/idle、prompt 和未解决 request，首次看到时仅创建 idle 记录。`UserPromptSubmit` 进入 running；`PermissionRequest` 与 `request_user_input` 的 `PreToolUse` 进入 waiting；`PostToolUse` 仅在当前 turn 已处于 running/waiting 时回到 running；`Stop` 进入 idle；`SessionEnd` 移除 runtime session。
 - waiting 数量按 session 计算，不按 request 叠加；同一 session 可以显示 active request 数。
-- attention event key 必须稳定去重。`PermissionRequest` 在缺少 tool use ID 时继续使用完整规范化 JSON 的输入 hash 生成既有兼容 event key。跨事件关联使用职责独立、带命名空间的不可逆 `tool_input_key`：Bash 只规范化 `command`，忽略仅解释授权原因的顶层 `description`；MCP 和其他工具仍规范化完整输入，不能全局删除同名业务参数。原始 `tool_input` 不通过 loopback API，也不写入 SQLite 或日志。
+- attention event key 必须稳定去重。`PermissionRequest` 在缺少 tool use ID 时继续使用完整规范化 JSON 的输入 hash 生成既有兼容 event key。跨事件关联使用职责独立、带命名空间的不可逆 `tool_input_key`：Bash 只规范化 `command`，忽略仅解释授权原因的顶层 `description`；MCP 和其他工具仍规范化完整输入，不能全局删除同名业务参数。普通事件的原始 `tool_input` 不通过 loopback API；25.2.1 的 App 单次审批仅临时通过独立受保护接口，不写入 SQLite 或日志。
 - notified 与 resolved 分开记录。一次新 request 只发一次声音并自动展开灵动岛；点击会话只跳转，不解决 request；重启不重放历史声音。
 - root PermissionRequest 没有单独假设 resolved Hook：root `PostToolUse`、`UserPromptSubmit`、`Stop`、`SessionEnd` 是已接入的结构化回落边界。Allow 后可能延迟到工具结束，Deny/Cancel 可能延迟到 Stop 或下一次结构化活动。`PostToolUse` 依次按不可逆 `tool_use_key`、`tool_input_key` 精确关联；精确键均不可用时，只能解除同 parent、同 scope、兼容 turn/tool/kind 的唯一候选，命中多个 active request 时一个也不解除。候选检查和按 ID 更新在同一 SQLite immediate transaction 内完成。
 - 不能用几秒钟 timeout 盲目解除 waiting。Dora 启动时把上一进程遗留的 running 恢复为 idle，同时保留真正尚未解决的 waiting；缺失 `SessionEnd` 的 waiting 以 7 天无 Hook 活动为最终 stale reconciliation 边界，在启动时及运行期每小时检查。
@@ -1432,6 +1432,17 @@ dora hooks emit codex
 - 每个用户和每台 Mac 首次安装后各自授权一次；未授权只关闭实时 waiting 提醒，不阻塞 Codex，也不影响 Dora 的 token、费用、配额和 Web 功能。`dora install` 与 `dora status` 必须把这个降级状态直接展示给用户。
 - emit 限制 stdin 大小，只提取最小字段，并以短超时 POST 到固定 loopback endpoint；禁止 redirect，Dora 未运行时静默成功，不阻塞 Codex。
 - surface 依据受控字段、进程 executable/ancestry、TTY 和终端类型识别。只有实际 App ancestry 才标记 Codex App；CLI 只支持 iTerm2 与 Terminal exact TTY。
+
+### 25.2.1 Codex App 单次审批桥接
+
+- 新增范围仅为 Codex App 的工具授权：同步 `PermissionRequest` Hook 等待 Dora 的本次 allow/deny，或不输出决定交还原生审批。普通问题、CLI、WorkBuddy、永久授权及权限规则修改不在本次范围。
+- 原 helper 的事件上报仍使用短超时；交互审批另外请求 `POST /api/v1/hooks/codex/approval`。Hook 配置超时为 125 秒，Dora 等待最多 120 秒；没有持续轮询的原生 UI 时立即回落，运行期 UI 超过 4 秒未轮询则在下一秒检查中释放等待。
+- `GET/POST /api/v1/approvals` 和审批注册接口同时校验启动时 control token 与精确 Origin，不允许跨站请求，不跟随 redirect，不记录 body。普通 runtime/attention/diagnostics API 不暴露详情。
+- 这是原有“完整工具输入不离开 helper”规则的唯一例外：待批工具参数及工作目录合计最多 24 KiB，只在独立本地审批通道及内存中存活。参数过大或无法解析时不展示截断内容供批准，直接回原生审批。SQLite 与日志仍不保存命令、工具参数或决定内容。
+- 每次存活 Hook 使用独立随机请求 ID，不复用 attention 去重 key 作为操作 ID。同 session、同参数并发 Hook 也各自作出决定。决定只能提交一次；HTTP 连接取消、超时、中断、状态解除与进程重启均使按钮失效。原生窗口不会自动把已结束的请求替换成另一个可批准请求。
+- `Interrupt` 归一为 Stop 清理当前根运行态；工具授权完成仍以既有 PostToolUse/Stop 等事件更新。发送 allow/deny 只表示决定已发送，不伪造执行成功，也不提前清理真实 waiting。
+- 灵动岛行的“处理授权”打开可滚动的原生详情窗口，选择具体请求后显示完整 JSON 参数及工作目录，提供“本次允许”“本次拒绝”“转到原应用”。允许按钮没有回车快捷键；最后一项先释放 Hook，再走现有 App 跳转。
+- 修改 PermissionRequest 超时和新增 Interrupt 会改变 Hook hash，仍必须由用户在 Codex `/hooks` 中重新信任；Dora 不代写 trust、不使用 bypass。
 
 ### 25.3 灵动岛和跳转
 
@@ -1550,6 +1561,6 @@ LaunchAgent 的 stdout 和 stderr 活动日志分别达到 200 MiB 时轮转，�
 
 - 第一期：本地 Web 仪表盘 + SQLite + Codex usage + Codex quota。
 - 第二期：macOS 灵动岛 + Claude Code usage；订阅 quota 仍只支持 Codex。
-- Codex 实时提醒：只观察等待状态并回到原位置，不提供 session 管理。
+- Codex 实时提醒：观察等待状态并回到原位置；App 可桥接单次工具授权，不提供 session 浏览、恢复或管理。
 
 不同 Agent 之间的 session 浏览、恢复、迁移、启动和上下文管理不在本文设计或验收范围内。

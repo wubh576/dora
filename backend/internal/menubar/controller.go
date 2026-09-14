@@ -27,6 +27,10 @@ type SessionJumper interface {
 	JumpAttentionSession(context.Context, int64) error
 }
 
+type ApprovalDecider interface {
+	DecideApproval(context.Context, int64, string) error
+}
+
 type Controller struct {
 	loader       Loader
 	refresher    Refresher
@@ -47,6 +51,7 @@ type Controller struct {
 	runtimeVersion  uint64
 	refreshing      bool
 	jumping         bool
+	deciding        bool
 	operationStatus string
 	operationUntil  time.Time
 	runtimeStatus   string
@@ -120,6 +125,7 @@ func (controller *Controller) LoadAsync(ctx context.Context) bool {
 					controller.runtimeStatus = "实时状态连接失败"
 					if controller.last != nil {
 						state.Runtime = controller.last.Runtime
+						state.Runtime.Approvals = nil
 					}
 				}
 			} else if controller.last != nil {
@@ -129,6 +135,9 @@ func (controller *Controller) LoadAsync(ctx context.Context) bool {
 		}
 		if err != nil {
 			controller.setStatusLocked("连接本地服务失败")
+			if controller.last != nil {
+				controller.last.Runtime.Approvals = nil
+			}
 		}
 		controller.mu.Unlock()
 		controller.publish()
@@ -166,6 +175,9 @@ func (controller *Controller) LoadRuntimeAsync(ctx context.Context) bool {
 			controller.runtimeStatus = ""
 		} else {
 			controller.runtimeStatus = "实时状态连接失败"
+			if controller.last != nil {
+				controller.last.Runtime.Approvals = nil
+			}
 		}
 		controller.mu.Unlock()
 		controller.publish()
@@ -209,6 +221,7 @@ func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 					controller.runtimeStatus = "实时状态连接失败"
 					if controller.last != nil {
 						state.Runtime = controller.last.Runtime
+						state.Runtime.Approvals = nil
 					}
 				}
 			} else if controller.last != nil {
@@ -218,6 +231,9 @@ func (controller *Controller) RefreshAsync(ctx context.Context) bool {
 		}
 		status := refreshStatus(usageErr, quotaErr)
 		if loadErr != nil {
+			if controller.last != nil {
+				controller.last.Runtime.Approvals = nil
+			}
 			status = "连接本地服务失败"
 		} else if runtimeErr != nil && runtimeVersion == controller.runtimeVersion {
 			status = "实时状态连接失败"
@@ -281,6 +297,47 @@ func (controller *Controller) ExplainSession(sessionID int64) {
 	controller.mu.Unlock()
 	controller.machine.HoldFailure()
 	controller.publish()
+}
+
+func (controller *Controller) DecideApprovalAsync(ctx context.Context, id int64, decision string) bool {
+	controller.mu.Lock()
+	decider, ok := controller.loader.(ApprovalDecider)
+	var sessionID int64
+	if controller.last != nil {
+		for _, request := range controller.last.Runtime.Approvals {
+			if request.ID == id && controller.now().Before(request.ExpiresAt) {
+				sessionID = request.SessionID
+			}
+		}
+	}
+	if !ok || sessionID == 0 || controller.deciding || controller.stopped {
+		controller.mu.Unlock()
+		controller.PresentStatus("审批请求已经结束，请刷新后重试")
+		return false
+	}
+	controller.deciding = true
+	controller.mu.Unlock()
+	controller.machine.OperationStart()
+	go func() {
+		requestCtx, cancel := context.WithTimeout(ctx, jumpTimeout)
+		defer cancel()
+		err := decider.DecideApproval(requestCtx, id, decision)
+		controller.mu.Lock()
+		controller.deciding = false
+		if err != nil {
+			controller.setStatusLocked(err.Error())
+		} else {
+			controller.setStatusLocked("决定已发送，等待 Codex 处理")
+		}
+		controller.mu.Unlock()
+		controller.machine.OperationEnd(err == nil)
+		controller.publish()
+		controller.LoadRuntimeAsync(ctx)
+		if err == nil && decision == "fallback" {
+			controller.JumpSessionAsync(ctx, sessionID)
+		}
+	}()
+	return true
 }
 
 func (controller *Controller) OpenDashboard() error {
@@ -358,6 +415,7 @@ func cloneState(value *State) *State {
 	}
 	copy := *value
 	copy.Runtime.Sessions = append([]RuntimeSession(nil), value.Runtime.Sessions...)
+	copy.Runtime.Approvals = append(value.Runtime.Approvals[:0:0], value.Runtime.Approvals...)
 	return &copy
 }
 

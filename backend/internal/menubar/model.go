@@ -5,6 +5,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/wubh576/dora/backend/internal/approval"
 )
 
 type Rect struct {
@@ -30,38 +32,40 @@ type PanelLayout struct {
 }
 
 type View struct {
-	Expanded           bool         `json:"expanded"`
-	Mode               string       `json:"mode"`
-	Layout             PanelLayout  `json:"layout"`
-	AnimateFrame       bool         `json:"animateFrame"`
-	CompactSummary     string       `json:"compactSummary"`
-	CompactStatus      string       `json:"compactStatus"`
-	WaitingCount       int          `json:"waitingCount"`
-	RunningCount       int          `json:"runningCount"`
-	Today              string       `json:"today"`
-	SevenDays          string       `json:"sevenDays"`
-	ThirtyDays         string       `json:"thirtyDays"`
-	AllTime            string       `json:"allTime"`
-	FiveHour           string       `json:"fiveHour"`
-	SevenDay           string       `json:"sevenDay"`
-	Status             string       `json:"status"`
-	OperationStatus    string       `json:"operationStatus,omitempty"`
-	OperationError     bool         `json:"operationError,omitempty"`
-	Refreshing         bool         `json:"refreshing"`
-	HighlightSessionID int64        `json:"highlightSessionId,omitempty"`
-	HighlightRequestID int64        `json:"highlightRequestId,omitempty"`
-	Sessions           []SessionRow `json:"sessions"`
+	Approvals          []approval.Pending `json:"approvals"`
+	Expanded           bool               `json:"expanded"`
+	Mode               string             `json:"mode"`
+	Layout             PanelLayout        `json:"layout"`
+	AnimateFrame       bool               `json:"animateFrame"`
+	CompactSummary     string             `json:"compactSummary"`
+	CompactStatus      string             `json:"compactStatus"`
+	WaitingCount       int                `json:"waitingCount"`
+	RunningCount       int                `json:"runningCount"`
+	Today              string             `json:"today"`
+	SevenDays          string             `json:"sevenDays"`
+	ThirtyDays         string             `json:"thirtyDays"`
+	AllTime            string             `json:"allTime"`
+	FiveHour           string             `json:"fiveHour"`
+	SevenDay           string             `json:"sevenDay"`
+	Status             string             `json:"status"`
+	OperationStatus    string             `json:"operationStatus,omitempty"`
+	OperationError     bool               `json:"operationError,omitempty"`
+	Refreshing         bool               `json:"refreshing"`
+	HighlightSessionID int64              `json:"highlightSessionId,omitempty"`
+	HighlightRequestID int64              `json:"highlightRequestId,omitempty"`
+	Sessions           []SessionRow       `json:"sessions"`
 }
 
 type SessionRow struct {
-	ID         int64  `json:"id"`
-	State      string `json:"state"`
-	Title      string `json:"title"`
-	Subtitle   string `json:"subtitle"`
-	Meta       string `json:"meta"`
-	Highlight  bool   `json:"highlight"`
-	Jumpable   bool   `json:"jumpable"`
-	JumpReason string `json:"jumpReason,omitempty"`
+	ApprovalCount int    `json:"approvalCount,omitempty"`
+	ID            int64  `json:"id"`
+	State         string `json:"state"`
+	Title         string `json:"title"`
+	Subtitle      string `json:"subtitle"`
+	Meta          string `json:"meta"`
+	Highlight     bool   `json:"highlight"`
+	Jumpable      bool   `json:"jumpable"`
+	JumpReason    string `json:"jumpReason,omitempty"`
 }
 
 func BuildView(state *State, machine MachineState, screen ScreenMetrics, now time.Time, refreshing bool, statusOverride string) View {
@@ -86,6 +90,18 @@ func BuildView(state *State, machine MachineState, screen ScreenMetrics, now tim
 		view.SevenDay = quotaRow("Codex 7 日配额", "seven_day", state.Quota, now)
 		view.Status = snapshotStatus(*state, now)
 		view.Sessions = sessionRows(state.Runtime, machine.HighlightSessionID, now)
+		for _, pending := range state.Runtime.Approvals {
+			if now.Before(pending.ExpiresAt) {
+				view.Approvals = append(view.Approvals, pending)
+			}
+		}
+		for i := range view.Sessions {
+			for _, pending := range view.Approvals {
+				if pending.SessionID == view.Sessions[i].ID {
+					view.Sessions[i].ApprovalCount++
+				}
+			}
+		}
 	}
 	if refreshing {
 		view.Status = "正在刷新数据…"

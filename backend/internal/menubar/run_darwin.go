@@ -161,6 +161,12 @@ func runIslandEvents(ctx context.Context, controller *Controller, config Config,
 				controller.UIInteraction(false)
 			case 9:
 				controller.ExplainSession(event.value)
+			case 10:
+				controller.DecideApprovalAsync(ctx, event.value, "allow")
+			case 11:
+				controller.DecideApprovalAsync(ctx, event.value, "deny")
+			case 12:
+				controller.DecideApprovalAsync(ctx, event.value, "fallback")
 			}
 		}
 	}

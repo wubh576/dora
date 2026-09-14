@@ -35,7 +35,8 @@ native-test:
 		pointer_test_binary=$$(mktemp /private/tmp/dora-pointer-monitor-test.XXXXXX); \
 		settings_test_binary=$$(mktemp /private/tmp/dora-settings-window-test.XXXXXX); \
 		icon_test_binary=$$(mktemp /private/tmp/dora-icon-button-test.XXXXXX); \
-		trap 'rm -f "$$pointer_test_binary" "$$settings_test_binary" "$$icon_test_binary"' EXIT; \
+		approval_test_binary=$$(mktemp /private/tmp/dora-approval-window-test.XXXXXX); \
+		trap 'rm -f "$$pointer_test_binary" "$$settings_test_binary" "$$icon_test_binary" "$$approval_test_binary"' EXIT; \
 		xcrun clang -fobjc-arc -Wall -Wextra -Werror -framework Cocoa \
 			-I backend/internal/menubar \
 			backend/internal/menubar/pointer_monitor_darwin.m \
@@ -51,11 +52,18 @@ native-test:
 		xcrun clang -fobjc-arc -Wall -Wextra -Werror -framework Cocoa \
 			-I backend/internal/menubar \
 			backend/internal/menubar/bridge_darwin.m \
+			backend/internal/menubar/approval_window_darwin.m \
 			backend/internal/menubar/pointer_monitor_darwin.m \
 			backend/internal/menubar/settings_window_darwin.m \
 			backend/internal/menubar/testdata/icon_button_test.m \
 			-o "$$icon_test_binary"; \
-		"$$icon_test_binary"
+		"$$icon_test_binary"; \
+		xcrun clang -fobjc-arc -Wall -Wextra -Werror -framework Cocoa \
+			-I backend/internal/menubar \
+			backend/internal/menubar/approval_window_darwin.m \
+			backend/internal/menubar/testdata/approval_window_test.m \
+			-o "$$approval_test_binary"; \
+		"$$approval_test_binary"
 
 build:
 	rm -rf $(FRONTEND_DIST) $(WEB_ASSET_STAGE)
